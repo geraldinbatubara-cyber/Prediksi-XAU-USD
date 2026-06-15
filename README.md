@@ -2,6 +2,8 @@
 
 Dashboard estimasi harga emas untuk hari bursa berikutnya dan tujuh hari ke depan.
 
+**Aplikasi live:** https://klmshreuteappzrrjyp3kuh.streamlit.app/
+
 ## Menjalankan
 
 ```powershell
