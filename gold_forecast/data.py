@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 import yfinance as yf
 
@@ -40,22 +42,32 @@ def load_gold_data(period: str = "10y") -> pd.DataFrame:
 
 def load_market_data(period: str = "10y") -> pd.DataFrame:
     """Download aligned close prices for gold and related global markets."""
-    series: dict[str, pd.Series] = {}
-    for name, symbol in MARKET_SYMBOLS.items():
+    symbols = list(MARKET_SYMBOLS.values())
+    data = pd.DataFrame()
+    for attempt in range(3):
         data = yf.download(
-            symbol,
+            symbols,
             period=period,
             interval="1d",
             auto_adjust=True,
             progress=False,
+            threads=False,
+            group_by="column",
         )
-        if data.empty or "Close" not in data.columns:
-            continue
-        close = data["Close"]
-        if isinstance(close, pd.DataFrame):
-            close = close.iloc[:, 0]
-        close.index = pd.to_datetime(close.index).tz_localize(None)
-        series[name] = close.rename(name)
+        if not data.empty:
+            break
+        time.sleep(1 + attempt)
+
+    series: dict[str, pd.Series] = {}
+    if not data.empty and isinstance(data.columns, pd.MultiIndex):
+        close_data = data["Close"]
+        for name, symbol in MARKET_SYMBOLS.items():
+            if symbol in close_data.columns and close_data[symbol].notna().any():
+                series[name] = close_data[symbol].rename(name)
+
+    if "gold" not in series:
+        gold = load_gold_data(period)
+        series["gold"] = gold["Close"].rename("gold")
 
     if "gold" not in series:
         raise RuntimeError("Data harga emas tidak tersedia dari Yahoo Finance.")
