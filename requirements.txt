@@ -1,5 +1,6 @@
 streamlit>=1.37,<2
 pandas>=2.2,<3
 numpy>=1.26,<3
+scikit-learn>=1.5,<2
 yfinance>=0.2.40,<1
 plotly>=5.22,<7
