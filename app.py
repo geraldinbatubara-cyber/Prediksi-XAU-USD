@@ -7,6 +7,7 @@ import streamlit as st
 from gold_forecast.data import load_market_data
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
+from gold_forecast.signals import build_signal
 
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -17,6 +18,11 @@ st.caption("Estimasi hari bursa berikutnya dan tujuh hari ke depan")
 @st.cache_data(ttl=3600)
 def get_data() -> pd.DataFrame:
     return load_market_data()
+
+
+@st.cache_data(ttl=3600)
+def get_models(market_data: pd.DataFrame):
+    return train_and_forecast(market_data["gold"]), train_model_v2(market_data)
 
 
 with st.sidebar:
@@ -30,8 +36,7 @@ with st.sidebar:
 
 try:
     market = get_data()
-    model_1 = train_and_forecast(market["gold"])
-    model_2 = train_model_v2(market)
+    model_1, model_2 = get_models(market)
 except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
@@ -41,11 +46,37 @@ gold = market["gold"]
 latest = float(gold.iloc[-1])
 previous = float(gold.iloc[-2])
 tomorrow, day_seven = result.forecast.iloc[0], result.forecast.iloc[-1]
+signal = build_signal(market, result.forecast)
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("Harga terakhir", f"${latest:,.2f}", f"{latest - previous:+,.2f}")
 col2.metric("Estimasi besok", f"${tomorrow['Estimasi']:,.2f}", f"{tomorrow['Estimasi'] - latest:+,.2f}")
 col3.metric("Estimasi hari ke-7", f"${day_seven['Estimasi']:,.2f}", f"{day_seven['Estimasi'] - latest:+,.2f}")
+col4.metric("Sinyal", signal.label, f"Confidence {signal.confidence:.0f}%")
+
+st.subheader("Ringkasan Sinyal Harian")
+signal_col, driver_col = st.columns([1, 2])
+with signal_col:
+    if signal.label == "Bullish":
+        st.success(f"**{signal.label}** dengan confidence **{signal.confidence:.0f}%**")
+    elif signal.label == "Bearish":
+        st.error(f"**{signal.label}** dengan confidence **{signal.confidence:.0f}%**")
+    else:
+        st.info(f"**{signal.label}** dengan confidence **{signal.confidence:.0f}%**")
+    st.metric("Ekspektasi besok", f"{signal.expected_change_pct:+.2f}%", f"${signal.expected_change:+,.2f}")
+    for item in signal.rationale:
+        st.write(f"- {item}")
+
+with driver_col:
+    st.write("Faktor lintas pasar 5 hari terakhir")
+    if signal.drivers.empty:
+        st.caption("Faktor lintas pasar belum tersedia dari sumber data.")
+    else:
+        st.dataframe(
+            signal.drivers.style.format({"Perubahan 5 hari": "{:+.2f}%"}),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 cutoff = gold.index.max() - pd.DateOffset(years=history_years)
 chart_prices = gold.loc[gold.index >= cutoff]

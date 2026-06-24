@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
+from tempfile import gettempdir
 
 import pandas as pd
 import yfinance as yf
 
+
+YFINANCE_CACHE_DIR = Path(gettempdir()) / "prediksi-xau-usd-yfinance"
+YFINANCE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+if hasattr(yf, "set_tz_cache_location"):
+    yf.set_tz_cache_location(str(YFINANCE_CACHE_DIR))
 
 MARKET_SYMBOLS = {
     "gold": "GC=F",
