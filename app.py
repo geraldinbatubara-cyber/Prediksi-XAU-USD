@@ -8,7 +8,7 @@ from gold_forecast.data import load_market_data
 from gold_forecast.direction_model import train_direction_model
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
-from gold_forecast.monitoring import load_monitoring, monitoring_summary
+from gold_forecast.monitoring import WIT, load_monitoring, monitoring_summary
 from gold_forecast.signals import build_signal
 
 
@@ -18,8 +18,8 @@ st.caption("Estimasi hari bursa berikutnya dan tujuh hari ke depan")
 
 
 @st.cache_data(ttl=3600)
-def get_data() -> pd.DataFrame:
-    return load_market_data()
+def get_data() -> tuple[pd.DataFrame, pd.Timestamp]:
+    return load_market_data(), pd.Timestamp.now(tz=WIT)
 
 
 @st.cache_data(ttl=3600)
@@ -33,6 +33,7 @@ def get_models(market_data: pd.DataFrame):
 
 def render_dashboard(
     market: pd.DataFrame,
+    data_fetched_at: pd.Timestamp,
     model_1,
     model_2,
     direction_model,
@@ -46,6 +47,10 @@ def render_dashboard(
     previous = float(gold.iloc[-2])
     tomorrow, day_seven = result.forecast.iloc[0], result.forecast.iloc[-1]
     signal = build_signal(market, result.forecast)
+    market_last_date = pd.Timestamp(gold.index.max()).strftime("%d %b %Y")
+    fetched_label = data_fetched_at.strftime("%d %b %Y %H:%M:%S WIT")
+
+    st.info(f"Data pasar terakhir: **{market_last_date}** | Data diambil dashboard: **{fetched_label}**")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Harga terakhir", f"${latest:,.2f}", f"{latest - previous:+,.2f}")
@@ -230,6 +235,18 @@ def render_monitoring() -> None:
         st.info("Belum ada data monitoring. Baris pertama akan dibuat oleh job 23:59 WIT.")
         return
 
+    timestamp_candidates = pd.concat(
+        [
+            pd.to_datetime(frame["forecast_timestamp_wit"], errors="coerce"),
+            pd.to_datetime(frame["actual_timestamp_wit"], errors="coerce"),
+        ]
+    ).dropna()
+    if timestamp_candidates.empty:
+        st.warning("Data monitoring sudah tersedia, tetapi belum ada timestamp update yang valid.")
+    else:
+        last_monitoring_update = timestamp_candidates.max()
+        st.info(f"Data monitoring terakhir diperbarui: **{last_monitoring_update.strftime('%d %b %Y %H:%M:%S WIT')}**")
+
     summary = monitoring_summary(frame)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Jumlah selesai", f"{summary['count']:.0f}")
@@ -305,7 +322,7 @@ with st.sidebar:
     st.info("Harga emas memakai COMEX `GC=F`, USD per troy ounce.")
 
 try:
-    market = get_data()
+    market, data_fetched_at = get_data()
     model_1, model_2, direction_model = get_models(market)
 except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
@@ -315,6 +332,7 @@ dashboard_tab, monitoring_tab = st.tabs(["Dashboard", "Monitoring"])
 with dashboard_tab:
     render_dashboard(
         market,
+        data_fetched_at,
         model_1,
         model_2,
         direction_model,
