@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from gold_forecast.data import load_market_data
+from gold_forecast.direction_model import train_direction_model
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
 from gold_forecast.signals import build_signal
@@ -22,7 +23,11 @@ def get_data() -> pd.DataFrame:
 
 @st.cache_data(ttl=3600)
 def get_models(market_data: pd.DataFrame):
-    return train_and_forecast(market_data["gold"]), train_model_v2(market_data)
+    return (
+        train_and_forecast(market_data["gold"]),
+        train_model_v2(market_data),
+        train_direction_model(market_data),
+    )
 
 
 with st.sidebar:
@@ -32,11 +37,17 @@ with st.sidebar:
         "Model prediksi",
         ["Model 2 - Lintas Pasar", "Model 1 - Harga Historis"],
     )
+    direction_threshold = st.select_slider(
+        "Threshold sinyal arah",
+        options=[0.50, 0.55, 0.60, 0.65, 0.70],
+        value=0.65,
+        format_func=lambda value: f"{value:.0%}",
+    )
     st.info("Harga emas memakai COMEX `GC=F`, USD per troy ounce.")
 
 try:
     market = get_data()
-    model_1, model_2 = get_models(market)
+    model_1, model_2, direction_model = get_models(market)
 except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
@@ -110,6 +121,55 @@ if mae_improvement > 0:
 else:
     st.warning("Pada backtest terbaru, Model 2 belum mengalahkan MAE Model 1.")
 
+st.subheader("Model Arah Berbasis Confidence")
+direction_latest = direction_model.latest_probabilities.copy()
+direction_latest["Sinyal aktif"] = direction_latest["Probabilitas naik"].apply(
+    lambda probability: "Bullish"
+    if probability >= direction_threshold * 100
+    else ("Bearish" if probability <= (1 - direction_threshold) * 100 else "Netral")
+)
+selected_direction_metrics = direction_model.threshold_metrics.xs(
+    direction_threshold, level="Threshold"
+)
+d1, d2, d3 = st.columns(3)
+d1.metric(
+    "Akurasi arah T+1",
+    f"{selected_direction_metrics.loc[1, 'Akurasi actionable']:.1f}%",
+    f"Coverage {selected_direction_metrics.loc[1, 'Coverage']:.1f}%",
+)
+d2.metric(
+    "Akurasi arah T+7",
+    f"{selected_direction_metrics.loc[7, 'Akurasi actionable']:.1f}%",
+    f"Coverage {selected_direction_metrics.loc[7, 'Coverage']:.1f}%",
+)
+d3.metric(
+    "Sinyal T+1 sekarang",
+    direction_latest.loc[1, "Sinyal aktif"],
+    f"Naik {direction_latest.loc[1, 'Probabilitas naik']:.1f}%",
+)
+st.caption(
+    "Akurasi actionable hanya menghitung hari saat probabilitas melewati threshold. "
+    "Coverage menunjukkan seberapa sering sinyal seperti itu muncul pada backtest."
+)
+st.dataframe(
+    direction_latest.style.format(
+        {"Probabilitas naik": "{:.1f}%", "Probabilitas turun": "{:.1f}%"}
+    ),
+    use_container_width=True,
+)
+with st.expander("Backtest model arah per threshold"):
+    st.dataframe(
+        direction_model.threshold_metrics.style.format(
+            {
+                "Akurasi semua hari": "{:.1f}%",
+                "Akurasi actionable": "{:.1f}%",
+                "Coverage": "{:.1f}%",
+                "Jumlah sinyal": "{:.0f}",
+            }
+        ),
+        use_container_width=True,
+    )
+
 st.subheader(f"Kualitas Backtest {model_choice.split(' - ')[0]}")
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("MAE", f"${result.metrics['MAE']:,.2f}")
@@ -135,7 +195,8 @@ with st.expander("Metodologi dan risiko"):
         agar prediksi T+7 tidak mengakumulasi prediksi hari sebelumnya.
 
         Backtest memakai 20% data terbaru secara berurutan dan tidak mengacak waktu.
-        Interval berasal dari residual backtest, bukan jaminan cakupan 95%. Dashboard
-        ini bukan saran investasi.
+        Model arah berbasis confidence tidak memaksa sinyal setiap hari; hari yang
+        probabilitasnya rendah tetap dianggap netral. Interval berasal dari residual
+        backtest, bukan jaminan cakupan 95%. Dashboard ini bukan saran investasi.
         """
     )
