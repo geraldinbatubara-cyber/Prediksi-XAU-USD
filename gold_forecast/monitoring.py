@@ -18,8 +18,9 @@ WIT = ZoneInfo("Asia/Jayapura")
 UTC = ZoneInfo("UTC")
 DATA_PATH = Path("data") / "monitoring.csv"
 MODEL_NAME = "Model 2 - Lintas Pasar"
+ACTUAL_HOURS = (8, 9, 10, 11, 12)
 
-MONITORING_COLUMNS = [
+BASE_COLUMNS = [
     "forecast_date_wit",
     "target_date_wit",
     "forecast_timestamp_wit",
@@ -30,17 +31,31 @@ MONITORING_COLUMNS = [
     "estimate_upper",
     "signal",
     "confidence",
-    "actual_timestamp_wit",
-    "actual_open_0800",
-    "actual_source",
-    "delta",
-    "delta_pct",
     "estimated_direction",
-    "actual_direction",
-    "direction_correct",
     "status",
     "notes",
 ]
+
+def hour_suffix(hour: int) -> str:
+    return f"{hour:02d}00"
+
+
+ACTUAL_COLUMNS = [
+    field
+    for hour in ACTUAL_HOURS
+    for suffix in (hour_suffix(hour),)
+    for field in (
+        f"actual_timestamp_{suffix}",
+        f"actual_open_{suffix}",
+        f"actual_source_{suffix}",
+        f"delta_{suffix}",
+        f"delta_pct_{suffix}",
+        f"actual_direction_{suffix}",
+        f"direction_correct_{suffix}",
+    )
+]
+
+MONITORING_COLUMNS = BASE_COLUMNS[:10] + ACTUAL_COLUMNS + BASE_COLUMNS[10:]
 
 
 @dataclass
@@ -57,10 +72,38 @@ def now_wit() -> datetime:
 def load_monitoring(path: Path = DATA_PATH) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=MONITORING_COLUMNS)
+
     frame = pd.read_csv(path)
     for column in MONITORING_COLUMNS:
         if column not in frame.columns:
             frame[column] = np.nan
+
+    legacy_to_0800 = {
+        "actual_timestamp_wit": "actual_timestamp_0800",
+        "actual_source": "actual_source_0800",
+        "delta": "delta_0800",
+        "delta_pct": "delta_pct_0800",
+        "actual_direction": "actual_direction_0800",
+        "direction_correct": "direction_correct_0800",
+    }
+    for old_column, new_column in legacy_to_0800.items():
+        if old_column in frame.columns:
+            missing = frame[new_column].isna() | (frame[new_column].astype(str) == "")
+            frame.loc[missing, new_column] = frame.loc[missing, old_column]
+
+    object_columns = [
+        column
+        for column in MONITORING_COLUMNS
+        if not (
+            column in {"reference_price", "estimate_tomorrow", "estimate_lower", "estimate_upper", "confidence"}
+            or column.startswith("actual_open_")
+            or column.startswith("delta_")
+            or column.startswith("delta_pct_")
+        )
+    ]
+    for column in object_columns:
+        frame[column] = frame[column].astype("object")
+
     return frame[MONITORING_COLUMNS]
 
 
@@ -77,6 +120,18 @@ def _replace_row(frame: pd.DataFrame, row: dict[str, object]) -> pd.DataFrame:
         frame.loc[same_date, MONITORING_COLUMNS] = pd.DataFrame([row], columns=MONITORING_COLUMNS).values
         return frame
     return pd.concat([frame, pd.DataFrame([row], columns=MONITORING_COLUMNS)], ignore_index=True)
+
+
+def _format_hours(hours: list[int] | tuple[int, ...]) -> str:
+    return ", ".join(f"{hour:02d}:00" for hour in hours)
+
+
+def _is_blank(value: object) -> bool:
+    return pd.isna(value) or str(value).strip() == ""
+
+
+def _missing_actual_hours(row: pd.Series) -> list[int]:
+    return [hour for hour in ACTUAL_HOURS if _is_blank(row.get(f"actual_open_{hour_suffix(hour)}", ""))]
 
 
 def capture_estimate(captured_at: datetime | None = None, path: Path = DATA_PATH) -> pd.DataFrame:
@@ -102,17 +157,19 @@ def capture_estimate(captured_at: datetime | None = None, path: Path = DATA_PATH
         "estimate_upper": float(tomorrow["Batas atas"]),
         "signal": signal.label,
         "confidence": signal.confidence,
-        "actual_timestamp_wit": "",
-        "actual_open_0800": "",
-        "actual_source": "",
-        "delta": "",
-        "delta_pct": "",
         "estimated_direction": "Naik" if estimate >= latest else "Turun",
-        "actual_direction": "",
-        "direction_correct": "",
-        "status": "Menunggu aktual 08:00 WIT",
+        "status": f"Menunggu aktual {_format_hours(ACTUAL_HOURS)} WIT",
         "notes": "Estimasi tersimpan otomatis dari data publik Yahoo Finance.",
     }
+    for hour in ACTUAL_HOURS:
+        suffix = hour_suffix(hour)
+        row[f"actual_timestamp_{suffix}"] = ""
+        row[f"actual_open_{suffix}"] = ""
+        row[f"actual_source_{suffix}"] = ""
+        row[f"delta_{suffix}"] = ""
+        row[f"delta_pct_{suffix}"] = ""
+        row[f"actual_direction_{suffix}"] = ""
+        row[f"direction_correct_{suffix}"] = ""
 
     frame = _replace_row(load_monitoring(path), row)
     frame = frame.sort_values(["forecast_date_wit"], ascending=False)
@@ -131,8 +188,8 @@ def _normalize_intraday_index(data: pd.DataFrame) -> pd.DataFrame:
     return frame.sort_index()
 
 
-def fetch_actual_open_0800(target_date_wit: str) -> ActualOpen | None:
-    target_at_wit = datetime.fromisoformat(f"{target_date_wit}T08:00:00").replace(tzinfo=WIT)
+def fetch_actual_at(target_date_wit: str, hour_wit: int) -> ActualOpen | None:
+    target_at_wit = datetime.fromisoformat(f"{target_date_wit}T{hour_wit:02d}:00:00").replace(tzinfo=WIT)
     target_at_utc = target_at_wit.astimezone(UTC)
     start = (target_at_utc - timedelta(hours=12)).date().isoformat()
     end = (target_at_utc + timedelta(days=1)).date().isoformat()
@@ -155,9 +212,8 @@ def fetch_actual_open_0800(target_date_wit: str) -> ActualOpen | None:
 
     at_or_after = frame.loc[frame.index >= target_at_utc]
     if at_or_after.empty:
-        candidate = frame.iloc[[-1]]
-    else:
-        candidate = at_or_after.iloc[[0]]
+        return None
+    candidate = at_or_after.iloc[[0]]
 
     timestamp_utc = candidate.index[0]
     if abs(timestamp_utc - target_at_utc) > pd.Timedelta(hours=2):
@@ -177,46 +233,80 @@ def update_actuals(path: Path = DATA_PATH) -> pd.DataFrame:
         return frame
 
     for index, row in frame.iterrows():
-        if str(row.get("status", "")).startswith("Selesai"):
+        missing_hours = _missing_actual_hours(row)
+        if not missing_hours:
             continue
         target_date = str(row["target_date_wit"])
-        actual = fetch_actual_open_0800(target_date)
-        if actual is None:
-            frame.at[index, "status"] = "Menunggu aktual 08:00 WIT"
-            frame.at[index, "notes"] = "Candle intraday 08:00 WIT belum tersedia."
-            continue
 
-        estimate = float(row["estimate_tomorrow"])
-        reference = float(row["reference_price"])
-        delta = actual.price - estimate
-        delta_pct = delta / estimate * 100
-        actual_direction = "Naik" if actual.price >= reference else "Turun"
-        direction_correct = str(row.get("estimated_direction", "")) == actual_direction
-        frame.at[index, "actual_timestamp_wit"] = actual.timestamp_wit.isoformat(timespec="seconds")
-        frame.at[index, "actual_open_0800"] = actual.price
-        frame.at[index, "actual_source"] = actual.source
-        frame.at[index, "delta"] = delta
-        frame.at[index, "delta_pct"] = delta_pct
-        frame.at[index, "actual_direction"] = actual_direction
-        frame.at[index, "direction_correct"] = direction_correct
-        frame.at[index, "status"] = "Selesai"
-        frame.at[index, "notes"] = "Aktual diisi dari candle intraday terdekat pada/setelah 08:00 WIT."
+        for hour in missing_hours:
+            actual = fetch_actual_at(target_date, hour)
+            if actual is None:
+                continue
+
+            suffix = hour_suffix(hour)
+            estimate = float(row["estimate_tomorrow"])
+            reference = float(row["reference_price"])
+            delta = actual.price - estimate
+            delta_pct = delta / estimate * 100
+            actual_direction = "Naik" if actual.price >= reference else "Turun"
+            direction_correct = str(row.get("estimated_direction", "")) == actual_direction
+            frame.at[index, f"actual_timestamp_{suffix}"] = actual.timestamp_wit.isoformat(timespec="seconds")
+            frame.at[index, f"actual_open_{suffix}"] = actual.price
+            frame.at[index, f"actual_source_{suffix}"] = actual.source
+            frame.at[index, f"delta_{suffix}"] = delta
+            frame.at[index, f"delta_pct_{suffix}"] = delta_pct
+            frame.at[index, f"actual_direction_{suffix}"] = actual_direction
+            frame.at[index, f"direction_correct_{suffix}"] = direction_correct
+
+        updated_missing_hours = _missing_actual_hours(frame.loc[index])
+        if not updated_missing_hours:
+            frame.at[index, "status"] = "Selesai"
+            frame.at[index, "notes"] = (
+                "Aktual diisi dari candle intraday terdekat pada/setelah "
+                f"{_format_hours(ACTUAL_HOURS)} WIT."
+            )
+        elif len(updated_missing_hours) < len(ACTUAL_HOURS):
+            frame.at[index, "status"] = "Sebagian selesai"
+            frame.at[index, "notes"] = f"Menunggu candle intraday {_format_hours(updated_missing_hours)} WIT."
+        else:
+            frame.at[index, "status"] = f"Menunggu aktual {_format_hours(updated_missing_hours)} WIT"
+            frame.at[index, "notes"] = f"Candle intraday {_format_hours(updated_missing_hours)} WIT belum tersedia."
 
     frame = frame.sort_values(["forecast_date_wit"], ascending=False)
     save_monitoring(frame, path)
     return frame
 
 
-def monitoring_summary(frame: pd.DataFrame) -> dict[str, float]:
-    completed = frame[frame["status"].astype(str).str.startswith("Selesai")].copy()
-    if completed.empty:
-        return {"count": 0, "mae": np.nan, "mape": np.nan, "direction_accuracy": np.nan}
-    completed["delta"] = pd.to_numeric(completed["delta"], errors="coerce")
-    completed["delta_pct"] = pd.to_numeric(completed["delta_pct"], errors="coerce")
-    direction = completed["direction_correct"].astype(str).str.lower().map({"true": True, "false": False})
-    return {
-        "count": float(len(completed)),
-        "mae": float(completed["delta"].abs().mean()),
-        "mape": float(completed["delta_pct"].abs().mean()),
-        "direction_accuracy": float(direction.mean() * 100) if direction.notna().any() else np.nan,
-    }
+def monitoring_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for hour in ACTUAL_HOURS:
+        suffix = hour_suffix(hour)
+        price = pd.to_numeric(frame[f"actual_open_{suffix}"], errors="coerce")
+        completed = frame.loc[price.notna()].copy()
+        if completed.empty:
+            rows.append(
+                {
+                    "Jam WIT": f"{hour:02d}:00",
+                    "Jumlah selesai": 0,
+                    "MAE": np.nan,
+                    "MAPE": np.nan,
+                    "Akurasi arah": np.nan,
+                    "Bias rata-rata": np.nan,
+                }
+            )
+            continue
+
+        delta = pd.to_numeric(completed[f"delta_{suffix}"], errors="coerce")
+        delta_pct = pd.to_numeric(completed[f"delta_pct_{suffix}"], errors="coerce")
+        direction = completed[f"direction_correct_{suffix}"].astype(str).str.lower().map({"true": True, "false": False})
+        rows.append(
+            {
+                "Jam WIT": f"{hour:02d}:00",
+                "Jumlah selesai": int(price.notna().sum()),
+                "MAE": float(delta.abs().mean()),
+                "MAPE": float(delta_pct.abs().mean()),
+                "Akurasi arah": float(direction.mean() * 100) if direction.notna().any() else np.nan,
+                "Bias rata-rata": float(delta.mean()),
+            }
+        )
+    return pd.DataFrame(rows)

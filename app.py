@@ -8,7 +8,7 @@ from gold_forecast.data import load_market_data
 from gold_forecast.direction_model import train_direction_model
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
-from gold_forecast.monitoring import WIT, load_monitoring, monitoring_summary
+from gold_forecast.monitoring import ACTUAL_HOURS, WIT, hour_suffix, load_monitoring, monitoring_summary
 from gold_forecast.signals import build_signal
 
 
@@ -224,10 +224,10 @@ def render_dashboard(
 
 
 def render_monitoring() -> None:
-    st.subheader("Monitoring Estimasi vs Pembukaan 08:00 WIT")
+    st.subheader("Monitoring Estimasi vs Aktual Intraday")
     st.caption(
         "Estimasi disimpan otomatis pada 23:59 WIT. Aktual diisi dari candle intraday "
-        "GC=F pertama pada/setelah 08:00 WIT hari berikutnya."
+        "GC=F pertama pada/setelah 08:00, 09:00, 10:00, 11:00, dan 12:00 WIT hari berikutnya."
     )
 
     frame = load_monitoring()
@@ -235,11 +235,9 @@ def render_monitoring() -> None:
         st.info("Belum ada data monitoring. Baris pertama akan dibuat oleh job 23:59 WIT.")
         return
 
+    timestamp_columns = ["forecast_timestamp_wit"] + [f"actual_timestamp_{hour_suffix(hour)}" for hour in ACTUAL_HOURS]
     timestamp_candidates = pd.concat(
-        [
-            pd.to_datetime(frame["forecast_timestamp_wit"], errors="coerce"),
-            pd.to_datetime(frame["actual_timestamp_wit"], errors="coerce"),
-        ]
+        [pd.to_datetime(frame[column], errors="coerce") for column in timestamp_columns if column in frame.columns]
     ).dropna()
     if timestamp_candidates.empty:
         st.warning("Data monitoring sudah tersedia, tetapi belum ada timestamp update yang valid.")
@@ -248,13 +246,31 @@ def render_monitoring() -> None:
         st.info(f"Data monitoring terakhir diperbarui: **{last_monitoring_update.strftime('%d %b %Y %H:%M:%S WIT')}**")
 
     summary = monitoring_summary(frame)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Jumlah selesai", f"{summary['count']:.0f}")
-    c2.metric("MAE monitoring", "-" if pd.isna(summary["mae"]) else f"${summary['mae']:,.2f}")
-    c3.metric("MAPE monitoring", "-" if pd.isna(summary["mape"]) else f"{summary['mape']:.2f}%")
-    c4.metric(
-        "Akurasi arah",
-        "-" if pd.isna(summary["direction_accuracy"]) else f"{summary['direction_accuracy']:.1f}%",
+    completed_summary = summary[pd.to_numeric(summary["Jumlah selesai"], errors="coerce") > 0]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total perbandingan selesai", f"{int(completed_summary['Jumlah selesai'].sum())}" if not completed_summary.empty else "0")
+    if completed_summary.empty:
+        c2.metric("Jam MAE terbaik", "-")
+        c3.metric("Jam arah terbaik", "-")
+    else:
+        best_mae = completed_summary.loc[pd.to_numeric(completed_summary["MAE"], errors="coerce").idxmin()]
+        best_direction = completed_summary.loc[pd.to_numeric(completed_summary["Akurasi arah"], errors="coerce").idxmax()]
+        c2.metric("Jam MAE terbaik", f"{best_mae['Jam WIT']} · ${best_mae['MAE']:,.2f}")
+        c3.metric("Jam arah terbaik", f"{best_direction['Jam WIT']} · {best_direction['Akurasi arah']:.1f}%")
+
+    st.markdown("**Summary Akurasi Per Jam Aktual**")
+    st.dataframe(
+        summary.style.format(
+            {
+                "MAE": "${:,.2f}",
+                "MAPE": "{:.2f}%",
+                "Akurasi arah": "{:.1f}%",
+                "Bias rata-rata": "${:+,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
     )
 
     display = frame.copy()
@@ -264,41 +280,51 @@ def render_monitoring() -> None:
         "estimate_lower",
         "estimate_upper",
         "confidence",
-        "actual_open_0800",
-        "delta",
-        "delta_pct",
     ]
+    for hour in ACTUAL_HOURS:
+        suffix = hour_suffix(hour)
+        numeric_columns.extend([f"actual_open_{suffix}", f"delta_{suffix}", f"delta_pct_{suffix}"])
     for column in numeric_columns:
         display[column] = pd.to_numeric(display[column], errors="coerce")
 
+    actual_column_order = [
+        field
+        for hour in ACTUAL_HOURS
+        for suffix in (hour_suffix(hour),)
+        for field in (
+            f"actual_timestamp_{suffix}",
+            f"actual_open_{suffix}",
+            f"delta_{suffix}",
+            f"delta_pct_{suffix}",
+            f"actual_direction_{suffix}",
+            f"direction_correct_{suffix}",
+        )
+    ]
     column_order = [
         "forecast_date_wit",
         "target_date_wit",
         "forecast_timestamp_wit",
         "reference_price",
         "estimate_tomorrow",
-        "actual_timestamp_wit",
-        "actual_open_0800",
-        "delta",
-        "delta_pct",
         "estimated_direction",
-        "actual_direction",
-        "direction_correct",
         "signal",
         "confidence",
         "status",
         "notes",
-    ]
+    ] + actual_column_order
+    format_columns = {
+        "estimate_tomorrow": "${:,.2f}",
+        "reference_price": "${:,.2f}",
+        "confidence": "{:.0f}%",
+    }
+    for hour in ACTUAL_HOURS:
+        suffix = hour_suffix(hour)
+        format_columns[f"actual_open_{suffix}"] = "${:,.2f}"
+        format_columns[f"delta_{suffix}"] = "${:+,.2f}"
+        format_columns[f"delta_pct_{suffix}"] = "{:+.2f}%"
     st.dataframe(
         display[column_order].style.format(
-            {
-                "estimate_tomorrow": "${:,.2f}",
-                "reference_price": "${:,.2f}",
-                "actual_open_0800": "${:,.2f}",
-                "delta": "${:+,.2f}",
-                "delta_pct": "{:+.2f}%",
-                "confidence": "{:.0f}%",
-            },
+            format_columns,
             na_rep="-",
         ),
         use_container_width=True,

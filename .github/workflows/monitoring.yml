@@ -14,6 +14,10 @@ on:
   schedule:
     - cron: "59 14 * * 0-5"
     - cron: "0 23 * * 0-5"
+    - cron: "0 0 * * 1-6"
+    - cron: "0 1 * * 1-6"
+    - cron: "0 2 * * 1-6"
+    - cron: "0 3 * * 1-6"
 
 permissions:
   contents: write
