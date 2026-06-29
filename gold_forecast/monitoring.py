@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -19,6 +19,8 @@ UTC = ZoneInfo("UTC")
 DATA_PATH = Path("data") / "monitoring.csv"
 MODEL_NAME = "Model 2 - Lintas Pasar"
 ACTUAL_HOURS = (8, 9, 10, 11, 12)
+SNAPSHOT_DELAY_GRACE_HOUR = 3
+NON_TRADING_STATUS = "Libur market / non-trading day"
 
 BASE_COLUMNS = [
     "forecast_date_wit",
@@ -35,6 +37,7 @@ BASE_COLUMNS = [
     "status",
     "notes",
 ]
+
 
 def hour_suffix(hour: int) -> str:
     return f"{hour:02d}00"
@@ -134,9 +137,24 @@ def _missing_actual_hours(row: pd.Series) -> list[int]:
     return [hour for hour in ACTUAL_HOURS if _is_blank(row.get(f"actual_open_{hour_suffix(hour)}", ""))]
 
 
+def _forecast_date_for_capture(captured_at: datetime) -> date:
+    if captured_at.hour < SNAPSHOT_DELAY_GRACE_HOUR:
+        return (captured_at - timedelta(days=1)).date()
+    return captured_at.date()
+
+
+def _is_weekend(target_date_wit: str) -> bool:
+    return datetime.fromisoformat(target_date_wit).date().weekday() >= 5
+
+
+def _mark_non_trading_day(frame: pd.DataFrame, index: int) -> None:
+    frame.at[index, "status"] = NON_TRADING_STATUS
+    frame.at[index, "notes"] = "Tidak ada pengujian aktual karena target jatuh pada akhir pekan atau hari libur pasar."
+
+
 def capture_estimate(captured_at: datetime | None = None, path: Path = DATA_PATH) -> pd.DataFrame:
     captured_at = captured_at or now_wit()
-    forecast_date = captured_at.date()
+    forecast_date = _forecast_date_for_capture(captured_at)
     target_date = forecast_date + timedelta(days=1)
 
     market = load_market_data()
@@ -237,6 +255,9 @@ def update_actuals(path: Path = DATA_PATH) -> pd.DataFrame:
         if not missing_hours:
             continue
         target_date = str(row["target_date_wit"])
+        if _is_weekend(target_date):
+            _mark_non_trading_day(frame, index)
+            continue
 
         for hour in missing_hours:
             actual = fetch_actual_at(target_date, hour)
