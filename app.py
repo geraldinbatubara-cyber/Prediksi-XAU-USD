@@ -17,7 +17,7 @@ st.title("Prediksi Harga Emas")
 st.caption("Estimasi hari bursa berikutnya dan tujuh hari ke depan")
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=60)
 def get_data() -> tuple[pd.DataFrame, pd.Timestamp]:
     return load_market_data(), pd.Timestamp.now(tz=WIT)
 
@@ -334,6 +334,10 @@ def render_monitoring() -> None:
 
 with st.sidebar:
     st.header("Pengaturan")
+    if st.button("Refresh data sekarang", use_container_width=True):
+        get_data.clear()
+        get_models.clear()
+        st.rerun()
     history_years = st.slider("Riwayat grafik (tahun)", 1, 10, 3)
     model_choice = st.radio(
         "Model prediksi",
