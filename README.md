@@ -27,12 +27,13 @@ T+7. Dashboard membandingkan Model 1 dan Model 2 pada horizon T+1 yang setara.
 
 ## Monitoring Estimasi
 
-Tab `Monitoring` membandingkan estimasi besok yang disimpan pukul 23:59 WIT
-dengan harga `Open` candle intraday `GC=F` pertama pada atau setelah pukul
-08:00, 09:00, 10:00, 11:00, dan 12:00 WIT hari berikutnya. Summary akurasi
-menampilkan jumlah perbandingan, MAE, MAPE, akurasi arah, dan bias rata-rata per
-jam aktual. Data monitoring disimpan di `data/monitoring.csv` dan diisi oleh
-GitHub Actions:
+Tab `Monitoring Model 2` dan `Monitoring Model 1` membandingkan estimasi besok
+yang disimpan pukul 23:59 WIT dengan harga `Open` candle intraday `GC=F`
+pertama pada atau setelah pukul 08:00, 09:00, 10:00, 11:00, dan 12:00 WIT hari
+berikutnya. Summary akurasi menampilkan jumlah perbandingan, MAE, MAPE, akurasi
+arah, dan bias rata-rata per jam aktual. Data Model 2 disimpan di
+`data/monitoring.csv`; data Model 1 disimpan di `data/monitoring_model1.csv`.
+Keduanya diisi oleh GitHub Actions:
 
 - `14:59 UTC` = `23:59 WIT` untuk menyimpan estimasi.
 - `23:00 UTC` = `08:00 WIT` untuk mengisi aktual hari berikutnya.

@@ -8,7 +8,15 @@ from gold_forecast.data import load_market_data
 from gold_forecast.direction_model import train_direction_model
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
-from gold_forecast.monitoring import ACTUAL_HOURS, WIT, hour_suffix, load_monitoring, monitoring_summary
+from gold_forecast.monitoring import (
+    ACTUAL_HOURS,
+    DATA_PATH,
+    MODEL_1_DATA_PATH,
+    WIT,
+    hour_suffix,
+    load_monitoring,
+    monitoring_summary,
+)
 from gold_forecast.signals import build_signal
 
 
@@ -223,14 +231,14 @@ def render_dashboard(
         )
 
 
-def render_monitoring() -> None:
-    st.subheader("Monitoring Estimasi vs Aktual Intraday")
+def render_monitoring(title: str, data_path) -> None:
+    st.subheader(f"{title}: Estimasi vs Aktual Intraday")
     st.caption(
         "Estimasi disimpan otomatis pada 23:59 WIT. Aktual diisi dari candle intraday "
         "GC=F pertama pada/setelah 08:00, 09:00, 10:00, 11:00, dan 12:00 WIT hari berikutnya."
     )
 
-    frame = load_monitoring()
+    frame = load_monitoring(data_path)
     if frame.empty:
         st.info("Belum ada data monitoring. Baris pertama akan dibuat oleh job 23:59 WIT.")
         return
@@ -358,7 +366,9 @@ except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
 
-dashboard_tab, monitoring_tab = st.tabs(["Dashboard", "Monitoring"])
+dashboard_tab, monitoring_model_2_tab, monitoring_model_1_tab = st.tabs(
+    ["Dashboard", "Monitoring Model 2", "Monitoring Model 1"]
+)
 with dashboard_tab:
     render_dashboard(
         market,
@@ -371,5 +381,8 @@ with dashboard_tab:
         history_years,
     )
 
-with monitoring_tab:
-    render_monitoring()
+with monitoring_model_2_tab:
+    render_monitoring("Monitoring Model 2", DATA_PATH)
+
+with monitoring_model_1_tab:
+    render_monitoring("Monitoring Model 1", MODEL_1_DATA_PATH)

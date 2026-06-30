@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from gold_forecast.monitoring import capture_estimate, update_actuals
+from gold_forecast.monitoring import capture_all_estimates, update_all_actuals
 
 
 def main() -> None:
@@ -18,11 +18,13 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.mode == "capture-estimate":
-        frame = capture_estimate()
-        print(f"Saved estimate rows: {len(frame)}")
+        frames = capture_all_estimates()
+        for model_name, frame in frames.items():
+            print(f"Saved estimate rows for {model_name}: {len(frame)}")
     else:
-        frame = update_actuals()
-        print(f"Updated monitoring rows: {len(frame)}")
+        frames = update_all_actuals()
+        for model_name, frame in frames.items():
+            print(f"Updated monitoring rows for {model_name}: {len(frame)}")
 
 
 if __name__ == "__main__":

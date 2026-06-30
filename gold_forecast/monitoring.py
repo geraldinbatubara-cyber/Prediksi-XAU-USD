@@ -10,6 +10,7 @@ import pandas as pd
 import yfinance as yf
 
 from gold_forecast.data import load_market_data
+from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
 from gold_forecast.signals import build_signal
 
@@ -17,7 +18,9 @@ from gold_forecast.signals import build_signal
 WIT = ZoneInfo("Asia/Jayapura")
 UTC = ZoneInfo("UTC")
 DATA_PATH = Path("data") / "monitoring.csv"
-MODEL_NAME = "Model 2 - Lintas Pasar"
+MODEL_1_DATA_PATH = Path("data") / "monitoring_model1.csv"
+MODEL_1_NAME = "Model 1 - Harga Historis"
+MODEL_2_NAME = "Model 2 - Lintas Pasar"
 ACTUAL_HOURS = (8, 9, 10, 11, 12)
 SNAPSHOT_DELAY_GRACE_HOUR = 3
 NON_TRADING_STATUS = "Libur market / non-trading day"
@@ -152,13 +155,24 @@ def _mark_non_trading_day(frame: pd.DataFrame, index: int) -> None:
     frame.at[index, "notes"] = "Tidak ada pengujian aktual karena target jatuh pada akhir pekan atau hari libur pasar."
 
 
-def capture_estimate(captured_at: datetime | None = None, path: Path = DATA_PATH) -> pd.DataFrame:
+def _train_monitoring_model(market: pd.DataFrame, model_name: str):
+    if model_name == MODEL_1_NAME:
+        return train_and_forecast(market["gold"])
+    return train_model_v2(market)
+
+
+def capture_estimate(
+    captured_at: datetime | None = None,
+    path: Path = DATA_PATH,
+    model_name: str = MODEL_2_NAME,
+    market: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     captured_at = captured_at or now_wit()
     forecast_date = _forecast_date_for_capture(captured_at)
     target_date = forecast_date + timedelta(days=1)
 
-    market = load_market_data()
-    result = train_model_v2(market)
+    market = market if market is not None else load_market_data()
+    result = _train_monitoring_model(market, model_name)
     signal = build_signal(market, result.forecast)
     tomorrow = result.forecast.iloc[0]
     latest = float(market["gold"].dropna().iloc[-1])
@@ -168,7 +182,7 @@ def capture_estimate(captured_at: datetime | None = None, path: Path = DATA_PATH
         "forecast_date_wit": forecast_date.isoformat(),
         "target_date_wit": target_date.isoformat(),
         "forecast_timestamp_wit": captured_at.isoformat(timespec="seconds"),
-        "model": MODEL_NAME,
+        "model": model_name,
         "reference_price": latest,
         "estimate_tomorrow": estimate,
         "estimate_lower": float(tomorrow["Batas bawah"]),
@@ -193,6 +207,25 @@ def capture_estimate(captured_at: datetime | None = None, path: Path = DATA_PATH
     frame = frame.sort_values(["forecast_date_wit"], ascending=False)
     save_monitoring(frame, path)
     return frame
+
+
+def capture_all_estimates(captured_at: datetime | None = None) -> dict[str, pd.DataFrame]:
+    captured_at = captured_at or now_wit()
+    market = load_market_data()
+    return {
+        MODEL_1_NAME: capture_estimate(
+            captured_at=captured_at,
+            path=MODEL_1_DATA_PATH,
+            model_name=MODEL_1_NAME,
+            market=market,
+        ),
+        MODEL_2_NAME: capture_estimate(
+            captured_at=captured_at,
+            path=DATA_PATH,
+            model_name=MODEL_2_NAME,
+            market=market,
+        ),
+    }
 
 
 def _normalize_intraday_index(data: pd.DataFrame) -> pd.DataFrame:
@@ -296,6 +329,13 @@ def update_actuals(path: Path = DATA_PATH) -> pd.DataFrame:
     frame = frame.sort_values(["forecast_date_wit"], ascending=False)
     save_monitoring(frame, path)
     return frame
+
+
+def update_all_actuals() -> dict[str, pd.DataFrame]:
+    return {
+        MODEL_1_NAME: update_actuals(MODEL_1_DATA_PATH),
+        MODEL_2_NAME: update_actuals(DATA_PATH),
+    }
 
 
 def monitoring_summary(frame: pd.DataFrame) -> pd.DataFrame:
