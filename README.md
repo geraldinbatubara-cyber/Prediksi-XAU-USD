@@ -25,6 +25,14 @@ Model 2 memakai gradient boosting dan menambahkan DXY, yield Treasury 10 tahun,
 minyak, VIX, serta perak. Satu model direct dilatih untuk setiap horizon T+1 sampai
 T+7. Dashboard membandingkan Model 1 dan Model 2 pada horizon T+1 yang setara.
 
+## Simulasi Trading
+
+Tab `Simulasi` membandingkan simulasi Model 1 dan Model 2 secara terpisah.
+Asumsi awal: modal USD 1.000, lot mikro 0.01, TP USD 5 per posisi, biaya swap
+USD 0.2 per posisi per hari, maksimal 8 BUY dan 10 SELL. Posisi dibuat dari
+sinyal 23:59 WIT dan ditutup keesokan hari atau saat TP tersentuh. Simulasi
+memakai OHLC harian `GC=F`, bukan data tick broker.
+
 ## Monitoring Estimasi
 
 Tab `Monitoring Model 2` dan `Monitoring Model 1` membandingkan estimasi besok

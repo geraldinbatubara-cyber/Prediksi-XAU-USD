@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from gold_forecast.data import load_market_data
+from gold_forecast.data import load_gold_data, load_market_data
 from gold_forecast.direction_model import train_direction_model
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
@@ -18,6 +18,7 @@ from gold_forecast.monitoring import (
     monitoring_summary,
 )
 from gold_forecast.signals import build_signal
+from gold_forecast.simulation import simulate_model_1, simulate_model_2
 
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -30,12 +31,25 @@ def get_data() -> tuple[pd.DataFrame, pd.Timestamp]:
     return load_market_data(), pd.Timestamp.now(tz=WIT)
 
 
+@st.cache_data(ttl=60)
+def get_gold_ohlc() -> pd.DataFrame:
+    return load_gold_data()
+
+
 @st.cache_data(ttl=3600)
 def get_models(market_data: pd.DataFrame):
     return (
         train_and_forecast(market_data["gold"]),
         train_model_v2(market_data),
         train_direction_model(market_data),
+    )
+
+
+@st.cache_data(ttl=3600)
+def get_simulations(market_data: pd.DataFrame, gold_ohlc: pd.DataFrame):
+    return (
+        simulate_model_1(market_data, gold_ohlc),
+        simulate_model_2(market_data, gold_ohlc),
     )
 
 
@@ -231,6 +245,78 @@ def render_dashboard(
         )
 
 
+def _render_simulation_result(title: str, result) -> None:
+    st.subheader(title)
+    summary = result.summary
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Balance akhir", f"${summary['Balance akhir']:,.2f}", f"{summary['Total net P/L']:+,.2f}")
+    c2.metric("Jumlah transaksi", f"{summary['Jumlah transaksi']:.0f}")
+    c3.metric("Win rate", "-" if pd.isna(summary["Win rate"]) else f"{summary['Win rate']:.1f}%")
+    c4.metric("Max drawdown", f"${summary['Max drawdown']:,.2f}")
+
+    detail = pd.DataFrame(
+        [
+            {"Metrik": "Total BUY", "Nilai": summary["Total BUY"]},
+            {"Metrik": "Total SELL", "Nilai": summary["Total SELL"]},
+            {"Metrik": "Modal awal", "Nilai": summary["Modal awal"]},
+            {"Metrik": "Total net P/L", "Nilai": summary["Total net P/L"]},
+        ]
+    )
+    st.dataframe(detail, use_container_width=True, hide_index=True)
+
+    if result.equity_curve.empty:
+        st.info("Belum ada transaksi simulasi yang dapat dihitung.")
+        return
+
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=result.equity_curve.index,
+            y=result.equity_curve["Balance"],
+            name="Balance",
+            line=dict(width=3),
+        )
+    )
+    figure.update_layout(title=f"Equity Curve {title}", yaxis_title="USD", height=360)
+    st.plotly_chart(figure, use_container_width=True)
+
+    trades = result.trades.copy()
+    numeric_columns = ["Lot", "Prediksi", "Entry", "Exit", "Gross P/L", "Swap", "Net P/L", "Balance"]
+    st.dataframe(
+        trades.style.format(
+            {
+                "Lot": "{:.2f}",
+                "Prediksi": "${:,.2f}",
+                "Entry": "${:,.2f}",
+                "Exit": "${:,.2f}",
+                "Gross P/L": "${:+,.2f}",
+                "Swap": "${:+,.2f}",
+                "Net P/L": "${:+,.2f}",
+                "Balance": "${:,.2f}",
+            },
+            subset=[column for column in numeric_columns if column in trades.columns],
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_simulation(model_1_simulation, model_2_simulation) -> None:
+    st.subheader("Simulasi Trading XAU/USD")
+    st.caption(
+        "Asumsi: modal awal USD 1.000, lot mikro 0.01, TP USD 5 per posisi, "
+        "swap USD 0.2 per posisi per hari, maksimal 8 BUY dan 10 SELL. "
+        "Sinyal dibuat pada 23:59 WIT; posisi ditutup keesokan hari atau saat TP tersentuh. "
+        "Simulasi memakai OHLC harian GC=F, bukan data tick broker."
+    )
+
+    model_2_section, model_1_section = st.tabs(["Simulasi Model 2", "Simulasi Model 1"])
+    with model_2_section:
+        _render_simulation_result("Simulasi Model 2", model_2_simulation)
+    with model_1_section:
+        _render_simulation_result("Simulasi Model 1", model_1_simulation)
+
+
 def render_monitoring(title: str, data_path) -> None:
     st.subheader(f"{title}: Estimasi vs Aktual Intraday")
     st.caption(
@@ -344,7 +430,9 @@ with st.sidebar:
     st.header("Pengaturan")
     if st.button("Refresh data sekarang", use_container_width=True):
         get_data.clear()
+        get_gold_ohlc.clear()
         get_models.clear()
+        get_simulations.clear()
         st.rerun()
     history_years = st.slider("Riwayat grafik (tahun)", 1, 10, 3)
     model_choice = st.radio(
@@ -361,13 +449,15 @@ with st.sidebar:
 
 try:
     market, data_fetched_at = get_data()
+    gold_ohlc = get_gold_ohlc()
     model_1, model_2, direction_model = get_models(market)
+    model_1_simulation, model_2_simulation = get_simulations(market, gold_ohlc)
 except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
 
-dashboard_tab, monitoring_model_2_tab, monitoring_model_1_tab = st.tabs(
-    ["Dashboard", "Monitoring Model 2", "Monitoring Model 1"]
+dashboard_tab, simulation_tab, monitoring_model_2_tab, monitoring_model_1_tab = st.tabs(
+    ["Dashboard", "Simulasi", "Monitoring Model 2", "Monitoring Model 1"]
 )
 with dashboard_tab:
     render_dashboard(
@@ -386,3 +476,6 @@ with monitoring_model_2_tab:
 
 with monitoring_model_1_tab:
     render_monitoring("Monitoring Model 1", MODEL_1_DATA_PATH)
+
+with simulation_tab:
+    render_simulation(model_1_simulation, model_2_simulation)
