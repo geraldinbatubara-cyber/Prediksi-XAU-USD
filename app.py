@@ -3,6 +3,10 @@ from __future__ import annotations
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:  # pragma: no cover - handled in deployed UI
+    st_autorefresh = None
 
 from gold_forecast.data import load_gold_data, load_market_data
 from gold_forecast.direction_model import train_direction_model
@@ -1100,6 +1104,26 @@ def render_monitoring(title: str, data_path) -> None:
 
 with st.sidebar:
     st.header("Pengaturan")
+    auto_refresh = st.checkbox("Auto refresh dashboard", value=True)
+    refresh_interval_seconds = st.selectbox(
+        "Interval auto refresh",
+        options=[60, 300, 900],
+        index=0,
+        format_func=lambda value: f"{value // 60} menit" if value >= 60 else f"{value} detik",
+        disabled=not auto_refresh,
+    )
+    if auto_refresh:
+        if st_autorefresh is None:
+            st.warning("Auto refresh belum aktif karena dependency belum tersedia.")
+        else:
+            refresh_count = st_autorefresh(
+                interval=refresh_interval_seconds * 1000,
+                key="dashboard_auto_refresh",
+            )
+            st.caption(
+                f"Auto refresh aktif tiap {refresh_interval_seconds // 60} menit. "
+                f"Refresh ke-{refresh_count} | {pd.Timestamp.now(tz=WIT).strftime('%H:%M:%S WIT')}"
+            )
     if st.button("Refresh data sekarang", use_container_width=True):
         get_data.clear()
         get_gold_ohlc.clear()
