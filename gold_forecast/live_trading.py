@@ -7,7 +7,7 @@ import pandas as pd
 
 from gold_forecast.monitoring import WIT
 from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT
-from gold_forecast.strategy_optimizer import _indicator_predictions
+from gold_forecast.strategy_optimizer import _indicator_predictions, _rsi
 
 
 LIVE_TRADING_PATH = Path("data/live_trading_optimizer.csv")
@@ -170,6 +170,114 @@ def _current_optimizer_signal(
     }
 
 
+def _signal_waiting_state(gold_ohlc: pd.DataFrame, params: dict[str, object]) -> dict[str, object]:
+    if gold_ohlc.empty:
+        return {
+            "Status sinyal": "Data belum tersedia",
+            "Yang ditunggu": "Menunggu data harga emas terbaru.",
+            "Kondisi BUY": "-",
+            "Kondisi SELL": "-",
+            "Momentum saat ini": np.nan,
+            "Threshold": float(params["Threshold entry (%)"]),
+            "MA cepat": np.nan,
+            "MA lambat": np.nan,
+            "RSI": np.nan,
+        }
+
+    mode = str(params["Mode"])
+    fast_window = int(params["Fast MA"])
+    slow_window = int(params["Slow MA"])
+    momentum_days = int(params["Momentum hari"])
+    threshold = float(params["Threshold entry (%)"])
+    close = gold_ohlc["Close"].astype(float)
+    high = gold_ohlc["High"].astype(float)
+    low = gold_ohlc["Low"].astype(float)
+    latest_date = pd.Timestamp(gold_ohlc.index[-1])
+    latest_close = float(close.iloc[-1])
+    fast_ma = close.rolling(fast_window).mean()
+    slow_ma = close.rolling(slow_window).mean()
+    momentum = close.pct_change(momentum_days) * 100
+    rsi = _rsi(close)
+    previous_high = high.rolling(slow_window).max().shift(1)
+    previous_low = low.rolling(slow_window).min().shift(1)
+
+    latest_fast = float(fast_ma.iloc[-1]) if pd.notna(fast_ma.iloc[-1]) else np.nan
+    latest_slow = float(slow_ma.iloc[-1]) if pd.notna(slow_ma.iloc[-1]) else np.nan
+    latest_momentum = float(momentum.iloc[-1]) if pd.notna(momentum.iloc[-1]) else np.nan
+    latest_rsi = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else np.nan
+    latest_previous_high = float(previous_high.iloc[-1]) if pd.notna(previous_high.iloc[-1]) else np.nan
+    latest_previous_low = float(previous_low.iloc[-1]) if pd.notna(previous_low.iloc[-1]) else np.nan
+
+    if mode == "Trend":
+        buy_ready = latest_close > latest_fast and latest_fast > latest_slow and latest_momentum > threshold
+        sell_ready = latest_close < latest_fast and latest_fast < latest_slow and latest_momentum < -threshold
+        buy_conditions = [
+            f"Close > MA cepat: {latest_close:,.2f} > {latest_fast:,.2f}",
+            f"MA cepat > MA lambat: {latest_fast:,.2f} > {latest_slow:,.2f}",
+            f"Momentum {momentum_days} hari > +{threshold:.2f}%: {latest_momentum:+.2f}%",
+        ]
+        sell_conditions = [
+            f"Close < MA cepat: {latest_close:,.2f} < {latest_fast:,.2f}",
+            f"MA cepat < MA lambat: {latest_fast:,.2f} < {latest_slow:,.2f}",
+            f"Momentum {momentum_days} hari < -{threshold:.2f}%: {latest_momentum:+.2f}%",
+        ]
+        waiting = "Menunggu alignment tren: BUY jika harga dan MA cepat berada di atas MA lambat; SELL jika kebalikannya."
+    elif mode == "Breakout":
+        buy_ready = latest_close > latest_previous_high and latest_momentum > 0
+        sell_ready = latest_close < latest_previous_low and latest_momentum < 0
+        buy_conditions = [
+            f"Close > high {slow_window} hari sebelumnya: {latest_close:,.2f} > {latest_previous_high:,.2f}",
+            f"Momentum {momentum_days} hari > 0: {latest_momentum:+.2f}%",
+        ]
+        sell_conditions = [
+            f"Close < low {slow_window} hari sebelumnya: {latest_close:,.2f} < {latest_previous_low:,.2f}",
+            f"Momentum {momentum_days} hari < 0: {latest_momentum:+.2f}%",
+        ]
+        waiting = "Menunggu breakout: harga menembus high/low periode acuan dengan momentum searah."
+    elif mode == "Pullback":
+        buy_ready = latest_close > latest_slow and latest_rsi < 42 and latest_momentum > -threshold
+        sell_ready = latest_close < latest_slow and latest_rsi > 58 and latest_momentum < threshold
+        buy_conditions = [
+            f"Close > MA lambat: {latest_close:,.2f} > {latest_slow:,.2f}",
+            f"RSI < 42: {latest_rsi:.1f}",
+            f"Momentum {momentum_days} hari > -{threshold:.2f}%: {latest_momentum:+.2f}%",
+        ]
+        sell_conditions = [
+            f"Close < MA lambat: {latest_close:,.2f} < {latest_slow:,.2f}",
+            f"RSI > 58: {latest_rsi:.1f}",
+            f"Momentum {momentum_days} hari < +{threshold:.2f}%: {latest_momentum:+.2f}%",
+        ]
+        waiting = "Menunggu pullback: harga tetap di sisi tren utama sambil RSI masuk area koreksi."
+    else:
+        buy_ready = sell_ready = False
+        buy_conditions = ["Mode strategi tidak dikenali."]
+        sell_conditions = ["Mode strategi tidak dikenali."]
+        waiting = "Menunggu mode strategi yang valid."
+
+    if buy_ready:
+        status = "Kondisi BUY siap"
+    elif sell_ready:
+        status = "Kondisi SELL siap"
+    else:
+        status = "Belum ada sinyal valid"
+
+    return {
+        "Status sinyal": status,
+        "Yang ditunggu": waiting,
+        "Kondisi BUY": " | ".join(buy_conditions),
+        "Kondisi SELL": " | ".join(sell_conditions),
+        "Tanggal evaluasi": latest_date,
+        "Harga terakhir": latest_close,
+        "Momentum saat ini": latest_momentum,
+        "Threshold": threshold,
+        "MA cepat": latest_fast,
+        "MA lambat": latest_slow,
+        "RSI": latest_rsi,
+        "High acuan": latest_previous_high,
+        "Low acuan": latest_previous_low,
+    }
+
+
 def _unrealized(direction: str, entry_price: float, current_price: float, lot: float) -> float:
     units = lot * CONTRACT_OUNCES_PER_LOT
     if direction == "BUY":
@@ -327,6 +435,7 @@ def run_live_trading_update(
         latest_price = np.nan
 
     signal = _current_optimizer_signal(usable_gold, params, now_wit)
+    waiting_state = _signal_waiting_state(usable_gold, params)
     ledger = _maybe_open_position(ledger, signal, params, now_wit, can_trade, session_note)
     save_live_ledger(ledger, path)
 
@@ -365,6 +474,7 @@ def run_live_trading_update(
         "summary": summary,
         "params": params,
         "signal": signal,
+        "waiting_state": waiting_state,
         "ledger": ledger,
         "signals": signal_rows,
         "open_positions": open_positions,

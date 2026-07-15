@@ -820,6 +820,7 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
     summary = live["summary"]
     params = live["params"]
     signal = live["signal"]
+    waiting_state = live["waiting_state"]
     signals = live["signals"].copy()
     open_positions = live["open_positions"].copy()
     closed_positions = live["closed_positions"].copy()
@@ -870,7 +871,10 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
 
     st.markdown("**Sinyal Strategi Saat Ini**")
     if signal is None:
-        st.info("Belum ada sinyal optimizer yang memenuhi threshold dari data terbaru.")
+        st.info(
+            "Belum ada sinyal optimizer yang memenuhi threshold dari data terbaru. "
+            f"Status sekarang: **{waiting_state['Status sinyal']}**."
+        )
     else:
         signal_direction = signal["arah"]
         signal_message = (
@@ -884,6 +888,34 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
             st.error(signal_message)
         else:
             st.info(signal_message)
+
+    st.markdown("**Sinyal yang Sedang Ditunggu**")
+    st.write(waiting_state["Yang ditunggu"])
+    w1, w2, w3, w4 = st.columns(4)
+    w1.metric(
+        "Momentum sekarang",
+        "-" if pd.isna(waiting_state["Momentum saat ini"]) else f"{waiting_state['Momentum saat ini']:+.2f}%",
+        f"Threshold {waiting_state['Threshold']:.2f}%",
+    )
+    w2.metric("MA cepat", "-" if pd.isna(waiting_state["MA cepat"]) else f"${waiting_state['MA cepat']:,.2f}")
+    w3.metric("MA lambat", "-" if pd.isna(waiting_state["MA lambat"]) else f"${waiting_state['MA lambat']:,.2f}")
+    w4.metric("RSI", "-" if pd.isna(waiting_state["RSI"]) else f"{waiting_state['RSI']:.1f}")
+
+    waiting_frame = pd.DataFrame(
+        [
+            {
+                "Posisi yang ditunggu": "BUY",
+                "Kondisi strategi": waiting_state["Kondisi BUY"],
+                "Status": "Siap" if waiting_state["Status sinyal"] == "Kondisi BUY siap" else "Menunggu",
+            },
+            {
+                "Posisi yang ditunggu": "SELL",
+                "Kondisi strategi": waiting_state["Kondisi SELL"],
+                "Status": "Siap" if waiting_state["Status sinyal"] == "Kondisi SELL siap" else "Menunggu",
+            },
+        ]
+    )
+    st.dataframe(waiting_frame, use_container_width=True, hide_index=True)
 
     format_columns = {
         "lot": "{:.2f}",
