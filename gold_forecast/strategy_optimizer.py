@@ -5,16 +5,21 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT, SimulationResult, _result, _simulate_predictions
+from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT, SimulationResult, _result
 
 
 OPTIMIZATION_START = pd.Timestamp("2025-01-01")
 OPTIMIZATION_END = pd.Timestamp("2026-06-30")
+INITIAL_EQUITY = 1000.0
+PHASE_GROWTH = 0.20
+BUY_SWAP_PER_001_LOT = 0.2
+SELL_SWAP_PER_001_LOT = 0.0
 
 
 @dataclass
 class DynamicPosition:
     position_id: int
+    phase: int
     model_name: str
     strategy_name: str
     signal_date: pd.Timestamp
@@ -29,6 +34,14 @@ class DynamicPosition:
     entry_threshold_pct: float
     max_positions: int
     swap_paid: float = 0.0
+
+
+@dataclass
+class MultiPhaseSimulationResult:
+    summary: dict[str, float]
+    phases: pd.DataFrame
+    trades: pd.DataFrame
+    equity_curve: pd.DataFrame
 
 
 def _rsi(close: pd.Series, window: int = 14) -> pd.Series:
@@ -98,225 +111,15 @@ def _indicator_predictions(
     return predictions.dropna()
 
 
-def _strategy_score(summary: dict[str, float]) -> tuple[float, float, float, float]:
-    target_rank = 1.0 if summary["Target tercapai"] else 0.0
-    target_date = summary["Tanggal target"]
-    days_to_target = 9999.0
-    if target_rank and not pd.isna(target_date):
-        days_to_target = float((pd.Timestamp(target_date) - OPTIMIZATION_START).days)
-    return (
-        target_rank,
-        -days_to_target,
-        float(summary["Equity akhir"]),
-        -float(summary["Max drawdown"]),
-    )
-
-
-def _dynamic_unrealized(position: DynamicPosition, price: float) -> float:
-    units = position.lot_size * CONTRACT_OUNCES_PER_LOT
-    if position.direction == "BUY":
-        return (price - position.entry_price) * units
-    return (position.entry_price - price) * units
-
-
-def _dynamic_close_row(
-    position: DynamicPosition,
-    exit_date: pd.Timestamp,
-    exit_price: float,
-    exit_reason: str,
-    cash_balance: float,
-) -> dict[str, object]:
-    gross_pnl = _dynamic_unrealized(position, exit_price)
-    net_pnl = gross_pnl - position.swap_paid
-    return {
-        "Model": position.model_name,
-        "Strategi": position.strategy_name,
-        "Position ID": position.position_id,
-        "Tanggal sinyal": position.signal_date,
-        "Waktu sinyal": "23:59 WIT",
-        "Tanggal entry": position.signal_date,
-        "Waktu entry": "23:59 WIT",
-        "Tanggal tutup": exit_date,
-        "Waktu tutup": "Saat TP/SL tersentuh" if exit_reason in {"TP tersentuh", "SL tersentuh"} else "Close harian",
-        "Arah": position.direction,
-        "Lot": position.lot_size,
-        "Confidence": position.confidence,
-        "Prediksi": position.prediction,
-        "Expected change (%)": position.expected_change_pct,
-        "Entry": position.entry_price,
-        "Exit": exit_price,
-        "Alasan exit": exit_reason,
-        "TP (USD)": position.take_profit_usd,
-        "SL (USD)": np.nan if position.stop_loss_usd is None else position.stop_loss_usd,
-        "Threshold entry (%)": position.entry_threshold_pct,
-        "Gross P/L": gross_pnl,
-        "Swap": -position.swap_paid,
-        "Net P/L": net_pnl,
-        "Balance": cash_balance,
-        "Batas posisi": position.max_positions,
-    }
-
-
-def _simulate_dynamic_predictions(
-    signals: pd.DataFrame,
-    gold_ohlc: pd.DataFrame,
-    model_name: str,
-    *,
-    initial_balance: float = 1000.0,
-    take_profit_usd: float = 15.0,
-    swap_per_position: float = 0.2,
-    max_buy_positions: int = 8,
-    max_sell_positions: int = 10,
-    entry_threshold_pct: float = 0.15,
-    stop_loss_usd: float | None = 10.0,
-    strategy_name: str = "Strategi Terbaik v.2",
-    target_equity: float = 1200.0,
-) -> SimulationResult:
-    cash_balance = initial_balance
-    next_position_id = 1
-    closed_rows: list[dict[str, object]] = []
-    equity_rows: list[dict[str, object]] = []
-    open_positions: list[DynamicPosition] = []
-    if signals.empty:
-        return _result(closed_rows, equity_rows, initial_balance, target_equity)
-
-    signal_dates = set(signals.index)
-
-    for current_date, candle in gold_ohlc.iterrows():
-        if current_date < signals.index.min():
-            continue
-
-        high = float(candle["High"])
-        low = float(candle["Low"])
-        close = float(candle["Close"])
-
-        still_open: list[DynamicPosition] = []
-        for position in open_positions:
-            units = position.lot_size * CONTRACT_OUNCES_PER_LOT
-            take_profit_points = position.take_profit_usd / units
-            stop_loss_points = None if position.stop_loss_usd is None else position.stop_loss_usd / units
-            if position.direction == "BUY":
-                tp_price = position.entry_price + take_profit_points
-                sl_price = None if stop_loss_points is None else position.entry_price - stop_loss_points
-                hit_tp = high >= tp_price
-                hit_sl = sl_price is not None and low <= sl_price
-                if hit_sl:
-                    exit_price = sl_price
-                    exit_reason = "SL tersentuh"
-                elif hit_tp:
-                    exit_price = tp_price
-                    exit_reason = "TP tersentuh"
-                else:
-                    still_open.append(position)
-                    continue
-            else:
-                tp_price = position.entry_price - take_profit_points
-                sl_price = None if stop_loss_points is None else position.entry_price + stop_loss_points
-                hit_tp = low <= tp_price
-                hit_sl = sl_price is not None and high >= sl_price
-                if hit_sl:
-                    exit_price = sl_price
-                    exit_reason = "SL tersentuh"
-                elif hit_tp:
-                    exit_price = tp_price
-                    exit_reason = "TP tersentuh"
-                else:
-                    still_open.append(position)
-                    continue
-
-            cash_balance += _dynamic_unrealized(position, exit_price)
-            closed_rows.append(_dynamic_close_row(position, current_date, exit_price, exit_reason, cash_balance))
-        open_positions = still_open
-
-        for position in open_positions:
-            position.swap_paid += swap_per_position
-            cash_balance -= swap_per_position
-
-        if current_date in signal_dates:
-            signal = signals.loc[current_date]
-            prediction = float(signal["prediction"])
-            lot_size = float(signal["lot_size"])
-            confidence = float(signal["confidence"])
-            expected_change_pct = (prediction / close - 1) * 100
-            buy_count = sum(position.direction == "BUY" for position in open_positions)
-            sell_count = sum(position.direction == "SELL" for position in open_positions)
-
-            if expected_change_pct > 0 and expected_change_pct >= entry_threshold_pct:
-                direction = "BUY"
-                max_positions = max_buy_positions
-                can_open = buy_count < max_buy_positions
-            elif expected_change_pct < 0 and abs(expected_change_pct) >= entry_threshold_pct:
-                direction = "SELL"
-                max_positions = max_sell_positions
-                can_open = sell_count < max_sell_positions
-            else:
-                can_open = False
-
-            if can_open:
-                open_positions.append(
-                    DynamicPosition(
-                        position_id=next_position_id,
-                        model_name=model_name,
-                        strategy_name=strategy_name,
-                        signal_date=current_date,
-                        direction=direction,
-                        lot_size=lot_size,
-                        confidence=confidence,
-                        entry_price=close,
-                        prediction=prediction,
-                        expected_change_pct=expected_change_pct,
-                        take_profit_usd=take_profit_usd,
-                        stop_loss_usd=stop_loss_usd,
-                        entry_threshold_pct=entry_threshold_pct,
-                        max_positions=max_positions,
-                    )
-                )
-                next_position_id += 1
-
-        unrealized = sum(_dynamic_unrealized(position, close) for position in open_positions)
-        equity = cash_balance + unrealized
-        equity_rows.append(
-            {
-                "Tanggal": current_date,
-                "Balance": cash_balance,
-                "Equity": equity,
-                "Unrealized P/L": unrealized,
-                "Open BUY": sum(position.direction == "BUY" for position in open_positions),
-                "Open SELL": sum(position.direction == "SELL" for position in open_positions),
-                "Target equity tercapai": equity >= target_equity,
-            }
-        )
-
-        if equity >= target_equity:
-            for position in open_positions:
-                cash_balance += _dynamic_unrealized(position, close)
-                closed_rows.append(
-                    _dynamic_close_row(position, current_date, close, "Target equity tercapai", cash_balance)
-                )
-            open_positions = []
-            equity_rows[-1]["Balance"] = cash_balance
-            equity_rows[-1]["Equity"] = cash_balance
-            equity_rows[-1]["Unrealized P/L"] = 0.0
-            equity_rows[-1]["Open BUY"] = 0
-            equity_rows[-1]["Open SELL"] = 0
-            break
-
-    if open_positions:
-        final_date = gold_ohlc.index[-1]
-        final_close = float(gold_ohlc.iloc[-1]["Close"])
-        for position in open_positions:
-            cash_balance += _dynamic_unrealized(position, final_close)
-            closed_rows.append(
-                _dynamic_close_row(position, final_date, final_close, "Akhir periode data", cash_balance)
-            )
-        if equity_rows and equity_rows[-1]["Tanggal"] == final_date:
-            equity_rows[-1]["Balance"] = cash_balance
-            equity_rows[-1]["Equity"] = cash_balance
-            equity_rows[-1]["Unrealized P/L"] = 0.0
-            equity_rows[-1]["Open BUY"] = 0
-            equity_rows[-1]["Open SELL"] = 0
-
-    return _result(closed_rows, equity_rows, initial_balance, target_equity)
+def _fixed_lot_signals(predictions: pd.Series, lot_size: float) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "prediction": predictions,
+            "lot_size": lot_size,
+            "confidence": np.nan,
+        },
+        index=predictions.index,
+    ).dropna(subset=["prediction"])
 
 
 def _indicator_predictions_v2(
@@ -385,10 +188,377 @@ def _indicator_predictions_v2(
     return signals.dropna()
 
 
+def _strategy_score(summary: dict[str, float]) -> tuple[float, float, float, float, float]:
+    return (
+        float(summary["Fase selesai"]),
+        float(summary["Equity akhir"]),
+        -float(summary["Max drawdown"]),
+        float(summary["Profit factor"]) if not pd.isna(summary["Profit factor"]) else 0.0,
+        float(summary["Jumlah transaksi"]),
+    )
+
+
+def _swap_cost(position: DynamicPosition) -> float:
+    swap_per_001 = BUY_SWAP_PER_001_LOT if position.direction == "BUY" else SELL_SWAP_PER_001_LOT
+    return swap_per_001 * (position.lot_size / 0.01)
+
+
+def _dynamic_unrealized(position: DynamicPosition, price: float) -> float:
+    units = position.lot_size * CONTRACT_OUNCES_PER_LOT
+    if position.direction == "BUY":
+        return (price - position.entry_price) * units
+    return (position.entry_price - price) * units
+
+
+def _dynamic_close_row(
+    position: DynamicPosition,
+    exit_date: pd.Timestamp,
+    exit_price: float,
+    exit_reason: str,
+    cash_balance: float,
+) -> dict[str, object]:
+    gross_pnl = _dynamic_unrealized(position, exit_price)
+    net_pnl = gross_pnl - position.swap_paid
+    return {
+        "Fase": position.phase,
+        "Model": position.model_name,
+        "Strategi": position.strategy_name,
+        "Position ID": position.position_id,
+        "Tanggal sinyal": position.signal_date,
+        "Waktu sinyal": "23:59 WIT",
+        "Tanggal entry": position.signal_date,
+        "Waktu entry": "23:59 WIT",
+        "Tanggal tutup": exit_date,
+        "Waktu tutup": "Saat TP/SL tersentuh" if exit_reason in {"TP tersentuh", "SL tersentuh"} else "Close harian",
+        "Arah": position.direction,
+        "Lot": position.lot_size,
+        "Confidence": position.confidence,
+        "Prediksi": position.prediction,
+        "Expected change (%)": position.expected_change_pct,
+        "Entry": position.entry_price,
+        "Exit": exit_price,
+        "Alasan exit": exit_reason,
+        "TP (USD)": position.take_profit_usd,
+        "SL (USD)": np.nan if position.stop_loss_usd is None else position.stop_loss_usd,
+        "Threshold entry (%)": position.entry_threshold_pct,
+        "Gross P/L": gross_pnl,
+        "Swap": -position.swap_paid,
+        "Net P/L": net_pnl,
+        "Balance": cash_balance,
+        "Batas posisi": position.max_positions,
+    }
+
+
+def _simulate_phase(
+    signals: pd.DataFrame,
+    gold_ohlc: pd.DataFrame,
+    model_name: str,
+    *,
+    phase: int,
+    initial_balance: float,
+    target_equity: float,
+    take_profit_usd: float,
+    max_buy_positions: int = 8,
+    max_sell_positions: int = 10,
+    entry_threshold_pct: float = 0.15,
+    stop_loss_usd: float | None = 10.0,
+    strategy_name: str,
+) -> SimulationResult:
+    cash_balance = initial_balance
+    next_position_id = 1
+    closed_rows: list[dict[str, object]] = []
+    equity_rows: list[dict[str, object]] = []
+    open_positions: list[DynamicPosition] = []
+    if signals.empty or gold_ohlc.empty:
+        return _result(closed_rows, equity_rows, initial_balance, target_equity)
+
+    signal_dates = set(signals.index)
+
+    for current_date, candle in gold_ohlc.iterrows():
+        if current_date < signals.index.min():
+            continue
+
+        high = float(candle["High"])
+        low = float(candle["Low"])
+        close = float(candle["Close"])
+
+        still_open: list[DynamicPosition] = []
+        for position in open_positions:
+            units = position.lot_size * CONTRACT_OUNCES_PER_LOT
+            take_profit_points = position.take_profit_usd / units
+            stop_loss_points = None if position.stop_loss_usd is None else position.stop_loss_usd / units
+            if position.direction == "BUY":
+                tp_price = position.entry_price + take_profit_points
+                sl_price = None if stop_loss_points is None else position.entry_price - stop_loss_points
+                hit_tp = high >= tp_price
+                hit_sl = sl_price is not None and low <= sl_price
+                if hit_sl:
+                    exit_price = sl_price
+                    exit_reason = "SL tersentuh"
+                elif hit_tp:
+                    exit_price = tp_price
+                    exit_reason = "TP tersentuh"
+                else:
+                    still_open.append(position)
+                    continue
+            else:
+                tp_price = position.entry_price - take_profit_points
+                sl_price = None if stop_loss_points is None else position.entry_price + stop_loss_points
+                hit_tp = low <= tp_price
+                hit_sl = sl_price is not None and high >= sl_price
+                if hit_sl:
+                    exit_price = sl_price
+                    exit_reason = "SL tersentuh"
+                elif hit_tp:
+                    exit_price = tp_price
+                    exit_reason = "TP tersentuh"
+                else:
+                    still_open.append(position)
+                    continue
+
+            cash_balance += _dynamic_unrealized(position, exit_price)
+            closed_rows.append(_dynamic_close_row(position, current_date, exit_price, exit_reason, cash_balance))
+        open_positions = still_open
+
+        for position in open_positions:
+            daily_swap = _swap_cost(position)
+            position.swap_paid += daily_swap
+            cash_balance -= daily_swap
+
+        if current_date in signal_dates:
+            signal = signals.loc[current_date]
+            prediction = float(signal["prediction"])
+            lot_size = float(signal["lot_size"])
+            confidence = float(signal.get("confidence", np.nan))
+            expected_change_pct = (prediction / close - 1) * 100
+            buy_count = sum(position.direction == "BUY" for position in open_positions)
+            sell_count = sum(position.direction == "SELL" for position in open_positions)
+
+            if expected_change_pct > 0 and expected_change_pct >= entry_threshold_pct:
+                direction = "BUY"
+                max_positions = max_buy_positions
+                can_open = buy_count < max_buy_positions
+            elif expected_change_pct < 0 and abs(expected_change_pct) >= entry_threshold_pct:
+                direction = "SELL"
+                max_positions = max_sell_positions
+                can_open = sell_count < max_sell_positions
+            else:
+                can_open = False
+
+            if can_open:
+                open_positions.append(
+                    DynamicPosition(
+                        position_id=next_position_id,
+                        phase=phase,
+                        model_name=model_name,
+                        strategy_name=strategy_name,
+                        signal_date=current_date,
+                        direction=direction,
+                        lot_size=lot_size,
+                        confidence=confidence,
+                        entry_price=close,
+                        prediction=prediction,
+                        expected_change_pct=expected_change_pct,
+                        take_profit_usd=take_profit_usd,
+                        stop_loss_usd=stop_loss_usd,
+                        entry_threshold_pct=entry_threshold_pct,
+                        max_positions=max_positions,
+                    )
+                )
+                next_position_id += 1
+
+        unrealized = sum(_dynamic_unrealized(position, close) for position in open_positions)
+        equity = cash_balance + unrealized
+        equity_rows.append(
+            {
+                "Tanggal": current_date,
+                "Fase": phase,
+                "Balance": cash_balance,
+                "Equity": equity,
+                "Unrealized P/L": unrealized,
+                "Open BUY": sum(position.direction == "BUY" for position in open_positions),
+                "Open SELL": sum(position.direction == "SELL" for position in open_positions),
+                "Target equity tercapai": equity >= target_equity,
+            }
+        )
+
+        if equity >= target_equity:
+            for position in open_positions:
+                cash_balance += _dynamic_unrealized(position, close)
+                closed_rows.append(_dynamic_close_row(position, current_date, close, "Target equity tercapai", cash_balance))
+            open_positions = []
+            equity_rows[-1]["Balance"] = cash_balance
+            equity_rows[-1]["Equity"] = cash_balance
+            equity_rows[-1]["Unrealized P/L"] = 0.0
+            equity_rows[-1]["Open BUY"] = 0
+            equity_rows[-1]["Open SELL"] = 0
+            break
+
+    if open_positions:
+        final_date = gold_ohlc.index[-1]
+        final_close = float(gold_ohlc.iloc[-1]["Close"])
+        for position in open_positions:
+            cash_balance += _dynamic_unrealized(position, final_close)
+            closed_rows.append(_dynamic_close_row(position, final_date, final_close, "Akhir periode data", cash_balance))
+        if equity_rows and equity_rows[-1]["Tanggal"] == final_date:
+            equity_rows[-1]["Balance"] = cash_balance
+            equity_rows[-1]["Equity"] = cash_balance
+            equity_rows[-1]["Unrealized P/L"] = 0.0
+            equity_rows[-1]["Open BUY"] = 0
+            equity_rows[-1]["Open SELL"] = 0
+
+    return _result(closed_rows, equity_rows, initial_balance, target_equity)
+
+
+def _phase_row(phase: int, result: SimulationResult, start_equity: float, target_equity: float) -> dict[str, object]:
+    summary = result.summary
+    return {
+        "Fase": phase,
+        "Start equity": start_equity,
+        "Target equity": target_equity,
+        "Equity close-all": summary["Equity akhir"],
+        "Target tercapai": summary["Target tercapai"],
+        "Tanggal target": summary["Tanggal target"],
+        "Equity terendah": summary["Equity terendah"],
+        "Tanggal equity terendah": summary["Tanggal equity terendah"],
+        "Equity tertinggi": summary["Equity tertinggi"],
+        "Tanggal equity tertinggi": summary["Tanggal equity tertinggi"],
+        "Total net P/L": summary["Total net P/L"],
+        "Total swap": summary["Total swap"],
+        "Jumlah transaksi": summary["Jumlah transaksi"],
+        "Total BUY": summary["Total BUY"],
+        "Total SELL": summary["Total SELL"],
+        "Win rate": summary["Win rate"],
+        "Max drawdown": summary["Max drawdown"],
+        "Profit factor": summary["Profit factor"],
+        "Status": "Selesai" if summary["Target tercapai"] else "Berjalan sampai akhir periode",
+    }
+
+
+def _multiphase_result(
+    signals: pd.DataFrame,
+    gold_ohlc: pd.DataFrame,
+    model_name: str,
+    *,
+    strategy_name: str,
+    take_profit_usd: float,
+    stop_loss_usd: float,
+    entry_threshold_pct: float,
+) -> MultiPhaseSimulationResult:
+    clean_gold = gold_ohlc.loc[(gold_ohlc.index >= OPTIMIZATION_START) & (gold_ohlc.index <= OPTIMIZATION_END)].copy()
+    clean_signals = signals.loc[(signals.index >= OPTIMIZATION_START) & (signals.index <= OPTIMIZATION_END)].copy()
+    phase = 1
+    start_equity = INITIAL_EQUITY
+    phase_rows: list[dict[str, object]] = []
+    trade_frames: list[pd.DataFrame] = []
+    equity_frames: list[pd.DataFrame] = []
+    cursor_date = OPTIMIZATION_START - pd.Timedelta(days=1)
+
+    while cursor_date < OPTIMIZATION_END:
+        phase_signals = clean_signals[clean_signals.index > cursor_date]
+        phase_gold = clean_gold[clean_gold.index > cursor_date]
+        if phase_signals.empty or phase_gold.empty:
+            break
+
+        target_equity = start_equity * (1 + PHASE_GROWTH)
+        result = _simulate_phase(
+            phase_signals,
+            phase_gold,
+            model_name,
+            phase=phase,
+            initial_balance=start_equity,
+            target_equity=target_equity,
+            take_profit_usd=take_profit_usd,
+            stop_loss_usd=stop_loss_usd,
+            entry_threshold_pct=entry_threshold_pct,
+            strategy_name=strategy_name,
+        )
+        phase_rows.append(_phase_row(phase, result, start_equity, target_equity))
+        if not result.trades.empty:
+            trade_frames.append(result.trades)
+        if not result.equity_curve.empty:
+            equity_frames.append(result.equity_curve)
+
+        if not result.summary["Target tercapai"] or pd.isna(result.summary["Tanggal target"]):
+            break
+
+        cursor_date = pd.Timestamp(result.summary["Tanggal target"])
+        start_equity = float(result.summary["Equity akhir"])
+        phase += 1
+
+    phases = pd.DataFrame(phase_rows)
+    trades = pd.concat(trade_frames, ignore_index=True) if trade_frames else pd.DataFrame()
+    equity_curve = pd.concat(equity_frames).sort_index() if equity_frames else pd.DataFrame()
+    if equity_curve.index.name is None:
+        equity_curve.index.name = "Tanggal"
+
+    if phases.empty:
+        summary = _result([], [], INITIAL_EQUITY, INITIAL_EQUITY * (1 + PHASE_GROWTH)).summary
+        summary.update({"Fase selesai": 0.0, "Fase total": 0.0, "Growth total": 0.0})
+        return MultiPhaseSimulationResult(summary, phases, trades, equity_curve)
+
+    final_equity = float(phases["Equity close-all"].iloc[-1])
+    completed = phases[phases["Target tercapai"]]
+    if trades.empty:
+        net_pnl = pd.Series(dtype=float)
+        total_buy = total_sell = 0.0
+        win_rate = np.nan
+        profit_factor = np.nan
+        avg_net = 0.0
+        total_swap = 0.0
+    else:
+        net_pnl = pd.to_numeric(trades["Net P/L"], errors="coerce")
+        total_buy = float((trades["Arah"] == "BUY").sum())
+        total_sell = float((trades["Arah"] == "SELL").sum())
+        win_rate = float((net_pnl > 0).mean() * 100)
+        gross_profit = float(net_pnl[net_pnl > 0].sum())
+        gross_loss = abs(float(net_pnl[net_pnl < 0].sum()))
+        profit_factor = np.nan if gross_loss == 0 else gross_profit / gross_loss
+        avg_net = float(net_pnl.mean()) if not net_pnl.empty else 0.0
+        total_swap = float(pd.to_numeric(trades["Swap"], errors="coerce").sum())
+
+    if equity_curve.empty:
+        lowest_equity = highest_equity = final_equity
+        low_date = high_date = None
+        max_drawdown = 0.0
+    else:
+        equity = pd.to_numeric(equity_curve["Equity"], errors="coerce")
+        lowest_equity = float(equity.min())
+        highest_equity = float(equity.max())
+        low_date = equity.idxmin()
+        high_date = equity.idxmax()
+        max_drawdown = float((equity.cummax() - equity).max())
+
+    summary = {
+        "Modal awal": INITIAL_EQUITY,
+        "Balance akhir": final_equity,
+        "Equity akhir": final_equity,
+        "Target equity": float(phases["Target equity"].iloc[-1]),
+        "Target tercapai": bool(phases["Target tercapai"].iloc[-1]),
+        "Tanggal target": phases["Tanggal target"].iloc[-1],
+        "Fase selesai": float(len(completed)),
+        "Fase total": float(len(phases)),
+        "Growth total": (final_equity / INITIAL_EQUITY - 1) * 100,
+        "Equity tertinggi": highest_equity,
+        "Tanggal equity tertinggi": high_date,
+        "Equity terendah": lowest_equity,
+        "Tanggal equity terendah": low_date,
+        "Total net P/L": float(net_pnl.sum()) if not net_pnl.empty else 0.0,
+        "Jumlah transaksi": float(len(trades)),
+        "Win rate": win_rate,
+        "Max drawdown": max_drawdown,
+        "Total BUY": total_buy,
+        "Total SELL": total_sell,
+        "Profit factor": float(profit_factor) if not pd.isna(profit_factor) else np.nan,
+        "Avg net P/L": avg_net,
+        "Total swap": total_swap,
+    }
+    return MultiPhaseSimulationResult(summary, phases, trades, equity_curve)
+
+
 def run_optimized_strategy(
     gold_ohlc: pd.DataFrame,
-    target_equity: float = 1200.0,
-) -> tuple[SimulationResult, pd.DataFrame]:
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     candidates: list[dict[str, object]] = []
     modes = ["Trend", "Breakout", "Pullback"]
     fast_windows = [10, 20]
@@ -406,38 +576,27 @@ def run_optimized_strategy(
                     continue
                 for momentum_days in momentum_days_options:
                     for threshold in thresholds:
-                        predictions = _indicator_predictions(
-                            gold_ohlc,
-                            mode,
-                            fast_window,
-                            slow_window,
-                            momentum_days,
-                            threshold,
-                        )
+                        predictions = _indicator_predictions(gold_ohlc, mode, fast_window, slow_window, momentum_days, threshold)
                         if predictions.empty:
                             continue
                         for take_profit in take_profits:
                             for stop_loss in stop_losses:
                                 for lot_size in lot_sizes:
                                     strategy_name = (
-                                        f"{mode} | MA {fast_window}/{slow_window} | "
-                                        f"Mom {momentum_days} | TP {take_profit:g} SL {stop_loss:g} | "
-                                        f"Lot {lot_size:.2f}"
+                                        f"{mode} | MA {fast_window}/{slow_window} | Mom {momentum_days} | "
+                                        f"TP {take_profit:g} SL {stop_loss:g} | Lot {lot_size:.2f}"
                                     )
-                                    result = _simulate_predictions(
-                                        predictions,
+                                    result = _multiphase_result(
+                                        _fixed_lot_signals(predictions, lot_size),
                                         gold_ohlc,
                                         "Strategi Optimizer",
-                                        lot_size=lot_size,
+                                        strategy_name=strategy_name,
                                         take_profit_usd=take_profit,
                                         stop_loss_usd=stop_loss,
                                         entry_threshold_pct=threshold,
-                                        strategy_name=strategy_name,
-                                        target_equity=target_equity,
                                     )
                                     summary = result.summary
-                                    trade_count = summary["Jumlah transaksi"]
-                                    if trade_count < 3:
+                                    if summary["Jumlah transaksi"] < 3:
                                         continue
                                     candidates.append(
                                         {
@@ -450,13 +609,17 @@ def run_optimized_strategy(
                                             "TP (USD)": take_profit,
                                             "SL (USD)": stop_loss,
                                             "Lot": lot_size,
-                                            "Target tercapai": summary["Target tercapai"],
-                                            "Tanggal target": summary["Tanggal target"],
+                                            "Fase selesai": summary["Fase selesai"],
+                                            "Fase total": summary["Fase total"],
                                             "Equity akhir": summary["Equity akhir"],
+                                            "Growth total": summary["Growth total"],
                                             "Equity terendah": summary["Equity terendah"],
                                             "Equity tertinggi": summary["Equity tertinggi"],
                                             "Max drawdown": summary["Max drawdown"],
-                                            "Jumlah transaksi": trade_count,
+                                            "Jumlah transaksi": summary["Jumlah transaksi"],
+                                            "Total BUY": summary["Total BUY"],
+                                            "Total SELL": summary["Total SELL"],
+                                            "Total swap": summary["Total swap"],
                                             "Win rate": summary["Win rate"],
                                             "Profit factor": summary["Profit factor"],
                                             "Avg net P/L": summary["Avg net P/L"],
@@ -466,21 +629,18 @@ def run_optimized_strategy(
                                     )
 
     if not candidates:
-        empty_result = _result([], [], 1000.0, target_equity)
-        return empty_result, pd.DataFrame()
+        empty = _multiphase_result(pd.DataFrame(), gold_ohlc, "Strategi Optimizer", strategy_name="-", take_profit_usd=0, stop_loss_usd=0, entry_threshold_pct=0)
+        return empty, pd.DataFrame()
 
     candidates.sort(key=lambda row: row["_score"], reverse=True)
     best_result = candidates[0]["_result"]
-    leaderboard = pd.DataFrame(
-        [{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates]
-    )
+    leaderboard = pd.DataFrame([{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates])
     return best_result, leaderboard
 
 
 def run_optimized_strategy_v2(
     gold_ohlc: pd.DataFrame,
-    target_equity: float = 1200.0,
-) -> tuple[SimulationResult, pd.DataFrame]:
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     candidates: list[dict[str, object]] = []
     modes = ["Hybrid Trend", "Volatility Breakout", "Pullback Confirm"]
     fast_windows = [10, 20]
@@ -513,27 +673,23 @@ def run_optimized_strategy_v2(
                             for take_profit in take_profits:
                                 for stop_loss in stop_losses:
                                     avg_lot = float(pd.to_numeric(signals["lot_size"], errors="coerce").mean())
-                                    avg_confidence = float(
-                                        pd.to_numeric(signals["confidence"], errors="coerce").mean()
-                                    )
+                                    avg_confidence = float(pd.to_numeric(signals["confidence"], errors="coerce").mean())
                                     strategy_name = (
                                         f"{mode} | MA {fast_window}/{slow_window} | Mom {momentum_days} | "
                                         f"TP {take_profit:g} SL {stop_loss:g} | Lot dinamis 0.01-0.02 | "
                                         f"Cutoff {confidence_cutoff:.0%}"
                                     )
-                                    result = _simulate_dynamic_predictions(
+                                    result = _multiphase_result(
                                         signals,
                                         gold_ohlc,
                                         "Strategi Terbaik v.2",
+                                        strategy_name=strategy_name,
                                         take_profit_usd=take_profit,
                                         stop_loss_usd=stop_loss,
                                         entry_threshold_pct=threshold,
-                                        strategy_name=strategy_name,
-                                        target_equity=target_equity,
                                     )
                                     summary = result.summary
-                                    trade_count = summary["Jumlah transaksi"]
-                                    if trade_count < 3:
+                                    if summary["Jumlah transaksi"] < 3:
                                         continue
                                     candidates.append(
                                         {
@@ -550,13 +706,17 @@ def run_optimized_strategy_v2(
                                             "Lot maksimum": 0.02,
                                             "Lot rata-rata sinyal": avg_lot,
                                             "Confidence rata-rata": avg_confidence,
-                                            "Target tercapai": summary["Target tercapai"],
-                                            "Tanggal target": summary["Tanggal target"],
+                                            "Fase selesai": summary["Fase selesai"],
+                                            "Fase total": summary["Fase total"],
                                             "Equity akhir": summary["Equity akhir"],
+                                            "Growth total": summary["Growth total"],
                                             "Equity terendah": summary["Equity terendah"],
                                             "Equity tertinggi": summary["Equity tertinggi"],
                                             "Max drawdown": summary["Max drawdown"],
-                                            "Jumlah transaksi": trade_count,
+                                            "Jumlah transaksi": summary["Jumlah transaksi"],
+                                            "Total BUY": summary["Total BUY"],
+                                            "Total SELL": summary["Total SELL"],
+                                            "Total swap": summary["Total swap"],
                                             "Win rate": summary["Win rate"],
                                             "Profit factor": summary["Profit factor"],
                                             "Avg net P/L": summary["Avg net P/L"],
@@ -566,12 +726,10 @@ def run_optimized_strategy_v2(
                                     )
 
     if not candidates:
-        empty_result = _result([], [], 1000.0, target_equity)
-        return empty_result, pd.DataFrame()
+        empty = _multiphase_result(pd.DataFrame(), gold_ohlc, "Strategi Terbaik v.2", strategy_name="-", take_profit_usd=0, stop_loss_usd=0, entry_threshold_pct=0)
+        return empty, pd.DataFrame()
 
     candidates.sort(key=lambda row: row["_score"], reverse=True)
     best_result = candidates[0]["_result"]
-    leaderboard = pd.DataFrame(
-        [{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates]
-    )
+    leaderboard = pd.DataFrame([{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates])
     return best_result, leaderboard

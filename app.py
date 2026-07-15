@@ -18,7 +18,6 @@ from gold_forecast.monitoring import (
     monitoring_summary,
 )
 from gold_forecast.signals import build_signal
-from gold_forecast.simulation import DEFAULT_SCENARIOS, run_simulation_scenarios
 from gold_forecast.strategy_optimizer import (
     OPTIMIZATION_END,
     OPTIMIZATION_START,
@@ -27,7 +26,7 @@ from gold_forecast.strategy_optimizer import (
 )
 
 
-SIMULATION_CACHE_VERSION = "optimizer-dynamic-lot-v2"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v1"
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -54,18 +53,10 @@ def get_models(market_data: pd.DataFrame):
 
 
 @st.cache_data(ttl=3600)
-def get_simulations(market_data: pd.DataFrame, gold_ohlc: pd.DataFrame, simulation_version: str):
-    simulation_results, scenario_summary = run_simulation_scenarios(market_data, gold_ohlc)
+def get_simulations(gold_ohlc: pd.DataFrame, simulation_version: str):
     optimized_result, optimization_leaderboard = run_optimized_strategy(gold_ohlc)
     optimized_v2_result, optimization_v2_leaderboard = run_optimized_strategy_v2(gold_ohlc)
-    return (
-        simulation_results,
-        scenario_summary,
-        optimized_result,
-        optimization_leaderboard,
-        optimized_v2_result,
-        optimization_v2_leaderboard,
-    )
+    return optimized_result, optimization_leaderboard, optimized_v2_result, optimization_v2_leaderboard
 
 
 def render_dashboard(
@@ -447,178 +438,213 @@ def _render_simulation_result(title: str, result) -> None:
     )
 
 
-def render_simulation(
-    simulation_results,
-    scenario_summary: pd.DataFrame,
-    optimized_result,
-    optimization_leaderboard: pd.DataFrame,
-    optimized_v2_result,
-    optimization_v2_leaderboard: pd.DataFrame,
-) -> None:
-    st.subheader("Simulasi Trading XAU/USD")
-    st.caption(
-        "Asumsi: equity awal USD 1.000, target close-all USD 1.200, lot mikro 0.01, "
-        "swap USD 0.2 per posisi per hari, maksimal 8 BUY dan 10 SELL. Equity menghitung "
-        "cash balance ditambah unrealized P/L posisi terbuka. Simulasi memakai OHLC harian "
-        "GC=F, bukan data tick broker."
-    )
-    st.warning(
-        "Catatan penting: karena OHLC harian tidak menunjukkan urutan intraday, jika TP dan SL "
-        "sama-sama tersentuh dalam satu candle, simulasi menganggap SL kena lebih dulu. "
-        "Target equity USD 1.200 dievaluasi pada close harian setelah swap dan unrealized P/L dihitung."
+def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame) -> None:
+    st.subheader(title)
+    summary = result.summary
+    phases = result.phases.copy()
+    trades = result.trades.copy()
+    equity_curve = result.equity_curve.copy()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Equity akhir", f"${summary['Equity akhir']:,.2f}", f"{summary['Growth total']:+.1f}%")
+    c2.metric("Fase selesai", f"{summary['Fase selesai']:.0f}", f"Total fase {summary['Fase total']:.0f}")
+    c3.metric("Jumlah transaksi", f"{summary['Jumlah transaksi']:.0f}")
+    c4.metric("Max drawdown", f"${summary['Max drawdown']:,.2f}")
+
+    st.info(
+        "Target tiap fase: **+20% dari start equity fase tersebut**. "
+        "Saat target tercapai, semua posisi ditutup dan fase berikutnya dimulai dari equity close-all."
     )
 
-    st.subheader("Strategi Terbaik Optimizer")
-    st.caption(
-        "Optimizer menguji strategi berbasis trend, breakout, dan pullback memakai data real "
-        f"periode {OPTIMIZATION_START.strftime('%d %b %Y')} sampai {OPTIMIZATION_END.strftime('%d %b %Y')}. "
-        "Strategi dipilih dengan prioritas: target USD 1.200 tercapai, lebih cepat tercapai, equity akhir, "
-        "dan drawdown lebih rendah."
-    )
-    if optimization_leaderboard.empty:
-        st.warning("Optimizer belum menemukan kandidat strategi yang memenuhi syarat minimal transaksi.")
-    else:
-        best = optimized_result.summary
-        b1, b2, b3, b4 = st.columns(4)
-        b1.metric("Target optimizer", "Tercapai" if best["Target tercapai"] else "Belum", f"${best['Equity akhir']:,.2f}")
-        b2.metric(
-            "Tanggal target",
-            "-" if pd.isna(best["Tanggal target"]) else pd.Timestamp(best["Tanggal target"]).strftime("%d %b %Y"),
-        )
-        b3.metric("Max drawdown", f"${best['Max drawdown']:,.2f}")
-        b4.metric("Jumlah transaksi", f"{best['Jumlah transaksi']:.0f}")
-        _render_simulation_result("Strategi Terbaik Optimizer", optimized_result)
+    st.markdown("**Ringkasan Fase**")
+    if phases.empty:
+        st.warning("Belum ada fase simulasi yang dapat dihitung.")
+        return
 
-        with st.expander("Leaderboard strategi optimizer"):
-            leaderboard = optimization_leaderboard.head(25).copy()
-            st.dataframe(
-                leaderboard.style.format(
-                    {
-                        "Threshold entry (%)": "{:.2f}%",
-                        "TP (USD)": "${:,.2f}",
-                        "SL (USD)": "${:,.2f}",
-                        "Lot": "{:.2f}",
-                        "Equity akhir": "${:,.2f}",
-                        "Equity terendah": "${:,.2f}",
-                        "Equity tertinggi": "${:,.2f}",
-                        "Max drawdown": "${:,.2f}",
-                        "Jumlah transaksi": "{:.0f}",
-                        "Win rate": "{:.1f}%",
-                        "Profit factor": "{:.2f}",
-                        "Avg net P/L": "${:+,.2f}",
-                    },
-                    na_rep="-",
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    st.subheader("Strategi Terbaik v.2")
-    st.caption(
-        "Strategi v.2 memakai acuan optimizer lama, tetapi menambahkan lot dinamis 0.01-0.02. "
-        "Lot 0.02 hanya dipakai ketika confidence sinyal melewati cutoff kandidat; sinyal lain tetap 0.01. "
-        f"Periode uji tetap {OPTIMIZATION_START.strftime('%d %b %Y')} sampai "
-        f"{OPTIMIZATION_END.strftime('%d %b %Y')}."
-    )
-    if optimization_v2_leaderboard.empty:
-        st.warning("Strategi Terbaik v.2 belum menemukan kandidat yang memenuhi syarat minimal transaksi.")
-    else:
-        best_v2 = optimized_v2_result.summary
-        v21, v22, v23, v24 = st.columns(4)
-        v21.metric(
-            "Target v.2",
-            "Tercapai" if best_v2["Target tercapai"] else "Belum",
-            f"${best_v2['Equity akhir']:,.2f}",
-        )
-        v22.metric(
-            "Tanggal target",
-            "-"
-            if pd.isna(best_v2["Tanggal target"])
-            else pd.Timestamp(best_v2["Tanggal target"]).strftime("%d %b %Y"),
-        )
-        v23.metric("Max drawdown", f"${best_v2['Max drawdown']:,.2f}")
-        v24.metric("Jumlah transaksi", f"{best_v2['Jumlah transaksi']:.0f}")
-        _render_simulation_result("Strategi Terbaik v.2", optimized_v2_result)
-
-        with st.expander("Leaderboard Strategi Terbaik v.2"):
-            leaderboard_v2 = optimization_v2_leaderboard.head(25).copy()
-            st.dataframe(
-                leaderboard_v2.style.format(
-                    {
-                        "Threshold entry (%)": "{:.2f}%",
-                        "Confidence cutoff": "{:.0%}",
-                        "TP (USD)": "${:,.2f}",
-                        "SL (USD)": "${:,.2f}",
-                        "Lot minimum": "{:.2f}",
-                        "Lot maksimum": "{:.2f}",
-                        "Lot rata-rata sinyal": "{:.3f}",
-                        "Confidence rata-rata": "{:.1f}%",
-                        "Equity akhir": "${:,.2f}",
-                        "Equity terendah": "${:,.2f}",
-                        "Equity tertinggi": "${:,.2f}",
-                        "Max drawdown": "${:,.2f}",
-                        "Jumlah transaksi": "{:.0f}",
-                        "Win rate": "{:.1f}%",
-                        "Profit factor": "{:.2f}",
-                        "Avg net P/L": "${:+,.2f}",
-                    },
-                    na_rep="-",
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    st.divider()
-    strategy_names = [str(scenario["Strategi"]) for scenario in DEFAULT_SCENARIOS]
-    selected_strategy = st.selectbox(
-        "Strategi untuk detail transaksi",
-        strategy_names,
-        index=strategy_names.index("Moderate") if "Moderate" in strategy_names else 0,
-    )
-
-    st.subheader("Perbandingan Skenario TP/SL")
-    scenario_table = scenario_summary.copy()
-    if "Equity akhir" not in scenario_table.columns and "Balance akhir" in scenario_table.columns:
-        scenario_table["Equity akhir"] = scenario_table["Balance akhir"]
-    if "Equity terendah" not in scenario_table.columns and "Equity akhir" in scenario_table.columns:
-        scenario_table["Equity terendah"] = scenario_table["Equity akhir"]
-    if "Equity tertinggi" not in scenario_table.columns and "Equity akhir" in scenario_table.columns:
-        scenario_table["Equity tertinggi"] = scenario_table["Equity akhir"]
-    if "Target tercapai" not in scenario_table.columns and "Equity akhir" in scenario_table.columns:
-        scenario_table["Target tercapai"] = scenario_table["Equity akhir"] >= 1200.0
     st.dataframe(
-        scenario_table.style.format(
+        phases.style.format(
             {
-                "Threshold entry (%)": "{:.2f}%",
-                "TP (USD)": "${:,.2f}",
-                "SL (USD)": "${:,.2f}",
-                "Balance akhir": "${:,.2f}",
-                "Equity akhir": "${:,.2f}",
+                "Start equity": "${:,.2f}",
+                "Target equity": "${:,.2f}",
+                "Equity close-all": "${:,.2f}",
                 "Equity terendah": "${:,.2f}",
                 "Equity tertinggi": "${:,.2f}",
                 "Total net P/L": "${:+,.2f}",
+                "Total swap": "${:+,.2f}",
                 "Jumlah transaksi": "{:.0f}",
+                "Total BUY": "{:.0f}",
+                "Total SELL": "{:.0f}",
                 "Win rate": "{:.1f}%",
                 "Max drawdown": "${:,.2f}",
                 "Profit factor": "{:.2f}",
-                "Avg net P/L": "${:+,.2f}",
-            }
+            },
+            na_rep="-",
         ),
         use_container_width=True,
         hide_index=True,
     )
 
-    model_2_section, model_1_section = st.tabs(["Simulasi Model 2", "Simulasi Model 1"])
-    with model_2_section:
-        _render_simulation_result(
-            f"Simulasi Model 2 - Strategi {selected_strategy}",
-            simulation_results["Model 2 - Lintas Pasar"][selected_strategy],
+    if not equity_curve.empty:
+        figure = go.Figure()
+        figure.add_trace(
+            go.Scatter(
+                x=equity_curve.index,
+                y=equity_curve["Equity"],
+                name="Equity",
+                line=dict(width=3),
+            )
         )
-    with model_1_section:
-        _render_simulation_result(
-            f"Simulasi Model 1 - Strategi {selected_strategy}",
-            simulation_results["Model 1 - Harga Historis"][selected_strategy],
+        figure.add_trace(
+            go.Scatter(
+                x=equity_curve.index,
+                y=equity_curve["Balance"],
+                name="Balance cash",
+                line=dict(width=1.5, dash="dot"),
+            )
         )
+        completed_phases = phases[phases["Target tercapai"]]
+        if not completed_phases.empty:
+            figure.add_trace(
+                go.Scatter(
+                    x=completed_phases["Tanggal target"],
+                    y=completed_phases["Equity close-all"],
+                    mode="markers+text",
+                    name="Close-all fase",
+                    marker=dict(size=10, color="#16a34a"),
+                    text=[f"Fase {int(value)}" for value in completed_phases["Fase"]],
+                    textposition="top center",
+                )
+            )
+        figure.update_layout(title=f"Equity Curve Multi-Fase {title}", yaxis_title="USD", height=420)
+        st.plotly_chart(figure, use_container_width=True)
+
+    if not trades.empty:
+        st.markdown("**Detail Transaksi**")
+        numeric_columns = [
+            "Lot",
+            "Confidence",
+            "Prediksi",
+            "Expected change (%)",
+            "Entry",
+            "Exit",
+            "TP (USD)",
+            "SL (USD)",
+            "Threshold entry (%)",
+            "Gross P/L",
+            "Swap",
+            "Net P/L",
+            "Balance",
+        ]
+        visible_columns = [
+            column
+            for column in [
+                "Fase",
+                "Model",
+                "Strategi",
+                "Position ID",
+                "Tanggal entry",
+                "Tanggal tutup",
+                "Arah",
+                "Lot",
+                "Confidence",
+                "Prediksi",
+                "Expected change (%)",
+                "Entry",
+                "Exit",
+                "Alasan exit",
+                "TP (USD)",
+                "SL (USD)",
+                "Threshold entry (%)",
+                "Gross P/L",
+                "Swap",
+                "Net P/L",
+                "Balance",
+            ]
+            if column in trades.columns
+        ]
+        st.dataframe(
+            trades[visible_columns].style.format(
+                {
+                    "Lot": "{:.2f}",
+                    "Confidence": "{:.1f}%",
+                    "Prediksi": "${:,.2f}",
+                    "Expected change (%)": "{:+.2f}%",
+                    "Entry": "${:,.2f}",
+                    "Exit": "${:,.2f}",
+                    "TP (USD)": "${:,.2f}",
+                    "SL (USD)": "${:,.2f}",
+                    "Threshold entry (%)": "{:.2f}%",
+                    "Gross P/L": "${:+,.2f}",
+                    "Swap": "${:+,.2f}",
+                    "Net P/L": "${:+,.2f}",
+                    "Balance": "${:,.2f}",
+                },
+                subset=[column for column in numeric_columns if column in trades.columns],
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with st.expander(f"Leaderboard kandidat {title}"):
+        if leaderboard.empty:
+            st.info("Leaderboard belum tersedia.")
+        else:
+            st.dataframe(
+                leaderboard.head(25).style.format(
+                    {
+                        "Threshold entry (%)": "{:.2f}%",
+                        "Confidence cutoff": "{:.0%}",
+                        "TP (USD)": "${:,.2f}",
+                        "SL (USD)": "${:,.2f}",
+                        "Lot": "{:.2f}",
+                        "Lot minimum": "{:.2f}",
+                        "Lot maksimum": "{:.2f}",
+                        "Lot rata-rata sinyal": "{:.3f}",
+                        "Confidence rata-rata": "{:.1f}%",
+                        "Fase selesai": "{:.0f}",
+                        "Fase total": "{:.0f}",
+                        "Equity akhir": "${:,.2f}",
+                        "Growth total": "{:+.1f}%",
+                        "Equity terendah": "${:,.2f}",
+                        "Equity tertinggi": "${:,.2f}",
+                        "Max drawdown": "${:,.2f}",
+                        "Jumlah transaksi": "{:.0f}",
+                        "Total BUY": "{:.0f}",
+                        "Total SELL": "{:.0f}",
+                        "Total swap": "${:+,.2f}",
+                        "Win rate": "{:.1f}%",
+                        "Profit factor": "{:.2f}",
+                        "Avg net P/L": "${:+,.2f}",
+                    },
+                    na_rep="-",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+def render_simulation(
+    optimized_result,
+    optimization_leaderboard: pd.DataFrame,
+    optimized_v2_result,
+    optimization_v2_leaderboard: pd.DataFrame,
+) -> None:
+    st.subheader("Simulasi Trading XAU/USD Multi-Fase")
+    st.caption(
+        "Simulasi hanya menampilkan Strategi Terbaik Optimizer dan Strategi Terbaik v.2. "
+        "Model 1 dan Model 2 lama dihapus dari tab ini karena performanya tidak memadai."
+    )
+    st.warning(
+        "Asumsi: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
+        "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
+        "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
+    )
+
+    optimizer_tab, optimizer_v2_tab = st.tabs(["Strategi Terbaik Optimizer", "Strategi Terbaik v.2"])
+    with optimizer_tab:
+        _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard)
+    with optimizer_v2_tab:
+        _render_multiphase_result("Strategi Terbaik v.2", optimized_v2_result, optimization_v2_leaderboard)
 
 
 def render_monitoring(title: str, data_path) -> None:
@@ -755,15 +781,7 @@ try:
     market, data_fetched_at = get_data()
     gold_ohlc = get_gold_ohlc()
     model_1, model_2, direction_model = get_models(market)
-    (
-        simulation_results,
-        scenario_summary,
-        optimized_result,
-        optimization_leaderboard,
-        optimized_v2_result,
-        optimization_v2_leaderboard,
-    ) = get_simulations(
-        market,
+    optimized_result, optimization_leaderboard, optimized_v2_result, optimization_v2_leaderboard = get_simulations(
         gold_ohlc,
         SIMULATION_CACHE_VERSION,
     )
@@ -794,8 +812,6 @@ with monitoring_model_1_tab:
 
 with simulation_tab:
     render_simulation(
-        simulation_results,
-        scenario_summary,
         optimized_result,
         optimization_leaderboard,
         optimized_v2_result,
