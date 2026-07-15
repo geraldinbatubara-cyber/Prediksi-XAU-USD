@@ -21,6 +21,8 @@ from gold_forecast.signals import build_signal
 from gold_forecast.simulation import DEFAULT_SCENARIOS, run_simulation_scenarios
 
 
+SIMULATION_CACHE_VERSION = "equity-target-v2"
+
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
 st.caption("Estimasi hari bursa berikutnya dan tujuh hari ke depan")
@@ -46,7 +48,7 @@ def get_models(market_data: pd.DataFrame):
 
 
 @st.cache_data(ttl=3600)
-def get_simulations(market_data: pd.DataFrame, gold_ohlc: pd.DataFrame):
+def get_simulations(market_data: pd.DataFrame, gold_ohlc: pd.DataFrame, simulation_version: str):
     return run_simulation_scenarios(market_data, gold_ohlc)
 
 
@@ -245,19 +247,41 @@ def render_dashboard(
 def _render_simulation_result(title: str, result) -> None:
     st.subheader(title)
     summary = result.summary
+    modal_awal = summary.get("Modal awal", 1000.0)
+    balance_akhir = summary.get("Balance akhir", modal_awal)
+    equity_akhir = summary.get("Equity akhir", balance_akhir)
+    target_equity = summary.get("Target equity", 1200.0)
+    target_tercapai = summary.get("Target tercapai", equity_akhir >= target_equity)
+    total_swap = summary.get("Total swap", result.trades["Swap"].sum() if "Swap" in result.trades.columns else 0.0)
+
+    equity_curve = result.equity_curve.copy()
+    if not equity_curve.empty and "Equity" not in equity_curve.columns and "Balance" in equity_curve.columns:
+        equity_curve["Equity"] = equity_curve["Balance"]
+    if not equity_curve.empty and "Balance" not in equity_curve.columns and "Equity" in equity_curve.columns:
+        equity_curve["Balance"] = equity_curve["Equity"]
+
+    target_date = summary.get("Tanggal target")
+    low_date = summary.get("Tanggal equity terendah")
+    high_date = summary.get("Tanggal equity tertinggi")
+    if not equity_curve.empty and "Equity" in equity_curve.columns:
+        equity_series = pd.to_numeric(equity_curve["Equity"], errors="coerce")
+        if pd.isna(low_date):
+            low_date = equity_series.idxmin()
+        if pd.isna(high_date):
+            high_date = equity_series.idxmax()
+    equity_terendah = summary.get("Equity terendah", equity_curve["Equity"].min() if "Equity" in equity_curve else equity_akhir)
+    equity_tertinggi = summary.get("Equity tertinggi", equity_curve["Equity"].max() if "Equity" in equity_curve else equity_akhir)
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Equity akhir", f"${summary['Equity akhir']:,.2f}", f"{summary['Equity akhir'] - summary['Modal awal']:+,.2f}")
+    c1.metric("Equity akhir", f"${equity_akhir:,.2f}", f"{equity_akhir - modal_awal:+,.2f}")
     c2.metric("Jumlah transaksi", f"{summary['Jumlah transaksi']:.0f}")
     c3.metric("Win rate", "-" if pd.isna(summary["Win rate"]) else f"{summary['Win rate']:.1f}%")
     c4.metric("Max drawdown", f"${summary['Max drawdown']:,.2f}")
 
-    target_date = summary["Tanggal target"]
     target_label = "-" if pd.isna(target_date) else pd.Timestamp(target_date).strftime("%d %b %Y")
-    low_date = summary["Tanggal equity terendah"]
-    high_date = summary["Tanggal equity tertinggi"]
     st.info(
-        f"Target close-all: **${summary['Target equity']:,.2f}** | "
-        f"Status: **{'Tercapai' if summary['Target tercapai'] else 'Belum tercapai'}** | "
+        f"Target close-all: **${target_equity:,.2f}** | "
+        f"Status: **{'Tercapai' if target_tercapai else 'Belum tercapai'}** | "
         f"Tanggal target: **{target_label}**"
     )
 
@@ -265,51 +289,51 @@ def _render_simulation_result(title: str, result) -> None:
         [
             {"Metrik": "Total BUY", "Nilai": summary["Total BUY"]},
             {"Metrik": "Total SELL", "Nilai": summary["Total SELL"]},
-            {"Metrik": "Modal awal", "Nilai": summary["Modal awal"]},
-            {"Metrik": "Balance akhir", "Nilai": summary["Balance akhir"]},
+            {"Metrik": "Modal awal", "Nilai": modal_awal},
+            {"Metrik": "Balance akhir", "Nilai": balance_akhir},
             {
                 "Metrik": "Equity terendah",
-                "Nilai": f"${summary['Equity terendah']:,.2f} pada {pd.Timestamp(low_date).strftime('%d %b %Y')}"
+                "Nilai": f"${equity_terendah:,.2f} pada {pd.Timestamp(low_date).strftime('%d %b %Y')}"
                 if not pd.isna(low_date)
                 else "-",
             },
             {
                 "Metrik": "Equity tertinggi",
-                "Nilai": f"${summary['Equity tertinggi']:,.2f} pada {pd.Timestamp(high_date).strftime('%d %b %Y')}"
+                "Nilai": f"${equity_tertinggi:,.2f} pada {pd.Timestamp(high_date).strftime('%d %b %Y')}"
                 if not pd.isna(high_date)
                 else "-",
             },
             {"Metrik": "Total net P/L", "Nilai": summary["Total net P/L"]},
-            {"Metrik": "Total swap", "Nilai": summary["Total swap"]},
-            {"Metrik": "Profit factor", "Nilai": summary["Profit factor"]},
-            {"Metrik": "Avg net P/L", "Nilai": summary["Avg net P/L"]},
+            {"Metrik": "Total swap", "Nilai": total_swap},
+            {"Metrik": "Profit factor", "Nilai": summary.get("Profit factor", pd.NA)},
+            {"Metrik": "Avg net P/L", "Nilai": summary.get("Avg net P/L", pd.NA)},
         ]
     )
     st.dataframe(detail, use_container_width=True, hide_index=True)
 
-    if result.equity_curve.empty:
+    if equity_curve.empty:
         st.info("Belum ada transaksi simulasi yang dapat dihitung.")
         return
 
     figure = go.Figure()
     figure.add_trace(
         go.Scatter(
-            x=result.equity_curve.index,
-            y=result.equity_curve["Equity"],
+            x=equity_curve.index,
+            y=equity_curve["Equity"],
             name="Equity",
             line=dict(width=3),
         )
     )
     figure.add_trace(
         go.Scatter(
-            x=result.equity_curve.index,
-            y=result.equity_curve["Balance"],
+            x=equity_curve.index,
+            y=equity_curve["Balance"],
             name="Balance cash",
             line=dict(width=1.5, dash="dot"),
         )
     )
     figure.add_hline(
-        y=summary["Target equity"],
+        y=target_equity,
         line_dash="dash",
         line_color="#16a34a",
         annotation_text="Target equity $1,200",
@@ -318,7 +342,7 @@ def _render_simulation_result(title: str, result) -> None:
         figure.add_trace(
             go.Scatter(
                 x=[low_date],
-                y=[summary["Equity terendah"]],
+                y=[equity_terendah],
                 mode="markers+text",
                 name="Equity terendah",
                 marker=dict(size=11, color="#dc2626"),
@@ -330,7 +354,7 @@ def _render_simulation_result(title: str, result) -> None:
         figure.add_trace(
             go.Scatter(
                 x=[high_date],
-                y=[summary["Equity tertinggi"]],
+                y=[equity_tertinggi],
                 mode="markers+text",
                 name="Equity tertinggi",
                 marker=dict(size=11, color="#16a34a"),
@@ -427,6 +451,14 @@ def render_simulation(simulation_results, scenario_summary: pd.DataFrame) -> Non
 
     st.subheader("Perbandingan Skenario TP/SL")
     scenario_table = scenario_summary.copy()
+    if "Equity akhir" not in scenario_table.columns and "Balance akhir" in scenario_table.columns:
+        scenario_table["Equity akhir"] = scenario_table["Balance akhir"]
+    if "Equity terendah" not in scenario_table.columns and "Equity akhir" in scenario_table.columns:
+        scenario_table["Equity terendah"] = scenario_table["Equity akhir"]
+    if "Equity tertinggi" not in scenario_table.columns and "Equity akhir" in scenario_table.columns:
+        scenario_table["Equity tertinggi"] = scenario_table["Equity akhir"]
+    if "Target tercapai" not in scenario_table.columns and "Equity akhir" in scenario_table.columns:
+        scenario_table["Target tercapai"] = scenario_table["Equity akhir"] >= 1200.0
     st.dataframe(
         scenario_table.style.format(
             {
@@ -596,7 +628,7 @@ try:
     market, data_fetched_at = get_data()
     gold_ohlc = get_gold_ohlc()
     model_1, model_2, direction_model = get_models(market)
-    simulation_results, scenario_summary = get_simulations(market, gold_ohlc)
+    simulation_results, scenario_summary = get_simulations(market, gold_ohlc, SIMULATION_CACHE_VERSION)
 except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
