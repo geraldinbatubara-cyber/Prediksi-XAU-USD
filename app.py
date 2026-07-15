@@ -26,7 +26,7 @@ from gold_forecast.strategy_optimizer import (
 )
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v1"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v2"
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -441,7 +441,42 @@ def _render_simulation_result(title: str, result) -> None:
 def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame) -> None:
     st.subheader(title)
     summary = result.summary
-    phases = result.phases.copy()
+    if not hasattr(result, "phases"):
+        target_equity = summary.get("Target equity", 1200.0)
+        modal_awal = summary.get("Modal awal", 1000.0)
+        phases = pd.DataFrame(
+            [
+                {
+                    "Fase": 1,
+                    "Start equity": modal_awal,
+                    "Target equity": target_equity,
+                    "Equity close-all": summary.get("Equity akhir", modal_awal),
+                    "Target tercapai": summary.get("Target tercapai", False),
+                    "Tanggal target": summary.get("Tanggal target"),
+                    "Equity terendah": summary.get("Equity terendah", modal_awal),
+                    "Tanggal equity terendah": summary.get("Tanggal equity terendah"),
+                    "Equity tertinggi": summary.get("Equity tertinggi", modal_awal),
+                    "Tanggal equity tertinggi": summary.get("Tanggal equity tertinggi"),
+                    "Total net P/L": summary.get("Total net P/L", 0.0),
+                    "Total swap": summary.get("Total swap", 0.0),
+                    "Jumlah transaksi": summary.get("Jumlah transaksi", 0.0),
+                    "Total BUY": summary.get("Total BUY", 0.0),
+                    "Total SELL": summary.get("Total SELL", 0.0),
+                    "Win rate": summary.get("Win rate", pd.NA),
+                    "Max drawdown": summary.get("Max drawdown", 0.0),
+                    "Profit factor": summary.get("Profit factor", pd.NA),
+                    "Status": "Selesai" if summary.get("Target tercapai", False) else "Cache lama / belum multi-fase",
+                }
+            ]
+        )
+        summary = {
+            **summary,
+            "Fase selesai": 1.0 if summary.get("Target tercapai", False) else 0.0,
+            "Fase total": 1.0,
+            "Growth total": (summary.get("Equity akhir", modal_awal) / modal_awal - 1) * 100 if modal_awal else 0.0,
+        }
+    else:
+        phases = result.phases.copy()
     trades = result.trades.copy()
     equity_curve = result.equity_curve.copy()
 
