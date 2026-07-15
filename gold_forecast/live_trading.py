@@ -177,6 +177,9 @@ def _signal_waiting_state(gold_ohlc: pd.DataFrame, params: dict[str, object]) ->
             "Yang ditunggu": "Menunggu data harga emas terbaru.",
             "Kondisi BUY": "-",
             "Kondisi SELL": "-",
+            "Checklist BUY": [],
+            "Checklist SELL": [],
+            "Interpretasi": "Data harga belum tersedia untuk membaca kondisi BUY/SELL.",
             "Momentum saat ini": np.nan,
             "Threshold": float(params["Threshold entry (%)"]),
             "MA cepat": np.nan,
@@ -209,63 +212,132 @@ def _signal_waiting_state(gold_ohlc: pd.DataFrame, params: dict[str, object]) ->
     latest_previous_low = float(previous_low.iloc[-1]) if pd.notna(previous_low.iloc[-1]) else np.nan
 
     if mode == "Trend":
-        buy_ready = latest_close > latest_fast and latest_fast > latest_slow and latest_momentum > threshold
-        sell_ready = latest_close < latest_fast and latest_fast < latest_slow and latest_momentum < -threshold
-        buy_conditions = [
-            f"Close > MA cepat: {latest_close:,.2f} > {latest_fast:,.2f}",
-            f"MA cepat > MA lambat: {latest_fast:,.2f} > {latest_slow:,.2f}",
-            f"Momentum {momentum_days} hari > +{threshold:.2f}%: {latest_momentum:+.2f}%",
+        buy_checklist = [
+            {
+                "Syarat": "Close > MA cepat",
+                "Nilai saat ini": f"{latest_close:,.2f} > {latest_fast:,.2f}",
+                "Lolos": latest_close > latest_fast,
+            },
+            {
+                "Syarat": "MA cepat > MA lambat",
+                "Nilai saat ini": f"{latest_fast:,.2f} > {latest_slow:,.2f}",
+                "Lolos": latest_fast > latest_slow,
+            },
+            {
+                "Syarat": f"Momentum {momentum_days} hari > +{threshold:.2f}%",
+                "Nilai saat ini": f"{latest_momentum:+.2f}%",
+                "Lolos": latest_momentum > threshold,
+            },
         ]
-        sell_conditions = [
-            f"Close < MA cepat: {latest_close:,.2f} < {latest_fast:,.2f}",
-            f"MA cepat < MA lambat: {latest_fast:,.2f} < {latest_slow:,.2f}",
-            f"Momentum {momentum_days} hari < -{threshold:.2f}%: {latest_momentum:+.2f}%",
+        sell_checklist = [
+            {
+                "Syarat": "Close < MA cepat",
+                "Nilai saat ini": f"{latest_close:,.2f} < {latest_fast:,.2f}",
+                "Lolos": latest_close < latest_fast,
+            },
+            {
+                "Syarat": "MA cepat < MA lambat",
+                "Nilai saat ini": f"{latest_fast:,.2f} < {latest_slow:,.2f}",
+                "Lolos": latest_fast < latest_slow,
+            },
+            {
+                "Syarat": f"Momentum {momentum_days} hari < -{threshold:.2f}%",
+                "Nilai saat ini": f"{latest_momentum:+.2f}%",
+                "Lolos": latest_momentum < -threshold,
+            },
         ]
         waiting = "Menunggu alignment tren: BUY jika harga dan MA cepat berada di atas MA lambat; SELL jika kebalikannya."
     elif mode == "Breakout":
-        buy_ready = latest_close > latest_previous_high and latest_momentum > 0
-        sell_ready = latest_close < latest_previous_low and latest_momentum < 0
-        buy_conditions = [
-            f"Close > high {slow_window} hari sebelumnya: {latest_close:,.2f} > {latest_previous_high:,.2f}",
-            f"Momentum {momentum_days} hari > 0: {latest_momentum:+.2f}%",
+        buy_checklist = [
+            {
+                "Syarat": f"Close > high {slow_window} hari sebelumnya",
+                "Nilai saat ini": f"{latest_close:,.2f} > {latest_previous_high:,.2f}",
+                "Lolos": latest_close > latest_previous_high,
+            },
+            {
+                "Syarat": f"Momentum {momentum_days} hari > 0",
+                "Nilai saat ini": f"{latest_momentum:+.2f}%",
+                "Lolos": latest_momentum > 0,
+            },
         ]
-        sell_conditions = [
-            f"Close < low {slow_window} hari sebelumnya: {latest_close:,.2f} < {latest_previous_low:,.2f}",
-            f"Momentum {momentum_days} hari < 0: {latest_momentum:+.2f}%",
+        sell_checklist = [
+            {
+                "Syarat": f"Close < low {slow_window} hari sebelumnya",
+                "Nilai saat ini": f"{latest_close:,.2f} < {latest_previous_low:,.2f}",
+                "Lolos": latest_close < latest_previous_low,
+            },
+            {
+                "Syarat": f"Momentum {momentum_days} hari < 0",
+                "Nilai saat ini": f"{latest_momentum:+.2f}%",
+                "Lolos": latest_momentum < 0,
+            },
         ]
         waiting = "Menunggu breakout: harga menembus high/low periode acuan dengan momentum searah."
     elif mode == "Pullback":
-        buy_ready = latest_close > latest_slow and latest_rsi < 42 and latest_momentum > -threshold
-        sell_ready = latest_close < latest_slow and latest_rsi > 58 and latest_momentum < threshold
-        buy_conditions = [
-            f"Close > MA lambat: {latest_close:,.2f} > {latest_slow:,.2f}",
-            f"RSI < 42: {latest_rsi:.1f}",
-            f"Momentum {momentum_days} hari > -{threshold:.2f}%: {latest_momentum:+.2f}%",
+        buy_checklist = [
+            {
+                "Syarat": "Close > MA lambat",
+                "Nilai saat ini": f"{latest_close:,.2f} > {latest_slow:,.2f}",
+                "Lolos": latest_close > latest_slow,
+            },
+            {"Syarat": "RSI < 42", "Nilai saat ini": f"{latest_rsi:.1f}", "Lolos": latest_rsi < 42},
+            {
+                "Syarat": f"Momentum {momentum_days} hari > -{threshold:.2f}%",
+                "Nilai saat ini": f"{latest_momentum:+.2f}%",
+                "Lolos": latest_momentum > -threshold,
+            },
         ]
-        sell_conditions = [
-            f"Close < MA lambat: {latest_close:,.2f} < {latest_slow:,.2f}",
-            f"RSI > 58: {latest_rsi:.1f}",
-            f"Momentum {momentum_days} hari < +{threshold:.2f}%: {latest_momentum:+.2f}%",
+        sell_checklist = [
+            {
+                "Syarat": "Close < MA lambat",
+                "Nilai saat ini": f"{latest_close:,.2f} < {latest_slow:,.2f}",
+                "Lolos": latest_close < latest_slow,
+            },
+            {"Syarat": "RSI > 58", "Nilai saat ini": f"{latest_rsi:.1f}", "Lolos": latest_rsi > 58},
+            {
+                "Syarat": f"Momentum {momentum_days} hari < +{threshold:.2f}%",
+                "Nilai saat ini": f"{latest_momentum:+.2f}%",
+                "Lolos": latest_momentum < threshold,
+            },
         ]
         waiting = "Menunggu pullback: harga tetap di sisi tren utama sambil RSI masuk area koreksi."
     else:
-        buy_ready = sell_ready = False
-        buy_conditions = ["Mode strategi tidak dikenali."]
-        sell_conditions = ["Mode strategi tidak dikenali."]
+        buy_checklist = [{"Syarat": "Mode strategi valid", "Nilai saat ini": mode, "Lolos": False}]
+        sell_checklist = [{"Syarat": "Mode strategi valid", "Nilai saat ini": mode, "Lolos": False}]
         waiting = "Menunggu mode strategi yang valid."
+
+    buy_ready = all(item["Lolos"] for item in buy_checklist)
+    sell_ready = all(item["Lolos"] for item in sell_checklist)
+    buy_conditions = [f"{item['Syarat']}: {item['Nilai saat ini']}" for item in buy_checklist]
+    sell_conditions = [f"{item['Syarat']}: {item['Nilai saat ini']}" for item in sell_checklist]
+    buy_passed = sum(item["Lolos"] for item in buy_checklist)
+    sell_passed = sum(item["Lolos"] for item in sell_checklist)
 
     if buy_ready:
         status = "Kondisi BUY siap"
+        interpretation = "Semua syarat BUY sudah terpenuhi. Jika jam trading aktif dan limit posisi belum penuh, posisi BUY dapat dibuka."
     elif sell_ready:
         status = "Kondisi SELL siap"
+        interpretation = "Semua syarat SELL sudah terpenuhi. Jika jam trading aktif dan limit posisi belum penuh, posisi SELL dapat dibuka."
     else:
         status = "Belum ada sinyal valid"
+        if buy_passed > sell_passed:
+            interpretation = f"Kondisi lebih dekat ke BUY ({buy_passed}/{len(buy_checklist)} syarat), tetapi belum semua syarat terpenuhi."
+        elif sell_passed > buy_passed:
+            interpretation = f"Kondisi lebih dekat ke SELL ({sell_passed}/{len(sell_checklist)} syarat), tetapi belum semua syarat terpenuhi."
+        else:
+            interpretation = "BUY dan SELL sama-sama belum lengkap. Strategi masih menunggu arah yang lebih tegas."
 
     return {
         "Status sinyal": status,
         "Yang ditunggu": waiting,
         "Kondisi BUY": " | ".join(buy_conditions),
         "Kondisi SELL": " | ".join(sell_conditions),
+        "Checklist BUY": buy_checklist,
+        "Checklist SELL": sell_checklist,
+        "Interpretasi": interpretation,
+        "Skor BUY": buy_passed,
+        "Skor SELL": sell_passed,
         "Tanggal evaluasi": latest_date,
         "Harga terakhir": latest_close,
         "Momentum saat ini": latest_momentum,

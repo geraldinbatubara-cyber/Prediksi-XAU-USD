@@ -815,6 +815,28 @@ def render_simulation(
         _render_multiphase_result("Strategi Terbaik v.2", optimized_v2_result, optimization_v2_leaderboard)
 
 
+def _render_signal_checklist(title: str, checklist: list[dict[str, object]], ready_status: str) -> None:
+    total = len(checklist)
+    passed = sum(bool(item.get("Lolos")) for item in checklist)
+    if passed == total and total > 0:
+        st.success(f"**{title}: Siap** ({passed}/{total} syarat)")
+    else:
+        st.warning(f"**{title}: Menunggu** ({passed}/{total} syarat)")
+
+    rows = []
+    for item in checklist:
+        rows.append(
+            {
+                "Status": "LOLOS" if item.get("Lolos") else "BELUM",
+                "Syarat": item.get("Syarat", "-"),
+                "Nilai saat ini": item.get("Nilai saat ini", "-"),
+            }
+        )
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.caption(ready_status)
+
+
 def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.DataFrame) -> None:
     live = run_live_trading_update(gold_ohlc, optimization_leaderboard)
     summary = live["summary"]
@@ -901,21 +923,26 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
     w3.metric("MA lambat", "-" if pd.isna(waiting_state["MA lambat"]) else f"${waiting_state['MA lambat']:,.2f}")
     w4.metric("RSI", "-" if pd.isna(waiting_state["RSI"]) else f"{waiting_state['RSI']:.1f}")
 
-    waiting_frame = pd.DataFrame(
-        [
-            {
-                "Posisi yang ditunggu": "BUY",
-                "Kondisi strategi": waiting_state["Kondisi BUY"],
-                "Status": "Siap" if waiting_state["Status sinyal"] == "Kondisi BUY siap" else "Menunggu",
-            },
-            {
-                "Posisi yang ditunggu": "SELL",
-                "Kondisi strategi": waiting_state["Kondisi SELL"],
-                "Status": "Siap" if waiting_state["Status sinyal"] == "Kondisi SELL siap" else "Menunggu",
-            },
-        ]
-    )
-    st.dataframe(waiting_frame, use_container_width=True, hide_index=True)
+    buy_col, sell_col = st.columns(2)
+    with buy_col:
+        _render_signal_checklist(
+            "Kondisi BUY",
+            waiting_state["Checklist BUY"],
+            "BUY hanya dibuka jika seluruh syarat BUY berstatus LOLOS.",
+        )
+    with sell_col:
+        _render_signal_checklist(
+            "Kondisi SELL",
+            waiting_state["Checklist SELL"],
+            "SELL hanya dibuka jika seluruh syarat SELL berstatus LOLOS.",
+        )
+
+    if waiting_state["Status sinyal"] == "Kondisi BUY siap":
+        st.success(f"**Interpretasi:** {waiting_state['Interpretasi']}")
+    elif waiting_state["Status sinyal"] == "Kondisi SELL siap":
+        st.error(f"**Interpretasi:** {waiting_state['Interpretasi']}")
+    else:
+        st.info(f"**Kondisi Netral / Tunggu:** {waiting_state['Interpretasi']}")
 
     format_columns = {
         "lot": "{:.2f}",
