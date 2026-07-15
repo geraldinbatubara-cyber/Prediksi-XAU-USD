@@ -42,6 +42,12 @@ data tick broker, jika TP dan SL sama-sama tersentuh dalam candle harian yang
 sama maka simulasi memakai asumsi konservatif: SL dianggap tersentuh lebih dulu.
 Dashboard juga menandai kapan equity berada pada titik terendah dan tertinggi.
 
+Bagian `Strategi Terbaik Optimizer` menguji strategi trend, breakout, dan
+pullback berbasis indikator teknikal dari data OHLC historis. Periode uji
+optimizer dikunci pada 1 Januari 2025 sampai 30 Juni 2026. Ranking strategi
+memprioritaskan target equity USD 1.200 tercapai, tanggal target lebih cepat,
+equity akhir lebih tinggi, dan drawdown lebih rendah.
+
 ## Monitoring Estimasi
 
 Tab `Monitoring Model 2` dan `Monitoring Model 1` membandingkan estimasi besok

@@ -19,9 +19,10 @@ from gold_forecast.monitoring import (
 )
 from gold_forecast.signals import build_signal
 from gold_forecast.simulation import DEFAULT_SCENARIOS, run_simulation_scenarios
+from gold_forecast.strategy_optimizer import OPTIMIZATION_END, OPTIMIZATION_START, run_optimized_strategy
 
 
-SIMULATION_CACHE_VERSION = "equity-target-v2"
+SIMULATION_CACHE_VERSION = "optimizer-equity-target-v1"
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -49,7 +50,9 @@ def get_models(market_data: pd.DataFrame):
 
 @st.cache_data(ttl=3600)
 def get_simulations(market_data: pd.DataFrame, gold_ohlc: pd.DataFrame, simulation_version: str):
-    return run_simulation_scenarios(market_data, gold_ohlc)
+    simulation_results, scenario_summary = run_simulation_scenarios(market_data, gold_ohlc)
+    optimized_result, optimization_leaderboard = run_optimized_strategy(gold_ohlc)
+    return simulation_results, scenario_summary, optimized_result, optimization_leaderboard
 
 
 def render_dashboard(
@@ -428,7 +431,12 @@ def _render_simulation_result(title: str, result) -> None:
     )
 
 
-def render_simulation(simulation_results, scenario_summary: pd.DataFrame) -> None:
+def render_simulation(
+    simulation_results,
+    scenario_summary: pd.DataFrame,
+    optimized_result,
+    optimization_leaderboard: pd.DataFrame,
+) -> None:
     st.subheader("Simulasi Trading XAU/USD")
     st.caption(
         "Asumsi: equity awal USD 1.000, target close-all USD 1.200, lot mikro 0.01, "
@@ -442,6 +450,52 @@ def render_simulation(simulation_results, scenario_summary: pd.DataFrame) -> Non
         "Target equity USD 1.200 dievaluasi pada close harian setelah swap dan unrealized P/L dihitung."
     )
 
+    st.subheader("Strategi Terbaik Optimizer")
+    st.caption(
+        "Optimizer menguji strategi berbasis trend, breakout, dan pullback memakai data real "
+        f"periode {OPTIMIZATION_START.strftime('%d %b %Y')} sampai {OPTIMIZATION_END.strftime('%d %b %Y')}. "
+        "Strategi dipilih dengan prioritas: target USD 1.200 tercapai, lebih cepat tercapai, equity akhir, "
+        "dan drawdown lebih rendah."
+    )
+    if optimization_leaderboard.empty:
+        st.warning("Optimizer belum menemukan kandidat strategi yang memenuhi syarat minimal transaksi.")
+    else:
+        best = optimized_result.summary
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Target optimizer", "Tercapai" if best["Target tercapai"] else "Belum", f"${best['Equity akhir']:,.2f}")
+        b2.metric(
+            "Tanggal target",
+            "-" if pd.isna(best["Tanggal target"]) else pd.Timestamp(best["Tanggal target"]).strftime("%d %b %Y"),
+        )
+        b3.metric("Max drawdown", f"${best['Max drawdown']:,.2f}")
+        b4.metric("Jumlah transaksi", f"{best['Jumlah transaksi']:.0f}")
+        _render_simulation_result("Strategi Terbaik Optimizer", optimized_result)
+
+        with st.expander("Leaderboard strategi optimizer"):
+            leaderboard = optimization_leaderboard.head(25).copy()
+            st.dataframe(
+                leaderboard.style.format(
+                    {
+                        "Threshold entry (%)": "{:.2f}%",
+                        "TP (USD)": "${:,.2f}",
+                        "SL (USD)": "${:,.2f}",
+                        "Lot": "{:.2f}",
+                        "Equity akhir": "${:,.2f}",
+                        "Equity terendah": "${:,.2f}",
+                        "Equity tertinggi": "${:,.2f}",
+                        "Max drawdown": "${:,.2f}",
+                        "Jumlah transaksi": "{:.0f}",
+                        "Win rate": "{:.1f}%",
+                        "Profit factor": "{:.2f}",
+                        "Avg net P/L": "${:+,.2f}",
+                    },
+                    na_rep="-",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    st.divider()
     strategy_names = [str(scenario["Strategi"]) for scenario in DEFAULT_SCENARIOS]
     selected_strategy = st.selectbox(
         "Strategi untuk detail transaksi",
@@ -628,7 +682,11 @@ try:
     market, data_fetched_at = get_data()
     gold_ohlc = get_gold_ohlc()
     model_1, model_2, direction_model = get_models(market)
-    simulation_results, scenario_summary = get_simulations(market, gold_ohlc, SIMULATION_CACHE_VERSION)
+    simulation_results, scenario_summary, optimized_result, optimization_leaderboard = get_simulations(
+        market,
+        gold_ohlc,
+        SIMULATION_CACHE_VERSION,
+    )
 except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
@@ -655,4 +713,4 @@ with monitoring_model_1_tab:
     render_monitoring("Monitoring Model 1", MODEL_1_DATA_PATH)
 
 with simulation_tab:
-    render_simulation(simulation_results, scenario_summary)
+    render_simulation(simulation_results, scenario_summary, optimized_result, optimization_leaderboard)
