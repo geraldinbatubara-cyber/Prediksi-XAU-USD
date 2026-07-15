@@ -28,9 +28,11 @@ T+7. Dashboard membandingkan Model 1 dan Model 2 pada horizon T+1 yang setara.
 ## Simulasi Trading
 
 Tab `Simulasi` membandingkan simulasi Model 1 dan Model 2 secara terpisah.
-Asumsi dasar: modal USD 1.000, lot mikro 0.01, biaya swap USD 0.2 per posisi
-per hari, maksimal 8 BUY dan 10 SELL. Posisi dibuat dari sinyal 23:59 WIT dan
-ditutup keesokan hari, saat TP tersentuh, atau saat SL tersentuh.
+Asumsi dasar: equity awal USD 1.000, target close-all USD 1.200, lot mikro 0.01,
+biaya swap USD 0.2 per posisi per hari, maksimal 8 BUY dan 10 SELL. Equity
+dihitung dari cash balance ditambah unrealized P/L posisi terbuka. Ketika equity
+net mencapai USD 1.200, semua posisi terbuka ditutup pada checkpoint close harian
+dan tanggalnya ditampilkan di dashboard.
 
 Simulasi sekarang menampilkan beberapa skenario strategi: agresif, moderate,
 konservatif, dan TP lebar. Setiap skenario punya threshold entry, TP, dan SL
@@ -38,6 +40,7 @@ yang berbeda agar model tidak selalu dipaksa trading ketika estimasi perubahan
 harga terlalu kecil. Karena data yang dipakai adalah OHLC harian `GC=F`, bukan
 data tick broker, jika TP dan SL sama-sama tersentuh dalam candle harian yang
 sama maka simulasi memakai asumsi konservatif: SL dianggap tersentuh lebih dulu.
+Dashboard juga menandai kapan equity berada pada titik terendah dan tertinggi.
 
 ## Monitoring Estimasi
 

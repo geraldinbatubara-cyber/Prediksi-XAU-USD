@@ -246,17 +246,41 @@ def _render_simulation_result(title: str, result) -> None:
     st.subheader(title)
     summary = result.summary
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Balance akhir", f"${summary['Balance akhir']:,.2f}", f"{summary['Total net P/L']:+,.2f}")
+    c1.metric("Equity akhir", f"${summary['Equity akhir']:,.2f}", f"{summary['Equity akhir'] - summary['Modal awal']:+,.2f}")
     c2.metric("Jumlah transaksi", f"{summary['Jumlah transaksi']:.0f}")
     c3.metric("Win rate", "-" if pd.isna(summary["Win rate"]) else f"{summary['Win rate']:.1f}%")
     c4.metric("Max drawdown", f"${summary['Max drawdown']:,.2f}")
+
+    target_date = summary["Tanggal target"]
+    target_label = "-" if pd.isna(target_date) else pd.Timestamp(target_date).strftime("%d %b %Y")
+    low_date = summary["Tanggal equity terendah"]
+    high_date = summary["Tanggal equity tertinggi"]
+    st.info(
+        f"Target close-all: **${summary['Target equity']:,.2f}** | "
+        f"Status: **{'Tercapai' if summary['Target tercapai'] else 'Belum tercapai'}** | "
+        f"Tanggal target: **{target_label}**"
+    )
 
     detail = pd.DataFrame(
         [
             {"Metrik": "Total BUY", "Nilai": summary["Total BUY"]},
             {"Metrik": "Total SELL", "Nilai": summary["Total SELL"]},
             {"Metrik": "Modal awal", "Nilai": summary["Modal awal"]},
+            {"Metrik": "Balance akhir", "Nilai": summary["Balance akhir"]},
+            {
+                "Metrik": "Equity terendah",
+                "Nilai": f"${summary['Equity terendah']:,.2f} pada {pd.Timestamp(low_date).strftime('%d %b %Y')}"
+                if not pd.isna(low_date)
+                else "-",
+            },
+            {
+                "Metrik": "Equity tertinggi",
+                "Nilai": f"${summary['Equity tertinggi']:,.2f} pada {pd.Timestamp(high_date).strftime('%d %b %Y')}"
+                if not pd.isna(high_date)
+                else "-",
+            },
             {"Metrik": "Total net P/L", "Nilai": summary["Total net P/L"]},
+            {"Metrik": "Total swap", "Nilai": summary["Total swap"]},
             {"Metrik": "Profit factor", "Nilai": summary["Profit factor"]},
             {"Metrik": "Avg net P/L", "Nilai": summary["Avg net P/L"]},
         ]
@@ -271,12 +295,50 @@ def _render_simulation_result(title: str, result) -> None:
     figure.add_trace(
         go.Scatter(
             x=result.equity_curve.index,
-            y=result.equity_curve["Balance"],
-            name="Balance",
+            y=result.equity_curve["Equity"],
+            name="Equity",
             line=dict(width=3),
         )
     )
-    figure.update_layout(title=f"Equity Curve {title}", yaxis_title="USD", height=360)
+    figure.add_trace(
+        go.Scatter(
+            x=result.equity_curve.index,
+            y=result.equity_curve["Balance"],
+            name="Balance cash",
+            line=dict(width=1.5, dash="dot"),
+        )
+    )
+    figure.add_hline(
+        y=summary["Target equity"],
+        line_dash="dash",
+        line_color="#16a34a",
+        annotation_text="Target equity $1,200",
+    )
+    if not pd.isna(low_date):
+        figure.add_trace(
+            go.Scatter(
+                x=[low_date],
+                y=[summary["Equity terendah"]],
+                mode="markers+text",
+                name="Equity terendah",
+                marker=dict(size=11, color="#dc2626"),
+                text=["Low"],
+                textposition="bottom center",
+            )
+        )
+    if not pd.isna(high_date):
+        figure.add_trace(
+            go.Scatter(
+                x=[high_date],
+                y=[summary["Equity tertinggi"]],
+                mode="markers+text",
+                name="Equity tertinggi",
+                marker=dict(size=11, color="#16a34a"),
+                text=["High"],
+                textposition="top center",
+            )
+        )
+    figure.update_layout(title=f"Equity Curve {title}", yaxis_title="USD", height=390)
     st.plotly_chart(figure, use_container_width=True)
 
     trades = result.trades.copy()
@@ -294,8 +356,33 @@ def _render_simulation_result(title: str, result) -> None:
         "Net P/L",
         "Balance",
     ]
+    visible_columns = [
+        column
+        for column in [
+            "Model",
+            "Strategi",
+            "Position ID",
+            "Tanggal entry",
+            "Tanggal tutup",
+            "Arah",
+            "Lot",
+            "Prediksi",
+            "Expected change (%)",
+            "Entry",
+            "Exit",
+            "Alasan exit",
+            "TP (USD)",
+            "SL (USD)",
+            "Threshold entry (%)",
+            "Gross P/L",
+            "Swap",
+            "Net P/L",
+            "Balance",
+        ]
+        if column in trades.columns
+    ]
     st.dataframe(
-        trades.style.format(
+        trades[visible_columns].style.format(
             {
                 "Lot": "{:.2f}",
                 "Prediksi": "${:,.2f}",
@@ -320,15 +407,15 @@ def _render_simulation_result(title: str, result) -> None:
 def render_simulation(simulation_results, scenario_summary: pd.DataFrame) -> None:
     st.subheader("Simulasi Trading XAU/USD")
     st.caption(
-        "Asumsi: modal awal USD 1.000, lot mikro 0.01, swap USD 0.2 per posisi per hari, "
-        "maksimal 8 BUY dan 10 SELL. Sinyal dibuat pada 23:59 WIT; posisi ditutup "
-        "keesokan hari, saat TP tersentuh, atau saat SL tersentuh. Simulasi memakai "
-        "OHLC harian GC=F, bukan data tick broker."
+        "Asumsi: equity awal USD 1.000, target close-all USD 1.200, lot mikro 0.01, "
+        "swap USD 0.2 per posisi per hari, maksimal 8 BUY dan 10 SELL. Equity menghitung "
+        "cash balance ditambah unrealized P/L posisi terbuka. Simulasi memakai OHLC harian "
+        "GC=F, bukan data tick broker."
     )
     st.warning(
         "Catatan penting: karena OHLC harian tidak menunjukkan urutan intraday, jika TP dan SL "
         "sama-sama tersentuh dalam satu candle, simulasi menganggap SL kena lebih dulu. "
-        "Ini sengaja konservatif agar hasil tidak terlalu optimistis."
+        "Target equity USD 1.200 dievaluasi pada close harian setelah swap dan unrealized P/L dihitung."
     )
 
     strategy_names = [str(scenario["Strategi"]) for scenario in DEFAULT_SCENARIOS]
@@ -347,6 +434,9 @@ def render_simulation(simulation_results, scenario_summary: pd.DataFrame) -> Non
                 "TP (USD)": "${:,.2f}",
                 "SL (USD)": "${:,.2f}",
                 "Balance akhir": "${:,.2f}",
+                "Equity akhir": "${:,.2f}",
+                "Equity terendah": "${:,.2f}",
+                "Equity tertinggi": "${:,.2f}",
                 "Total net P/L": "${:+,.2f}",
                 "Jumlah transaksi": "{:.0f}",
                 "Win rate": "{:.1f}%",
@@ -404,8 +494,8 @@ def render_monitoring(title: str, data_path) -> None:
     else:
         best_mae = completed_summary.loc[pd.to_numeric(completed_summary["MAE"], errors="coerce").idxmin()]
         best_direction = completed_summary.loc[pd.to_numeric(completed_summary["Akurasi arah"], errors="coerce").idxmax()]
-        c2.metric("Jam MAE terbaik", f"{best_mae['Jam WIT']} · ${best_mae['MAE']:,.2f}")
-        c3.metric("Jam arah terbaik", f"{best_direction['Jam WIT']} · {best_direction['Akurasi arah']:.1f}%")
+        c2.metric("Jam MAE terbaik", f"{best_mae['Jam WIT']} - ${best_mae['MAE']:,.2f}")
+        c3.metric("Jam arah terbaik", f"{best_direction['Jam WIT']} - {best_direction['Akurasi arah']:.1f}%")
 
     st.markdown("**Summary Akurasi Per Jam Aktual**")
     st.dataframe(
