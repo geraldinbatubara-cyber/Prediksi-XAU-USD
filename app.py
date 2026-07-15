@@ -18,7 +18,7 @@ from gold_forecast.monitoring import (
     monitoring_summary,
 )
 from gold_forecast.signals import build_signal
-from gold_forecast.simulation import simulate_model_1, simulate_model_2
+from gold_forecast.simulation import DEFAULT_SCENARIOS, run_simulation_scenarios
 
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -47,10 +47,7 @@ def get_models(market_data: pd.DataFrame):
 
 @st.cache_data(ttl=3600)
 def get_simulations(market_data: pd.DataFrame, gold_ohlc: pd.DataFrame):
-    return (
-        simulate_model_1(market_data, gold_ohlc),
-        simulate_model_2(market_data, gold_ohlc),
-    )
+    return run_simulation_scenarios(market_data, gold_ohlc)
 
 
 def render_dashboard(
@@ -260,6 +257,8 @@ def _render_simulation_result(title: str, result) -> None:
             {"Metrik": "Total SELL", "Nilai": summary["Total SELL"]},
             {"Metrik": "Modal awal", "Nilai": summary["Modal awal"]},
             {"Metrik": "Total net P/L", "Nilai": summary["Total net P/L"]},
+            {"Metrik": "Profit factor", "Nilai": summary["Profit factor"]},
+            {"Metrik": "Avg net P/L", "Nilai": summary["Avg net P/L"]},
         ]
     )
     st.dataframe(detail, use_container_width=True, hide_index=True)
@@ -281,14 +280,31 @@ def _render_simulation_result(title: str, result) -> None:
     st.plotly_chart(figure, use_container_width=True)
 
     trades = result.trades.copy()
-    numeric_columns = ["Lot", "Prediksi", "Entry", "Exit", "Gross P/L", "Swap", "Net P/L", "Balance"]
+    numeric_columns = [
+        "Lot",
+        "Prediksi",
+        "Expected change (%)",
+        "Entry",
+        "Exit",
+        "TP (USD)",
+        "SL (USD)",
+        "Threshold entry (%)",
+        "Gross P/L",
+        "Swap",
+        "Net P/L",
+        "Balance",
+    ]
     st.dataframe(
         trades.style.format(
             {
                 "Lot": "{:.2f}",
                 "Prediksi": "${:,.2f}",
+                "Expected change (%)": "{:+.2f}%",
                 "Entry": "${:,.2f}",
                 "Exit": "${:,.2f}",
+                "TP (USD)": "${:,.2f}",
+                "SL (USD)": "${:,.2f}",
+                "Threshold entry (%)": "{:.2f}%",
                 "Gross P/L": "${:+,.2f}",
                 "Swap": "${:+,.2f}",
                 "Net P/L": "${:+,.2f}",
@@ -301,20 +317,59 @@ def _render_simulation_result(title: str, result) -> None:
     )
 
 
-def render_simulation(model_1_simulation, model_2_simulation) -> None:
+def render_simulation(simulation_results, scenario_summary: pd.DataFrame) -> None:
     st.subheader("Simulasi Trading XAU/USD")
     st.caption(
-        "Asumsi: modal awal USD 1.000, lot mikro 0.01, TP USD 5 per posisi, "
-        "swap USD 0.2 per posisi per hari, maksimal 8 BUY dan 10 SELL. "
-        "Sinyal dibuat pada 23:59 WIT; posisi ditutup keesokan hari atau saat TP tersentuh. "
-        "Simulasi memakai OHLC harian GC=F, bukan data tick broker."
+        "Asumsi: modal awal USD 1.000, lot mikro 0.01, swap USD 0.2 per posisi per hari, "
+        "maksimal 8 BUY dan 10 SELL. Sinyal dibuat pada 23:59 WIT; posisi ditutup "
+        "keesokan hari, saat TP tersentuh, atau saat SL tersentuh. Simulasi memakai "
+        "OHLC harian GC=F, bukan data tick broker."
+    )
+    st.warning(
+        "Catatan penting: karena OHLC harian tidak menunjukkan urutan intraday, jika TP dan SL "
+        "sama-sama tersentuh dalam satu candle, simulasi menganggap SL kena lebih dulu. "
+        "Ini sengaja konservatif agar hasil tidak terlalu optimistis."
+    )
+
+    strategy_names = [str(scenario["Strategi"]) for scenario in DEFAULT_SCENARIOS]
+    selected_strategy = st.selectbox(
+        "Strategi untuk detail transaksi",
+        strategy_names,
+        index=strategy_names.index("Moderate") if "Moderate" in strategy_names else 0,
+    )
+
+    st.subheader("Perbandingan Skenario TP/SL")
+    scenario_table = scenario_summary.copy()
+    st.dataframe(
+        scenario_table.style.format(
+            {
+                "Threshold entry (%)": "{:.2f}%",
+                "TP (USD)": "${:,.2f}",
+                "SL (USD)": "${:,.2f}",
+                "Balance akhir": "${:,.2f}",
+                "Total net P/L": "${:+,.2f}",
+                "Jumlah transaksi": "{:.0f}",
+                "Win rate": "{:.1f}%",
+                "Max drawdown": "${:,.2f}",
+                "Profit factor": "{:.2f}",
+                "Avg net P/L": "${:+,.2f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
     )
 
     model_2_section, model_1_section = st.tabs(["Simulasi Model 2", "Simulasi Model 1"])
     with model_2_section:
-        _render_simulation_result("Simulasi Model 2", model_2_simulation)
+        _render_simulation_result(
+            f"Simulasi Model 2 - Strategi {selected_strategy}",
+            simulation_results["Model 2 - Lintas Pasar"][selected_strategy],
+        )
     with model_1_section:
-        _render_simulation_result("Simulasi Model 1", model_1_simulation)
+        _render_simulation_result(
+            f"Simulasi Model 1 - Strategi {selected_strategy}",
+            simulation_results["Model 1 - Harga Historis"][selected_strategy],
+        )
 
 
 def render_monitoring(title: str, data_path) -> None:
@@ -451,7 +506,7 @@ try:
     market, data_fetched_at = get_data()
     gold_ohlc = get_gold_ohlc()
     model_1, model_2, direction_model = get_models(market)
-    model_1_simulation, model_2_simulation = get_simulations(market, gold_ohlc)
+    simulation_results, scenario_summary = get_simulations(market, gold_ohlc)
 except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
@@ -478,4 +533,4 @@ with monitoring_model_1_tab:
     render_monitoring("Monitoring Model 1", MODEL_1_DATA_PATH)
 
 with simulation_tab:
-    render_simulation(model_1_simulation, model_2_simulation)
+    render_simulation(simulation_results, scenario_summary)
