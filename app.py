@@ -6,6 +6,7 @@ import streamlit as st
 
 from gold_forecast.data import load_gold_data, load_market_data
 from gold_forecast.direction_model import train_direction_model
+from gold_forecast.live_trading import LIVE_INITIAL_EQUITY, LIVE_START_DATE, run_live_trading_update
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
 from gold_forecast.monitoring import (
@@ -810,6 +811,184 @@ def render_simulation(
         _render_multiphase_result("Strategi Terbaik v.2", optimized_v2_result, optimization_v2_leaderboard)
 
 
+def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.DataFrame) -> None:
+    live = run_live_trading_update(gold_ohlc, optimization_leaderboard)
+    summary = live["summary"]
+    params = live["params"]
+    signal = live["signal"]
+    signals = live["signals"].copy()
+    open_positions = live["open_positions"].copy()
+    closed_positions = live["closed_positions"].copy()
+
+    st.subheader("Live Trading - Strategi Terbaik Optimizer")
+    st.caption(
+        "Mode ini adalah paper-trading live berbasis data dashboard. Posisi dibuka mengikuti pola "
+        "Strategi Terbaik Optimizer, bukan order broker sungguhan."
+    )
+    st.warning(
+        "Asumsi live: equity awal USD 1.000, lot tetap 0.01, swap BUY USD 0.02 per 0.01 lot per hari, "
+        "swap SELL USD 0. Jam trading Senin-Jumat 07:00 WIT sampai 06:00 WIT hari berikutnya; "
+        f"Sabtu dan Minggu tidak membuka posisi baru. Ledger live dimulai **{LIVE_START_DATE.strftime('%d %b %Y')}**."
+    )
+
+    status_text = "Aktif" if summary["Can trade"] else "Tidak membuka posisi baru"
+    st.info(
+        f"Waktu dashboard: **{summary['Now WIT'].strftime('%d %b %Y %H:%M:%S WIT')}** | "
+        f"Status sesi: **{status_text}** | {summary['Session note']}"
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Equity live", f"${summary['Equity']:,.2f}", f"{summary['Equity'] - LIVE_INITIAL_EQUITY:+,.2f}")
+    c2.metric("Balance live", f"${summary['Balance']:,.2f}")
+    c3.metric("Floating P/L", f"${summary['Floating P/L']:+,.2f}")
+    c4.metric("Open posisi", f"{summary['Open BUY'] + summary['Open SELL']}", f"BUY {summary['Open BUY']} | SELL {summary['Open SELL']}")
+
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Harga data terbaru", "-" if pd.isna(summary["Latest price"]) else f"${summary['Latest price']:,.2f}")
+    p2.metric("Tanggal data", "-" if pd.isna(summary["Latest data date"]) else pd.Timestamp(summary["Latest data date"]).strftime("%d %b %Y"))
+    p3.metric("Closed net P/L", f"${summary['Closed net P/L']:+,.2f}")
+    p4.metric("Swap posisi terbuka", f"${summary['Open swap']:+,.2f}")
+
+    strategy_frame = pd.DataFrame(
+        [
+            {"Parameter": "Strategi", "Nilai": params["Strategi"]},
+            {"Parameter": "Mode", "Nilai": params["Mode"]},
+            {"Parameter": "MA cepat/lambat", "Nilai": f"{params['Fast MA']} / {params['Slow MA']}"},
+            {"Parameter": "Momentum hari", "Nilai": params["Momentum hari"]},
+            {"Parameter": "Threshold entry", "Nilai": f"{params['Threshold entry (%)']:.2f}%"},
+            {"Parameter": "TP per posisi", "Nilai": f"USD {params['TP (USD)']:,.2f}"},
+            {"Parameter": "CL/SL per posisi", "Nilai": f"USD {params['SL (USD)']:,.2f}"},
+            {"Parameter": "Lot live", "Nilai": "0.01 tetap"},
+        ]
+    )
+    st.markdown("**Pola Strategi yang Dipakai**")
+    st.dataframe(strategy_frame, use_container_width=True, hide_index=True)
+
+    st.markdown("**Sinyal Strategi Saat Ini**")
+    if signal is None:
+        st.info("Belum ada sinyal optimizer yang memenuhi threshold dari data terbaru.")
+    else:
+        signal_direction = signal["arah"]
+        signal_message = (
+            f"Sinyal terakhir **{signal_direction}** pada **{pd.Timestamp(signal['signal_date']).strftime('%d %b %Y')}** "
+            f"dengan prediksi **${signal['prediction']:,.2f}**, harga referensi **${signal['reference_price']:,.2f}**, "
+            f"expected change **{signal['expected_change_pct']:+.2f}%**."
+        )
+        if signal_direction == "BUY":
+            st.success(signal_message)
+        elif signal_direction == "SELL":
+            st.error(signal_message)
+        else:
+            st.info(signal_message)
+
+    format_columns = {
+        "lot": "{:.2f}",
+        "prediction": "${:,.2f}",
+        "reference_price": "${:,.2f}",
+        "expected_change_pct": "{:+.2f}%",
+        "threshold_entry_pct": "{:.2f}%",
+        "tp_usd": "${:,.2f}",
+        "cl_usd": "${:,.2f}",
+        "entry_price": "${:,.2f}",
+        "exit_price": "${:,.2f}",
+        "gross_pl": "${:+,.2f}",
+        "swap": "${:+,.2f}",
+        "net_pl": "${:+,.2f}",
+    }
+
+    st.markdown("**Sinyal dan Status Posisi**")
+    signal_columns = [
+        "position_id",
+        "signal_date",
+        "detected_at_wit",
+        "status",
+        "arah",
+        "lot",
+        "prediction",
+        "reference_price",
+        "expected_change_pct",
+        "entry_time_wit",
+        "entry_price",
+        "catatan",
+    ]
+    if signals.empty:
+        st.info("Belum ada sinyal live yang tercatat sejak ledger dimulai.")
+    else:
+        st.dataframe(
+            signals[[column for column in signal_columns if column in signals.columns]].tail(50).style.format(
+                format_columns,
+                subset=[column for column in format_columns if column in signals.columns],
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("**Posisi Terbuka**")
+    if open_positions.empty:
+        st.info("Tidak ada posisi terbuka saat ini.")
+    else:
+        open_display = open_positions.copy()
+        open_display["floating_pl"] = open_display.apply(
+            lambda row: (
+                (summary["Latest price"] - float(row["entry_price"])) * float(row["lot"]) * 100
+                if row["arah"] == "BUY"
+                else (float(row["entry_price"]) - summary["Latest price"]) * float(row["lot"]) * 100
+            ),
+            axis=1,
+        )
+        open_columns = [
+            "position_id",
+            "status",
+            "arah",
+            "lot",
+            "entry_time_wit",
+            "entry_price",
+            "tp_usd",
+            "cl_usd",
+            "swap",
+            "floating_pl",
+            "catatan",
+        ]
+        st.dataframe(
+            open_display[[column for column in open_columns if column in open_display.columns]].style.format(
+                {**format_columns, "floating_pl": "${:+,.2f}"},
+                subset=[column for column in [*format_columns, "floating_pl"] if column in open_display.columns],
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("**Riwayat Posisi Close**")
+    if closed_positions.empty:
+        st.info("Belum ada posisi yang close.")
+    else:
+        closed_columns = [
+            "position_id",
+            "signal_date",
+            "arah",
+            "lot",
+            "entry_time_wit",
+            "entry_price",
+            "exit_time_wit",
+            "exit_price",
+            "exit_reason",
+            "gross_pl",
+            "swap",
+            "net_pl",
+        ]
+        st.dataframe(
+            closed_positions[[column for column in closed_columns if column in closed_positions.columns]].tail(100).style.format(
+                format_columns,
+                subset=[column for column in format_columns if column in closed_positions.columns],
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def render_monitoring(title: str, data_path) -> None:
     st.subheader(f"{title}: Estimasi vs Aktual Intraday")
     st.caption(
@@ -952,8 +1131,8 @@ except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
 
-dashboard_tab, simulation_tab, monitoring_model_2_tab, monitoring_model_1_tab = st.tabs(
-    ["Dashboard", "Simulasi", "Monitoring Model 2", "Monitoring Model 1"]
+dashboard_tab, simulation_tab, live_trading_tab, monitoring_model_2_tab, monitoring_model_1_tab = st.tabs(
+    ["Dashboard", "Simulasi", "Live Trading", "Monitoring Model 2", "Monitoring Model 1"]
 )
 with dashboard_tab:
     render_dashboard(
@@ -980,3 +1159,6 @@ with simulation_tab:
         optimized_v2_result,
         optimization_v2_leaderboard,
     )
+
+with live_trading_tab:
+    render_live_trading(gold_ohlc, optimization_leaderboard)
