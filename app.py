@@ -438,6 +438,133 @@ def _render_simulation_result(title: str, result) -> None:
     )
 
 
+def _format_date(value) -> str:
+    if pd.isna(value):
+        return "-"
+    try:
+        return pd.Timestamp(value).strftime("%d %b %Y")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _build_phase_execution_summary(phases: pd.DataFrame, trades: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    if phases.empty:
+        return pd.DataFrame(rows)
+
+    for _, phase in phases.iterrows():
+        phase_id = phase.get("Fase")
+        phase_trades = trades[trades["Fase"] == phase_id].copy() if not trades.empty and "Fase" in trades.columns else pd.DataFrame()
+
+        if phase_trades.empty:
+            total_tp = total_cl = total_swap = total_other = 0.0
+            buy_count = sell_count = close_count = tp_count = cl_count = 0
+        else:
+            gross = pd.to_numeric(phase_trades.get("Gross P/L", 0.0), errors="coerce").fillna(0.0)
+            swap = pd.to_numeric(phase_trades.get("Swap", 0.0), errors="coerce").fillna(0.0)
+            reasons = phase_trades.get("Alasan exit", pd.Series("", index=phase_trades.index)).astype(str)
+
+            tp_mask = reasons.eq("TP tersentuh")
+            cl_mask = reasons.eq("SL tersentuh")
+            total_tp = float(gross[tp_mask].sum())
+            total_cl = float(gross[cl_mask].sum())
+            total_other = float(gross[~tp_mask & ~cl_mask].sum())
+            total_swap = float(swap.sum())
+            directions = phase_trades.get("Arah", pd.Series("", index=phase_trades.index)).astype(str)
+            buy_count = int(directions.eq("BUY").sum())
+            sell_count = int(directions.eq("SELL").sum())
+            close_count = int(len(phase_trades))
+            tp_count = int(tp_mask.sum())
+            cl_count = int(cl_mask.sum())
+
+        rows.append(
+            {
+                "Fase": phase_id,
+                "Start equity": phase.get("Start equity"),
+                "Target equity": phase.get("Target equity"),
+                "Equity close-all": phase.get("Equity close-all"),
+                "Target tercapai": phase.get("Target tercapai"),
+                "Tanggal target": phase.get("Tanggal target"),
+                "Biaya SWAP": total_swap,
+                "Nilai total TP": total_tp,
+                "Nilai total CL/SL": total_cl,
+                "Nilai close-all/lainnya": total_other,
+                "Posisi BUY": buy_count,
+                "Posisi SELL": sell_count,
+                "Jumlah CLOSE": close_count,
+                "Close TP": tp_count,
+                "Close CL/SL": cl_count,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _render_strategy_explanation(title: str, summary: dict, phases: pd.DataFrame, trades: pd.DataFrame, leaderboard: pd.DataFrame) -> None:
+    best = leaderboard.iloc[0].to_dict() if not leaderboard.empty else {}
+    strategy_name = best.get("Strategi", title)
+    threshold = best.get("Threshold entry (%)")
+    tp_value = best.get("TP (USD)")
+    sl_value = best.get("SL (USD)")
+    fixed_lot = best.get("Lot", 0.01)
+    if pd.isna(fixed_lot):
+        fixed_lot = 0.01
+    lot_info = "lot dinamis 0.01-0.02 mengikuti confidence sinyal" if "v.2" in title else f"lot tetap {fixed_lot:.2f}"
+
+    strategy_parts = [
+        f"Strategi terpilih: **{strategy_name}**.",
+        f"Entry hanya dibuka saat sinyal melewati threshold **{threshold:.2f}%**." if pd.notna(threshold) else "",
+        f"Setiap posisi memakai TP **USD {tp_value:,.2f}** dan CL/SL **USD {sl_value:,.2f}**." if pd.notna(tp_value) and pd.notna(sl_value) else "",
+        f"Ukuran transaksi: **{lot_info}**.",
+    ]
+    st.markdown("**Penjelasan Strategi dan Momen Kritis**")
+    st.info(" ".join(part for part in strategy_parts if part))
+
+    low_date = _format_date(summary.get("Tanggal equity terendah"))
+    high_date = _format_date(summary.get("Tanggal equity tertinggi"))
+    last_phase = phases.iloc[-1] if not phases.empty else pd.Series(dtype=object)
+    target_reached = last_phase.get("Target tercapai", False)
+    target_status = "tercapai" if pd.notna(target_reached) and bool(target_reached) else "belum tercapai"
+    total_buy = int(summary.get("Total BUY", 0))
+    total_sell = int(summary.get("Total SELL", 0))
+    total_swap = float(summary.get("Total swap", 0.0))
+
+    critical_notes = [
+        f"Equity terendah terjadi pada **{low_date}** di **USD {summary.get('Equity terendah', 0):,.2f}**.",
+        f"Equity tertinggi terjadi pada **{high_date}** di **USD {summary.get('Equity tertinggi', 0):,.2f}**.",
+        f"Fase terakhir **{target_status}**; tanggal target: **{_format_date(last_phase.get('Tanggal target'))}**.",
+        f"Eksposur arah: **{total_buy} BUY** dan **{total_sell} SELL**; total swap simulasi **USD {total_swap:+,.2f}**.",
+    ]
+    st.warning(" ".join(critical_notes))
+
+    phase_execution = _build_phase_execution_summary(phases, trades)
+    if phase_execution.empty:
+        st.info("Belum ada transaksi fase yang bisa diringkas.")
+        return
+
+    st.markdown("**Summary Eksekusi per Fase**")
+    st.dataframe(
+        phase_execution.style.format(
+            {
+                "Start equity": "${:,.2f}",
+                "Target equity": "${:,.2f}",
+                "Equity close-all": "${:,.2f}",
+                "Biaya SWAP": "${:+,.2f}",
+                "Nilai total TP": "${:+,.2f}",
+                "Nilai total CL/SL": "${:+,.2f}",
+                "Nilai close-all/lainnya": "${:+,.2f}",
+                "Posisi BUY": "{:.0f}",
+                "Posisi SELL": "{:.0f}",
+                "Jumlah CLOSE": "{:.0f}",
+                "Close TP": "{:.0f}",
+                "Close CL/SL": "{:.0f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame) -> None:
     st.subheader(title)
     summary = result.summary
@@ -552,6 +679,7 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame) -> 
             )
         figure.update_layout(title=f"Equity Curve Multi-Fase {title}", yaxis_title="USD", height=420)
         st.plotly_chart(figure, use_container_width=True)
+        _render_strategy_explanation(title, summary, phases, trades, leaderboard)
 
     if not trades.empty:
         st.markdown("**Detail Transaksi**")
