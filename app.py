@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 try:
     from streamlit_autorefresh import st_autorefresh
 except ImportError:  # pragma: no cover - handled in deployed UI
@@ -570,7 +571,141 @@ def _render_strategy_explanation(title: str, summary: dict, phases: pd.DataFrame
     )
 
 
-def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame) -> None:
+def _render_strategy_trade_chart(
+    title: str,
+    gold_ohlc: pd.DataFrame,
+    trades: pd.DataFrame,
+    leaderboard: pd.DataFrame,
+) -> None:
+    if gold_ohlc.empty or trades.empty or leaderboard.empty:
+        return
+
+    best = leaderboard.iloc[0]
+    fast_window = int(best.get("Fast MA", 10))
+    slow_window = int(best.get("Slow MA", 50))
+    momentum_days = int(best.get("Momentum hari", 10))
+    threshold = float(best.get("Threshold entry (%)", 0.15))
+
+    chart_data = gold_ohlc.copy()
+    chart_data = chart_data.loc[
+        (chart_data.index >= OPTIMIZATION_START - pd.Timedelta(days=120))
+        & (chart_data.index <= OPTIMIZATION_END)
+    ].copy()
+    if chart_data.empty:
+        return
+
+    close = chart_data["Close"].astype(float)
+    chart_data["MA cepat"] = close.rolling(fast_window).mean()
+    chart_data["MA lambat"] = close.rolling(slow_window).mean()
+    chart_data["Momentum"] = close.pct_change(momentum_days) * 100
+
+    trade_rows = trades.copy()
+    trade_rows["Tanggal entry"] = pd.to_datetime(trade_rows["Tanggal entry"], errors="coerce")
+    trade_rows["Tanggal tutup"] = pd.to_datetime(trade_rows["Tanggal tutup"], errors="coerce")
+    trade_rows = trade_rows.dropna(subset=["Tanggal entry", "Tanggal tutup"])
+
+    figure = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.72, 0.28],
+        subplot_titles=("Harga, MA, Entry dan Exit", f"Momentum {momentum_days} Hari"),
+    )
+    figure.add_trace(go.Scatter(x=chart_data.index, y=chart_data["Close"], name="Close", line=dict(width=2)), row=1, col=1)
+    figure.add_trace(
+        go.Scatter(x=chart_data.index, y=chart_data["MA cepat"], name=f"MA cepat {fast_window}", line=dict(width=1.8)),
+        row=1,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter(x=chart_data.index, y=chart_data["MA lambat"], name=f"MA lambat {slow_window}", line=dict(width=1.8)),
+        row=1,
+        col=1,
+    )
+
+    buy_entries = trade_rows[trade_rows["Arah"].eq("BUY")]
+    sell_entries = trade_rows[trade_rows["Arah"].eq("SELL")]
+    if not buy_entries.empty:
+        figure.add_trace(
+            go.Scatter(
+                x=buy_entries["Tanggal entry"],
+                y=buy_entries["Entry"],
+                mode="markers",
+                name="Entry BUY",
+                marker=dict(symbol="triangle-up", size=10, color="#22c55e", line=dict(width=1, color="#052e16")),
+                customdata=buy_entries[["Position ID", "Fase", "Expected change (%)"]].to_numpy(),
+                hovertemplate="Entry BUY<br>Tanggal=%{x|%d %b %Y}<br>Harga=%{y:,.2f}<br>ID=%{customdata[0]}<br>Fase=%{customdata[1]}<br>Expected=%{customdata[2]:+.2f}%<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+    if not sell_entries.empty:
+        figure.add_trace(
+            go.Scatter(
+                x=sell_entries["Tanggal entry"],
+                y=sell_entries["Entry"],
+                mode="markers",
+                name="Entry SELL",
+                marker=dict(symbol="triangle-down", size=10, color="#ef4444", line=dict(width=1, color="#450a0a")),
+                customdata=sell_entries[["Position ID", "Fase", "Expected change (%)"]].to_numpy(),
+                hovertemplate="Entry SELL<br>Tanggal=%{x|%d %b %Y}<br>Harga=%{y:,.2f}<br>ID=%{customdata[0]}<br>Fase=%{customdata[1]}<br>Expected=%{customdata[2]:+.2f}%<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+
+    exit_styles = {
+        "TP tersentuh": ("Exit TP", "#f59e0b", "circle"),
+        "SL tersentuh": ("Exit CL/SL", "#dc2626", "x"),
+        "Target equity tercapai": ("Close-all target", "#2563eb", "diamond"),
+        "Akhir periode data": ("Exit akhir data", "#64748b", "square"),
+    }
+    for reason, (label, color, symbol) in exit_styles.items():
+        exits = trade_rows[trade_rows["Alasan exit"].eq(reason)]
+        if exits.empty:
+            continue
+        figure.add_trace(
+            go.Scatter(
+                x=exits["Tanggal tutup"],
+                y=exits["Exit"],
+                mode="markers",
+                name=label,
+                marker=dict(symbol=symbol, size=9, color=color),
+                customdata=exits[["Position ID", "Arah", "Net P/L"]].to_numpy(),
+                hovertemplate=f"{label}<br>Tanggal=%{{x|%d %b %Y}}<br>Harga=%{{y:,.2f}}<br>ID=%{{customdata[0]}}<br>Arah=%{{customdata[1]}}<br>Net P/L=%{{customdata[2]:+,.2f}}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+        )
+
+    figure.add_trace(
+        go.Scatter(x=chart_data.index, y=chart_data["Momentum"], name=f"Momentum {momentum_days}", line=dict(width=2, color="#a855f7")),
+        row=2,
+        col=1,
+    )
+    figure.add_hline(y=threshold, line_dash="dash", line_color="#22c55e", annotation_text=f"+{threshold:.2f}%", row=2, col=1)
+    figure.add_hline(y=-threshold, line_dash="dash", line_color="#ef4444", annotation_text=f"-{threshold:.2f}%", row=2, col=1)
+    figure.add_hline(y=0, line_dash="dot", line_color="#94a3b8", row=2, col=1)
+    figure.update_layout(
+        title=f"Visual Strategi {title}: MA {fast_window}/{slow_window}, Momentum {momentum_days}",
+        height=720,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    figure.update_yaxes(title_text="Harga XAU/USD", row=1, col=1)
+    figure.update_yaxes(title_text="Momentum (%)", row=2, col=1)
+    figure.update_xaxes(range=[OPTIMIZATION_START, OPTIMIZATION_END], row=2, col=1)
+
+    st.markdown("**Visual Strategi: Harga, MA, Momentum, Entry dan Exit**")
+    st.caption(
+        f"Timeframe simulasi memakai candle harian. BUY menunggu Close > MA {fast_window}, MA {fast_window} > MA {slow_window}, "
+        f"dan momentum > +{threshold:.2f}%. SELL menunggu kondisi kebalikannya dengan momentum < -{threshold:.2f}%."
+    )
+    st.plotly_chart(figure, use_container_width=True)
+
+
+def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gold_ohlc: pd.DataFrame | None = None) -> None:
     st.subheader(title)
     summary = result.summary
     if not hasattr(result, "phases"):
@@ -650,6 +785,9 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame) -> 
         use_container_width=True,
         hide_index=True,
     )
+
+    if gold_ohlc is not None:
+        _render_strategy_trade_chart(title, gold_ohlc, trades, leaderboard)
 
     if not equity_curve.empty:
         figure = go.Figure()
@@ -796,6 +934,7 @@ def render_simulation(
     optimization_leaderboard: pd.DataFrame,
     optimized_v2_result,
     optimization_v2_leaderboard: pd.DataFrame,
+    gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
     st.caption(
@@ -810,9 +949,9 @@ def render_simulation(
 
     optimizer_tab, optimizer_v2_tab = st.tabs(["Strategi Terbaik Optimizer", "Strategi Terbaik v.2"])
     with optimizer_tab:
-        _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard)
+        _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
     with optimizer_v2_tab:
-        _render_multiphase_result("Strategi Terbaik v.2", optimized_v2_result, optimization_v2_leaderboard)
+        _render_multiphase_result("Strategi Terbaik v.2", optimized_v2_result, optimization_v2_leaderboard, gold_ohlc)
 
 
 def _render_signal_checklist(title: str, checklist: list[dict[str, object]], ready_status: str) -> None:
@@ -1241,6 +1380,7 @@ with simulation_tab:
         optimization_leaderboard,
         optimized_v2_result,
         optimization_v2_leaderboard,
+        gold_ohlc,
     )
 
 with live_trading_tab:
