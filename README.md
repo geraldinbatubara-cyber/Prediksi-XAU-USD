@@ -48,6 +48,12 @@ optimizer dikunci pada 1 Januari 2025 sampai 30 Juni 2026. Ranking strategi
 memprioritaskan target equity USD 1.200 tercapai, tanggal target lebih cepat,
 equity akhir lebih tinggi, dan drawdown lebih rendah.
 
+Bagian `Strategi Terbaik v.2` mempertahankan acuan optimizer tersebut, lalu
+mengeksplorasi variasi sinyal dengan lot dinamis 0.01 sampai 0.02. Lot 0.02
+hanya dipakai saat confidence sinyal melewati cutoff kandidat; sinyal dengan
+confidence lebih rendah tetap memakai 0.01 lot. Ranking tetap memakai periode
+uji 1 Januari 2025 sampai 30 Juni 2026 dan target equity USD 1.200.
+
 ## Monitoring Estimasi
 
 Tab `Monitoring Model 2` dan `Monitoring Model 1` membandingkan estimasi besok

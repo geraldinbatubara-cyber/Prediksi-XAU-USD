@@ -19,10 +19,15 @@ from gold_forecast.monitoring import (
 )
 from gold_forecast.signals import build_signal
 from gold_forecast.simulation import DEFAULT_SCENARIOS, run_simulation_scenarios
-from gold_forecast.strategy_optimizer import OPTIMIZATION_END, OPTIMIZATION_START, run_optimized_strategy
+from gold_forecast.strategy_optimizer import (
+    OPTIMIZATION_END,
+    OPTIMIZATION_START,
+    run_optimized_strategy,
+    run_optimized_strategy_v2,
+)
 
 
-SIMULATION_CACHE_VERSION = "optimizer-equity-target-v1"
+SIMULATION_CACHE_VERSION = "optimizer-dynamic-lot-v2"
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -52,7 +57,15 @@ def get_models(market_data: pd.DataFrame):
 def get_simulations(market_data: pd.DataFrame, gold_ohlc: pd.DataFrame, simulation_version: str):
     simulation_results, scenario_summary = run_simulation_scenarios(market_data, gold_ohlc)
     optimized_result, optimization_leaderboard = run_optimized_strategy(gold_ohlc)
-    return simulation_results, scenario_summary, optimized_result, optimization_leaderboard
+    optimized_v2_result, optimization_v2_leaderboard = run_optimized_strategy_v2(gold_ohlc)
+    return (
+        simulation_results,
+        scenario_summary,
+        optimized_result,
+        optimization_leaderboard,
+        optimized_v2_result,
+        optimization_v2_leaderboard,
+    )
 
 
 def render_dashboard(
@@ -371,6 +384,7 @@ def _render_simulation_result(title: str, result) -> None:
     trades = result.trades.copy()
     numeric_columns = [
         "Lot",
+        "Confidence",
         "Prediksi",
         "Expected change (%)",
         "Entry",
@@ -393,6 +407,7 @@ def _render_simulation_result(title: str, result) -> None:
             "Tanggal tutup",
             "Arah",
             "Lot",
+            "Confidence",
             "Prediksi",
             "Expected change (%)",
             "Entry",
@@ -412,6 +427,7 @@ def _render_simulation_result(title: str, result) -> None:
         trades[visible_columns].style.format(
             {
                 "Lot": "{:.2f}",
+                "Confidence": "{:.1f}%",
                 "Prediksi": "${:,.2f}",
                 "Expected change (%)": "{:+.2f}%",
                 "Entry": "${:,.2f}",
@@ -436,6 +452,8 @@ def render_simulation(
     scenario_summary: pd.DataFrame,
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
+    optimized_v2_result,
+    optimization_v2_leaderboard: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD")
     st.caption(
@@ -480,6 +498,61 @@ def render_simulation(
                         "TP (USD)": "${:,.2f}",
                         "SL (USD)": "${:,.2f}",
                         "Lot": "{:.2f}",
+                        "Equity akhir": "${:,.2f}",
+                        "Equity terendah": "${:,.2f}",
+                        "Equity tertinggi": "${:,.2f}",
+                        "Max drawdown": "${:,.2f}",
+                        "Jumlah transaksi": "{:.0f}",
+                        "Win rate": "{:.1f}%",
+                        "Profit factor": "{:.2f}",
+                        "Avg net P/L": "${:+,.2f}",
+                    },
+                    na_rep="-",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    st.subheader("Strategi Terbaik v.2")
+    st.caption(
+        "Strategi v.2 memakai acuan optimizer lama, tetapi menambahkan lot dinamis 0.01-0.02. "
+        "Lot 0.02 hanya dipakai ketika confidence sinyal melewati cutoff kandidat; sinyal lain tetap 0.01. "
+        f"Periode uji tetap {OPTIMIZATION_START.strftime('%d %b %Y')} sampai "
+        f"{OPTIMIZATION_END.strftime('%d %b %Y')}."
+    )
+    if optimization_v2_leaderboard.empty:
+        st.warning("Strategi Terbaik v.2 belum menemukan kandidat yang memenuhi syarat minimal transaksi.")
+    else:
+        best_v2 = optimized_v2_result.summary
+        v21, v22, v23, v24 = st.columns(4)
+        v21.metric(
+            "Target v.2",
+            "Tercapai" if best_v2["Target tercapai"] else "Belum",
+            f"${best_v2['Equity akhir']:,.2f}",
+        )
+        v22.metric(
+            "Tanggal target",
+            "-"
+            if pd.isna(best_v2["Tanggal target"])
+            else pd.Timestamp(best_v2["Tanggal target"]).strftime("%d %b %Y"),
+        )
+        v23.metric("Max drawdown", f"${best_v2['Max drawdown']:,.2f}")
+        v24.metric("Jumlah transaksi", f"{best_v2['Jumlah transaksi']:.0f}")
+        _render_simulation_result("Strategi Terbaik v.2", optimized_v2_result)
+
+        with st.expander("Leaderboard Strategi Terbaik v.2"):
+            leaderboard_v2 = optimization_v2_leaderboard.head(25).copy()
+            st.dataframe(
+                leaderboard_v2.style.format(
+                    {
+                        "Threshold entry (%)": "{:.2f}%",
+                        "Confidence cutoff": "{:.0%}",
+                        "TP (USD)": "${:,.2f}",
+                        "SL (USD)": "${:,.2f}",
+                        "Lot minimum": "{:.2f}",
+                        "Lot maksimum": "{:.2f}",
+                        "Lot rata-rata sinyal": "{:.3f}",
+                        "Confidence rata-rata": "{:.1f}%",
                         "Equity akhir": "${:,.2f}",
                         "Equity terendah": "${:,.2f}",
                         "Equity tertinggi": "${:,.2f}",
@@ -682,7 +755,14 @@ try:
     market, data_fetched_at = get_data()
     gold_ohlc = get_gold_ohlc()
     model_1, model_2, direction_model = get_models(market)
-    simulation_results, scenario_summary, optimized_result, optimization_leaderboard = get_simulations(
+    (
+        simulation_results,
+        scenario_summary,
+        optimized_result,
+        optimization_leaderboard,
+        optimized_v2_result,
+        optimization_v2_leaderboard,
+    ) = get_simulations(
         market,
         gold_ohlc,
         SIMULATION_CACHE_VERSION,
@@ -713,4 +793,11 @@ with monitoring_model_1_tab:
     render_monitoring("Monitoring Model 1", MODEL_1_DATA_PATH)
 
 with simulation_tab:
-    render_simulation(simulation_results, scenario_summary, optimized_result, optimization_leaderboard)
+    render_simulation(
+        simulation_results,
+        scenario_summary,
+        optimized_result,
+        optimization_leaderboard,
+        optimized_v2_result,
+        optimization_v2_leaderboard,
+    )
