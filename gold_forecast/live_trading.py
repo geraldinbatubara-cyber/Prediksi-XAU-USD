@@ -18,7 +18,6 @@ LIVE_BUY_SWAP_PER_001_LOT = 0.02
 LIVE_SELL_SWAP_PER_001_LOT = 0.0
 LIVE_MAX_BUY = 8
 LIVE_MAX_SELL = 10
-LIVE_REENTRY_BUFFER_USD = 3.0
 
 LIVE_COLUMNS = [
     "position_id",
@@ -351,94 +350,6 @@ def _signal_waiting_state(gold_ohlc: pd.DataFrame, params: dict[str, object]) ->
     }
 
 
-def _signal_from_waiting_state(waiting_state: dict[str, object]) -> dict[str, object] | None:
-    status = str(waiting_state.get("Status sinyal", ""))
-    if status == "Kondisi BUY siap":
-        direction = "BUY"
-    elif status == "Kondisi SELL siap":
-        direction = "SELL"
-    else:
-        return None
-
-    reference_price = float(waiting_state["Harga terakhir"])
-    return {
-        "signal_date": pd.Timestamp(waiting_state["Tanggal evaluasi"]),
-        "prediction": reference_price,
-        "reference_price": reference_price,
-        "expected_change_pct": float(waiting_state.get("Momentum saat ini", 0.0)),
-        "arah": direction,
-        "source": "Checklist 3/3",
-    }
-
-
-def _reentry_state(ledger: pd.DataFrame, signal: dict[str, object] | None) -> dict[str, object]:
-    if signal is None:
-        return {
-            "Status": "Tidak ada sinyal",
-            "Boleh entry": False,
-            "Catatan": "Belum ada sinyal 3/3 yang bisa dieksekusi.",
-            "Harga CL terakhir": np.nan,
-            "Harga boleh re-entry": np.nan,
-        }
-
-    direction = str(signal["arah"])
-    signal_date = pd.Timestamp(signal["signal_date"]).strftime("%Y-%m-%d")
-    current_price = float(signal["reference_price"])
-    same_direction = ledger[
-        ledger["signal_date"].astype(str).str.startswith(signal_date)
-        & ledger["arah"].astype(str).eq(direction)
-    ]
-    active_same_direction = same_direction[same_direction["status"].astype(str).isin(["OPEN", "SIGNAL"])]
-    if not active_same_direction.empty:
-        return {
-            "Status": "Terkunci - posisi/sinyal aktif",
-            "Boleh entry": False,
-            "Catatan": f"{direction} hari ini masih punya posisi/sinyal aktif, jadi tidak membuka duplikat.",
-            "Harga CL terakhir": np.nan,
-            "Harga boleh re-entry": np.nan,
-        }
-
-    closed_cl = same_direction[
-        same_direction["status"].astype(str).eq("CLOSED")
-        & same_direction["exit_reason"].astype(str).eq("CL tersentuh")
-    ].copy()
-    if closed_cl.empty:
-        return {
-            "Status": "Boleh entry",
-            "Boleh entry": True,
-            "Catatan": f"Tidak ada {direction} yang CL pada tanggal sinyal ini.",
-            "Harga CL terakhir": np.nan,
-            "Harga boleh re-entry": np.nan,
-        }
-
-    closed_cl["exit_time_sort"] = pd.to_datetime(
-        closed_cl["exit_time_wit"].astype(str).str.replace(" WIT", "", regex=False),
-        errors="coerce",
-    )
-    last_cl = closed_cl.sort_values(["exit_time_sort", "position_id"]).iloc[-1]
-    last_cl_price = float(pd.to_numeric(last_cl["exit_price"], errors="coerce"))
-    if direction == "SELL":
-        reentry_price = last_cl_price - LIVE_REENTRY_BUFFER_USD
-        allowed = current_price <= reentry_price
-        rule_text = f"SELL baru boleh jika harga <= ${reentry_price:,.2f}."
-    else:
-        reentry_price = last_cl_price + LIVE_REENTRY_BUFFER_USD
-        allowed = current_price >= reentry_price
-        rule_text = f"BUY baru boleh jika harga >= ${reentry_price:,.2f}."
-
-    return {
-        "Status": "Boleh re-entry" if allowed else "Terkunci - menunggu jarak dari CL",
-        "Boleh entry": allowed,
-        "Catatan": (
-            f"{direction} terakhir CL di ${last_cl_price:,.2f}. "
-            f"Buffer re-entry USD {LIVE_REENTRY_BUFFER_USD:,.2f}. "
-            f"Harga sekarang ${current_price:,.2f}. {rule_text}"
-        ),
-        "Harga CL terakhir": last_cl_price,
-        "Harga boleh re-entry": reentry_price,
-    }
-
-
 def _unrealized(direction: str, entry_price: float, current_price: float, lot: float) -> float:
     units = lot * CONTRACT_OUNCES_PER_LOT
     if direction == "BUY":
@@ -520,7 +431,6 @@ def _close_hit_positions(ledger: pd.DataFrame, candle: pd.Series, now: pd.Timest
 def _maybe_open_position(
     ledger: pd.DataFrame,
     signal: dict[str, object] | None,
-    reentry_state: dict[str, object],
     params: dict[str, object],
     now: pd.Timestamp,
     can_trade: bool,
@@ -532,11 +442,8 @@ def _maybe_open_position(
     existing = ledger[
         ledger["signal_date"].astype(str).str.startswith(signal_date)
         & ledger["arah"].astype(str).eq(str(signal["arah"]))
-        & ledger["status"].astype(str).isin(["OPEN", "SIGNAL"])
     ]
     if not existing.empty:
-        return ledger
-    if not bool(reentry_state.get("Boleh entry", False)):
         return ledger
 
     buy_count, sell_count = _open_counts(ledger)
@@ -547,7 +454,7 @@ def _maybe_open_position(
         and ((direction == "BUY" and buy_count < LIVE_MAX_BUY) or (direction == "SELL" and sell_count < LIVE_MAX_SELL))
     )
     status = "OPEN" if can_open else "SIGNAL"
-    source = str(signal.get("source", "optimizer"))
+    source = str(signal.get("source", "Optimizer penuh"))
     note = (
         f"Posisi dibuka dari sinyal {source}: seluruh syarat strategi terpenuhi."
         if can_open
@@ -610,9 +517,10 @@ def run_live_trading_update(
         latest_price = np.nan
 
     waiting_state = _signal_waiting_state(usable_gold, params)
-    signal = _signal_from_waiting_state(waiting_state)
-    reentry = _reentry_state(ledger, signal)
-    ledger = _maybe_open_position(ledger, signal, reentry, params, now_wit, can_trade, session_note)
+    signal = _current_optimizer_signal(usable_gold, params, now_wit)
+    if signal is not None:
+        signal["source"] = "Optimizer penuh"
+    ledger = _maybe_open_position(ledger, signal, params, now_wit, can_trade, session_note)
     save_live_ledger(ledger, path)
 
     open_positions = ledger[ledger["status"].eq("OPEN")].copy()
@@ -650,7 +558,6 @@ def run_live_trading_update(
         "summary": summary,
         "params": params,
         "signal": signal,
-        "reentry": reentry,
         "waiting_state": waiting_state,
         "ledger": ledger,
         "signals": signal_rows,
