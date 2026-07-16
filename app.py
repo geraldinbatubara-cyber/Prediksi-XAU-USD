@@ -31,10 +31,11 @@ from gold_forecast.strategy_optimizer import (
     run_optimized_strategy,
     run_optimized_strategy_v2,
     run_optimized_strategy_v3,
+    run_optimized_strategy_v4,
 )
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v3-live-rules"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v4-dynamic-risk"
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -65,6 +66,7 @@ def get_simulations(gold_ohlc: pd.DataFrame, simulation_version: str):
     optimized_result, optimization_leaderboard = run_optimized_strategy(gold_ohlc)
     optimized_v2_result, optimization_v2_leaderboard = run_optimized_strategy_v2(gold_ohlc)
     optimized_v3_result, optimization_v3_leaderboard = run_optimized_strategy_v3(gold_ohlc, optimization_leaderboard)
+    optimized_v4_result, optimization_v4_leaderboard = run_optimized_strategy_v4(gold_ohlc, optimization_leaderboard)
     return (
         optimized_result,
         optimization_leaderboard,
@@ -72,6 +74,8 @@ def get_simulations(gold_ohlc: pd.DataFrame, simulation_version: str):
         optimization_v2_leaderboard,
         optimized_v3_result,
         optimization_v3_leaderboard,
+        optimized_v4_result,
+        optimization_v4_leaderboard,
     )
 
 
@@ -522,15 +526,23 @@ def _render_strategy_explanation(title: str, summary: dict, phases: pd.DataFrame
     tp_value = best.get("TP (USD)")
     sl_value = best.get("SL (USD)")
     fixed_lot = best.get("Lot", 0.01)
+    risk_cap = best.get("Risk cap floating SL (%)")
     if pd.isna(fixed_lot):
         fixed_lot = 0.01
     lot_info = "lot dinamis 0.01-0.02 mengikuti confidence sinyal" if "v.2" in title else f"lot tetap {fixed_lot:.2f}"
+    risk_info = ""
+    if pd.notna(risk_cap):
+        risk_info = (
+            f" v4 tidak memakai batas 8 BUY/10 SELL; pembukaan posisi dibatasi oleh risk cap floating SL "
+            f"**{risk_cap:.1f}%** dari equity fase."
+        )
 
     strategy_parts = [
         f"Strategi terpilih: **{strategy_name}**.",
         f"Entry hanya dibuka saat sinyal melewati threshold **{threshold:.2f}%**." if pd.notna(threshold) else "",
         f"Setiap posisi memakai TP **USD {tp_value:,.2f}** dan CL/SL **USD {sl_value:,.2f}**." if pd.notna(tp_value) and pd.notna(sl_value) else "",
         f"Ukuran transaksi: **{lot_info}**.",
+        risk_info,
     ]
     st.markdown("**Penjelasan Strategi dan Momen Kritis**")
     st.info(" ".join(part for part in strategy_parts if part))
@@ -542,13 +554,14 @@ def _render_strategy_explanation(title: str, summary: dict, phases: pd.DataFrame
     target_status = "tercapai" if pd.notna(target_reached) and bool(target_reached) else "belum tercapai"
     total_buy = int(summary.get("Total BUY", 0))
     total_sell = int(summary.get("Total SELL", 0))
+    max_open = int(summary.get("Max open posisi", 0))
     total_swap = float(summary.get("Total swap", 0.0))
 
     critical_notes = [
         f"Equity terendah terjadi pada **{low_date}** di **USD {summary.get('Equity terendah', 0):,.2f}**.",
         f"Equity tertinggi terjadi pada **{high_date}** di **USD {summary.get('Equity tertinggi', 0):,.2f}**.",
         f"Fase terakhir **{target_status}**; tanggal target: **{_format_date(last_phase.get('Tanggal target'))}**.",
-        f"Eksposur arah: **{total_buy} BUY** dan **{total_sell} SELL**; total swap simulasi **USD {total_swap:+,.2f}**.",
+        f"Eksposur arah: **{total_buy} BUY** dan **{total_sell} SELL**; max open bersamaan **{max_open} posisi**; total swap simulasi **USD {total_swap:+,.2f}**.",
     ]
     st.warning(" ".join(critical_notes))
 
@@ -786,6 +799,7 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
                 "Jumlah transaksi": "{:.0f}",
                 "Total BUY": "{:.0f}",
                 "Total SELL": "{:.0f}",
+                "Max open posisi": "{:.0f}",
                 "Win rate": "{:.1f}%",
                 "Max drawdown": "${:,.2f}",
                 "Profit factor": "{:.2f}",
@@ -910,6 +924,7 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
                     {
                         "Threshold entry (%)": "{:.2f}%",
                         "Confidence cutoff": "{:.0%}",
+                        "Risk cap floating SL (%)": "{:.1f}%",
                         "TP (USD)": "${:,.2f}",
                         "SL (USD)": "${:,.2f}",
                         "Lot": "{:.2f}",
@@ -927,6 +942,7 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
                         "Jumlah transaksi": "{:.0f}",
                         "Total BUY": "{:.0f}",
                         "Total SELL": "{:.0f}",
+                        "Max open posisi": "{:.0f}",
                         "Total swap": "${:+,.2f}",
                         "Win rate": "{:.1f}%",
                         "Profit factor": "{:.2f}",
@@ -946,6 +962,8 @@ def render_simulation(
     optimization_v2_leaderboard: pd.DataFrame,
     optimized_v3_result,
     optimization_v3_leaderboard: pd.DataFrame,
+    optimized_v4_result,
+    optimization_v4_leaderboard: pd.DataFrame,
     gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
@@ -959,8 +977,8 @@ def render_simulation(
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v2_tab, optimizer_v3_tab = st.tabs(
-        ["Strategi Terbaik Optimizer", "Strategi Terbaik v.2", "Strategi Optimizer v3"]
+    optimizer_tab, optimizer_v2_tab, optimizer_v3_tab, optimizer_v4_tab = st.tabs(
+        ["Strategi Terbaik Optimizer", "Strategi Terbaik v.2", "Strategi Optimizer v3", "Strategi Optimizer v4"]
     )
     with optimizer_tab:
         _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
@@ -972,6 +990,13 @@ def render_simulation(
             "anti-duplikat posisi aktif, re-entry setelah CL dengan buffer USD 3, dan guard candle entry."
         )
         _render_multiphase_result("Strategi Optimizer v3", optimized_v3_result, optimization_v3_leaderboard, gold_ohlc)
+    with optimizer_v4_tab:
+        st.info(
+            "v4 memakai parameter Strategi Terbaik Optimizer, tetapi batas posisi BUY/SELL 8/10 diganti "
+            "menjadi risk cap dinamis. Posisi boleh lebih banyak selama total potensi SL posisi terbuka "
+            "masih berada di bawah batas risiko terhadap equity fase."
+        )
+        _render_multiphase_result("Strategi Optimizer v4", optimized_v4_result, optimization_v4_leaderboard, gold_ohlc)
 
 
 def _render_signal_checklist(title: str, checklist: list[dict[str, object]], ready_status: str) -> None:
@@ -1547,6 +1572,8 @@ try:
         optimization_v2_leaderboard,
         optimized_v3_result,
         optimization_v3_leaderboard,
+        optimized_v4_result,
+        optimization_v4_leaderboard,
     ) = get_simulations(
         gold_ohlc,
         SIMULATION_CACHE_VERSION,
@@ -1584,6 +1611,8 @@ with simulation_tab:
         optimization_v2_leaderboard,
         optimized_v3_result,
         optimization_v3_leaderboard,
+        optimized_v4_result,
+        optimization_v4_leaderboard,
         gold_ohlc,
     )
 
