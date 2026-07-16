@@ -12,7 +12,7 @@ except ImportError:  # pragma: no cover - handled in deployed UI
 from gold_forecast.data import load_gold_data, load_market_data
 from gold_forecast.direction_model import train_direction_model
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
-from gold_forecast.live_trading import LIVE_INITIAL_EQUITY, LIVE_START_DATE, run_live_trading_update
+from gold_forecast.live_trading import LIVE_INITIAL_EQUITY, LIVE_START_DATE, load_live_ledger, run_live_trading_update
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
 from gold_forecast.monitoring import (
@@ -28,6 +28,7 @@ from gold_forecast.signals import build_signal
 from gold_forecast.strategy_optimizer import (
     OPTIMIZATION_END,
     OPTIMIZATION_START,
+    _rsi,
     run_optimized_strategy,
     run_optimized_strategy_v2,
     run_optimized_strategy_v3,
@@ -1021,6 +1022,270 @@ def _render_signal_checklist(title: str, checklist: list[dict[str, object]], rea
     st.caption(ready_status)
 
 
+def _optimizer_best_params(leaderboard: pd.DataFrame) -> dict[str, object]:
+    if leaderboard.empty:
+        return {
+            "Mode": "Trend",
+            "Fast MA": 20,
+            "Slow MA": 50,
+            "Momentum hari": 10,
+            "Threshold entry (%)": 0.15,
+            "TP (USD)": 25.0,
+            "SL (USD)": 18.0,
+            "Strategi": "Fallback Optimizer",
+            "Lot": 0.01,
+        }
+    best = leaderboard.iloc[0].to_dict()
+    return {
+        "Mode": best.get("Mode", "Trend"),
+        "Fast MA": int(best.get("Fast MA", 20)),
+        "Slow MA": int(best.get("Slow MA", 50)),
+        "Momentum hari": int(best.get("Momentum hari", 10)),
+        "Threshold entry (%)": float(best.get("Threshold entry (%)", 0.15)),
+        "TP (USD)": float(best.get("TP (USD)", 25.0)),
+        "SL (USD)": float(best.get("SL (USD)", 18.0)),
+        "Strategi": best.get("Strategi", "Strategi Terbaik Optimizer"),
+        "Lot": float(best.get("Lot", 0.01)),
+    }
+
+
+def _entry_checklist_rows(gold_ohlc: pd.DataFrame, params: dict[str, object], limit: int | None) -> pd.DataFrame:
+    if gold_ohlc.empty:
+        return pd.DataFrame()
+
+    mode = str(params["Mode"])
+    fast_window = int(params["Fast MA"])
+    slow_window = int(params["Slow MA"])
+    momentum_days = int(params["Momentum hari"])
+    threshold = float(params["Threshold entry (%)"])
+
+    frame = gold_ohlc.loc[gold_ohlc.index >= OPTIMIZATION_START].copy()
+    close = frame["Close"].astype(float)
+    high = frame["High"].astype(float)
+    low = frame["Low"].astype(float)
+    fast_ma = close.rolling(fast_window).mean()
+    slow_ma = close.rolling(slow_window).mean()
+    momentum = close.pct_change(momentum_days) * 100
+    rsi = _rsi(close)
+    previous_high = high.rolling(slow_window).max().shift(1)
+    previous_low = low.rolling(slow_window).min().shift(1)
+
+    rows: list[dict[str, object]] = []
+    for current_date in frame.index:
+        values = {
+            "Close": close.loc[current_date],
+            "MA cepat": fast_ma.loc[current_date],
+            "MA lambat": slow_ma.loc[current_date],
+            "Momentum": momentum.loc[current_date],
+            "RSI": rsi.loc[current_date],
+            "High acuan": previous_high.loc[current_date],
+            "Low acuan": previous_low.loc[current_date],
+        }
+
+        if mode == "Trend":
+            buy_checks = [
+                ("Close > MA cepat", values["Close"], ">", values["MA cepat"], values["Close"] > values["MA cepat"]),
+                ("MA cepat > MA lambat", values["MA cepat"], ">", values["MA lambat"], values["MA cepat"] > values["MA lambat"]),
+                (f"Momentum {momentum_days} hari > +{threshold:.2f}%", values["Momentum"], ">", threshold, values["Momentum"] > threshold),
+            ]
+            sell_checks = [
+                ("Close < MA cepat", values["Close"], "<", values["MA cepat"], values["Close"] < values["MA cepat"]),
+                ("MA cepat < MA lambat", values["MA cepat"], "<", values["MA lambat"], values["MA cepat"] < values["MA lambat"]),
+                (f"Momentum {momentum_days} hari < -{threshold:.2f}%", values["Momentum"], "<", -threshold, values["Momentum"] < -threshold),
+            ]
+        elif mode == "Breakout":
+            buy_checks = [
+                (f"Close > high {slow_window} hari sebelumnya", values["Close"], ">", values["High acuan"], values["Close"] > values["High acuan"]),
+                (f"Momentum {momentum_days} hari > 0", values["Momentum"], ">", 0.0, values["Momentum"] > 0),
+            ]
+            sell_checks = [
+                (f"Close < low {slow_window} hari sebelumnya", values["Close"], "<", values["Low acuan"], values["Close"] < values["Low acuan"]),
+                (f"Momentum {momentum_days} hari < 0", values["Momentum"], "<", 0.0, values["Momentum"] < 0),
+            ]
+        elif mode == "Pullback":
+            buy_checks = [
+                ("Close > MA lambat", values["Close"], ">", values["MA lambat"], values["Close"] > values["MA lambat"]),
+                ("RSI < 42", values["RSI"], "<", 42.0, values["RSI"] < 42),
+                (f"Momentum {momentum_days} hari > -{threshold:.2f}%", values["Momentum"], ">", -threshold, values["Momentum"] > -threshold),
+            ]
+            sell_checks = [
+                ("Close < MA lambat", values["Close"], "<", values["MA lambat"], values["Close"] < values["MA lambat"]),
+                ("RSI > 58", values["RSI"], ">", 58.0, values["RSI"] > 58),
+                (f"Momentum {momentum_days} hari < +{threshold:.2f}%", values["Momentum"], "<", threshold, values["Momentum"] < threshold),
+            ]
+        else:
+            buy_checks = [("Mode strategi valid", pd.NA, "=", mode, False)]
+            sell_checks = [("Mode strategi valid", pd.NA, "=", mode, False)]
+
+        for direction, checks in [("BUY", buy_checks), ("SELL", sell_checks)]:
+            passed = sum(bool(item[4]) for item in checks)
+            total = len(checks)
+            checklist = " | ".join(
+                f"{item[0]} ({'LOLOS' if item[4] else 'BELUM'})" for item in checks
+            )
+            rows.append(
+                {
+                    "Tanggal": current_date,
+                    "Strategi": "ENTRY",
+                    "Mode": mode,
+                    "Arah": direction,
+                    "Checklist sinyal harian": checklist,
+                    "Status": "LOLOS" if passed == total and total > 0 else "BELUM",
+                    "Keterangan": f"{passed}/{total} syarat lolos",
+                    "Close": values["Close"],
+                    "MA cepat": values["MA cepat"],
+                    "MA lambat": values["MA lambat"],
+                    "Momentum (%)": values["Momentum"],
+                    "RSI": values["RSI"],
+                }
+            )
+
+    result = pd.DataFrame(rows)
+    result = result.sort_values("Tanggal", ascending=False)
+    if limit is not None:
+        result = result.head(limit)
+    return result
+
+
+def _exit_checklist_rows(gold_ohlc: pd.DataFrame, params: dict[str, object]) -> pd.DataFrame:
+    ledger = load_live_ledger()
+    if ledger.empty:
+        return pd.DataFrame()
+
+    latest_price = float(gold_ohlc.iloc[-1]["Close"]) if not gold_ohlc.empty else pd.NA
+    latest_high = float(gold_ohlc.iloc[-1]["High"]) if not gold_ohlc.empty else pd.NA
+    latest_low = float(gold_ohlc.iloc[-1]["Low"]) if not gold_ohlc.empty else pd.NA
+    latest_date = gold_ohlc.index[-1] if not gold_ohlc.empty else pd.NaT
+    rows: list[dict[str, object]] = []
+
+    for _, position in ledger.iterrows():
+        entry_price = pd.to_numeric(position.get("entry_price"), errors="coerce")
+        lot = pd.to_numeric(position.get("lot"), errors="coerce")
+        tp_usd = pd.to_numeric(position.get("tp_usd", params["TP (USD)"]), errors="coerce")
+        cl_usd = pd.to_numeric(position.get("cl_usd", params["SL (USD)"]), errors="coerce")
+        direction = str(position.get("arah", "-"))
+        status = str(position.get("status", "-"))
+        if pd.isna(entry_price) or pd.isna(lot) or lot <= 0:
+            continue
+
+        units = lot * 100
+        tp_points = tp_usd / units
+        cl_points = cl_usd / units
+        if direction == "BUY":
+            tp_price = entry_price + tp_points
+            cl_price = entry_price - cl_points
+            tp_hit = status == "CLOSED" and str(position.get("exit_reason", "")) == "TP tersentuh"
+            cl_hit = status == "CLOSED" and str(position.get("exit_reason", "")) == "CL tersentuh"
+            if status == "OPEN":
+                tp_hit = pd.notna(latest_high) and latest_high >= tp_price
+                cl_hit = pd.notna(latest_low) and latest_low <= cl_price
+            tp_check = f"BUY TP: High/latest >= {tp_price:,.2f}"
+            cl_check = f"BUY CL: Low/latest <= {cl_price:,.2f}"
+        else:
+            tp_price = entry_price - tp_points
+            cl_price = entry_price + cl_points
+            tp_hit = status == "CLOSED" and str(position.get("exit_reason", "")) == "TP tersentuh"
+            cl_hit = status == "CLOSED" and str(position.get("exit_reason", "")) == "CL tersentuh"
+            if status == "OPEN":
+                tp_hit = pd.notna(latest_low) and latest_low <= tp_price
+                cl_hit = pd.notna(latest_high) and latest_high >= cl_price
+            tp_check = f"SELL TP: Low/latest <= {tp_price:,.2f}"
+            cl_check = f"SELL CL: High/latest >= {cl_price:,.2f}"
+
+        for exit_type, checklist, hit, target_price in [
+            ("TP", tp_check, tp_hit, tp_price),
+            ("CL/SL", cl_check, cl_hit, cl_price),
+        ]:
+            rows.append(
+                {
+                    "Position ID": position.get("position_id"),
+                    "Strategi": "EXIT",
+                    "Arah": direction,
+                    "Status posisi": status,
+                    "Tanggal entry": position.get("entry_time_wit"),
+                    "Checklist exit": checklist,
+                    "Status": "LOLOS" if hit else "BELUM",
+                    "Keterangan": "Sudah memenuhi rule exit" if hit else "Belum memenuhi rule exit",
+                    "Entry": entry_price,
+                    "Target harga": target_price,
+                    "Harga terbaru": latest_price,
+                    "Tanggal data terbaru": latest_date,
+                    "Tipe exit": exit_type,
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.DataFrame) -> None:
+    params = _optimizer_best_params(optimization_leaderboard)
+    st.subheader("Sinyal Optimizer")
+    st.caption(
+        "Tab ini memisahkan checklist strategi ENTRY dan EXIT agar proses Strategi Terbaik Optimizer "
+        "lebih mudah diawasi dan dipelajari."
+    )
+    st.info(
+        f"Strategi aktif: **{params['Strategi']}** | Mode **{params['Mode']}** | "
+        f"MA {params['Fast MA']}/{params['Slow MA']} | Momentum {params['Momentum hari']} hari | "
+        f"Threshold {params['Threshold entry (%)']:.2f}% | TP USD {params['TP (USD)']:,.2f} | CL/SL USD {params['SL (USD)']:,.2f}"
+    )
+
+    entry_tab, exit_tab = st.tabs(["Strategi ENTRY", "Strategi EXIT"])
+    with entry_tab:
+        limit_choice = st.selectbox(
+            "Jumlah evaluasi ENTRY yang ditampilkan",
+            ["120 baris terbaru", "240 baris terbaru", "Semua"],
+            index=0,
+        )
+        limit = None if limit_choice == "Semua" else int(limit_choice.split()[0])
+        entry_rows = _entry_checklist_rows(gold_ohlc, params, limit)
+        if entry_rows.empty:
+            st.warning("Belum ada data ENTRY yang dapat dievaluasi.")
+        else:
+            completed = entry_rows[entry_rows["Status"].eq("LOLOS")]
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Evaluasi ENTRY tampil", f"{len(entry_rows):,.0f}")
+            c2.metric("Sinyal LOLOS", f"{len(completed):,.0f}")
+            c3.metric("Sinyal BELUM", f"{len(entry_rows) - len(completed):,.0f}")
+            st.dataframe(
+                entry_rows.style.format(
+                    {
+                        "Close": "${:,.2f}",
+                        "MA cepat": "${:,.2f}",
+                        "MA lambat": "${:,.2f}",
+                        "Momentum (%)": "{:+.2f}%",
+                        "RSI": "{:.1f}",
+                    },
+                    na_rep="-",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with exit_tab:
+        exit_rows = _exit_checklist_rows(gold_ohlc, params)
+        if exit_rows.empty:
+            st.info("Belum ada ledger Live Trading untuk dievaluasi pada strategi EXIT.")
+        else:
+            completed = exit_rows[exit_rows["Status"].eq("LOLOS")]
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Checklist EXIT", f"{len(exit_rows):,.0f}")
+            c2.metric("EXIT LOLOS", f"{len(completed):,.0f}")
+            c3.metric("EXIT BELUM", f"{len(exit_rows) - len(completed):,.0f}")
+            st.dataframe(
+                exit_rows.sort_values(["Status posisi", "Position ID", "Tipe exit"]).style.format(
+                    {
+                        "Entry": "${:,.2f}",
+                        "Target harga": "${:,.2f}",
+                        "Harga terbaru": "${:,.2f}",
+                    },
+                    na_rep="-",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
 def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.DataFrame) -> None:
     live = run_live_trading_update(gold_ohlc, optimization_leaderboard)
     summary = live["summary"]
@@ -1582,8 +1847,8 @@ except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
 
-dashboard_tab, simulation_tab, live_trading_tab, monitoring_model_2_tab, monitoring_model_1_tab, intraday_audit_tab = st.tabs(
-    ["Dashboard", "Simulasi", "Live Trading", "Monitoring Model 2", "Monitoring Model 1", "Audit Intraday"]
+dashboard_tab, simulation_tab, live_trading_tab, optimizer_signals_tab, monitoring_model_2_tab, monitoring_model_1_tab, intraday_audit_tab = st.tabs(
+    ["Dashboard", "Simulasi", "Live Trading", "Sinyal Optimizer", "Monitoring Model 2", "Monitoring Model 1", "Audit Intraday"]
 )
 with dashboard_tab:
     render_dashboard(
@@ -1618,6 +1883,9 @@ with simulation_tab:
 
 with live_trading_tab:
     render_live_trading(gold_ohlc, optimization_leaderboard)
+
+with optimizer_signals_tab:
+    render_optimizer_signals(gold_ohlc, optimization_leaderboard)
 
 with intraday_audit_tab:
     render_intraday_audit(gold_ohlc)
