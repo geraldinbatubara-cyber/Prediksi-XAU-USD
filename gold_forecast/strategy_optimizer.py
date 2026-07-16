@@ -265,6 +265,7 @@ def _simulate_phase(
     stop_loss_usd: float | None = 10.0,
     strategy_name: str,
     live_rules: bool = False,
+    risk_cap_pct: float | None = None,
 ) -> SimulationResult:
     cash_balance = initial_balance
     next_position_id = 1
@@ -356,6 +357,16 @@ def _simulate_phase(
                 else:
                     can_open = close >= last_cl_price[direction] + LIVE_REENTRY_BUFFER_USD
 
+            if can_open and risk_cap_pct is not None:
+                current_unrealized = sum(_dynamic_unrealized(position, close) for position in open_positions)
+                current_equity = cash_balance + current_unrealized
+                open_risk = sum(
+                    position.stop_loss_usd if position.stop_loss_usd is not None else position.take_profit_usd
+                    for position in open_positions
+                )
+                new_risk = stop_loss_usd if stop_loss_usd is not None else take_profit_usd
+                can_open = (open_risk + new_risk) <= current_equity * (risk_cap_pct / 100)
+
             if can_open:
                 open_positions.append(
                     DynamicPosition(
@@ -389,6 +400,7 @@ def _simulate_phase(
                 "Unrealized P/L": unrealized,
                 "Open BUY": sum(position.direction == "BUY" for position in open_positions),
                 "Open SELL": sum(position.direction == "SELL" for position in open_positions),
+                "Open total": len(open_positions),
                 "Target equity tercapai": equity >= target_equity,
             }
         )
@@ -403,6 +415,7 @@ def _simulate_phase(
             equity_rows[-1]["Unrealized P/L"] = 0.0
             equity_rows[-1]["Open BUY"] = 0
             equity_rows[-1]["Open SELL"] = 0
+            equity_rows[-1]["Open total"] = 0
             break
 
     if open_positions:
@@ -417,12 +430,16 @@ def _simulate_phase(
             equity_rows[-1]["Unrealized P/L"] = 0.0
             equity_rows[-1]["Open BUY"] = 0
             equity_rows[-1]["Open SELL"] = 0
+            equity_rows[-1]["Open total"] = 0
 
     return _result(closed_rows, equity_rows, initial_balance, target_equity)
 
 
 def _phase_row(phase: int, result: SimulationResult, start_equity: float, target_equity: float) -> dict[str, object]:
     summary = result.summary
+    max_open_total = 0.0
+    if not result.equity_curve.empty and "Open total" in result.equity_curve.columns:
+        max_open_total = float(pd.to_numeric(result.equity_curve["Open total"], errors="coerce").max())
     return {
         "Fase": phase,
         "Start equity": start_equity,
@@ -439,6 +456,7 @@ def _phase_row(phase: int, result: SimulationResult, start_equity: float, target
         "Jumlah transaksi": summary["Jumlah transaksi"],
         "Total BUY": summary["Total BUY"],
         "Total SELL": summary["Total SELL"],
+        "Max open posisi": max_open_total,
         "Win rate": summary["Win rate"],
         "Max drawdown": summary["Max drawdown"],
         "Profit factor": summary["Profit factor"],
@@ -456,6 +474,9 @@ def _multiphase_result(
     stop_loss_usd: float,
     entry_threshold_pct: float,
     live_rules: bool = False,
+    max_buy_positions: int = 8,
+    max_sell_positions: int = 10,
+    risk_cap_pct: float | None = None,
 ) -> MultiPhaseSimulationResult:
     clean_gold = gold_ohlc.loc[(gold_ohlc.index >= OPTIMIZATION_START) & (gold_ohlc.index <= OPTIMIZATION_END)].copy()
     clean_signals = signals.loc[(signals.index >= OPTIMIZATION_START) & (signals.index <= OPTIMIZATION_END)].copy()
@@ -482,9 +503,12 @@ def _multiphase_result(
             target_equity=target_equity,
             take_profit_usd=take_profit_usd,
             stop_loss_usd=stop_loss_usd,
+            max_buy_positions=max_buy_positions,
+            max_sell_positions=max_sell_positions,
             entry_threshold_pct=entry_threshold_pct,
             strategy_name=strategy_name,
             live_rules=live_rules,
+            risk_cap_pct=risk_cap_pct,
         )
         phase_rows.append(_phase_row(phase, result, start_equity, target_equity))
         if not result.trades.empty:
@@ -562,6 +586,7 @@ def _multiphase_result(
         "Max drawdown": max_drawdown,
         "Total BUY": total_buy,
         "Total SELL": total_sell,
+        "Max open posisi": float(pd.to_numeric(equity_curve["Open total"], errors="coerce").max()) if not equity_curve.empty and "Open total" in equity_curve.columns else 0.0,
         "Profit factor": float(profit_factor) if not pd.isna(profit_factor) else np.nan,
         "Avg net P/L": avg_net,
         "Total swap": total_swap,
@@ -731,6 +756,102 @@ def run_optimized_strategy_v3(
         ]
     )
     return result, leaderboard
+
+
+def run_optimized_strategy_v4(
+    gold_ohlc: pd.DataFrame,
+    optimizer_leaderboard: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    if optimizer_leaderboard.empty:
+        empty = _multiphase_result(
+            pd.DataFrame(),
+            gold_ohlc,
+            "Strategi Optimizer v4",
+            strategy_name="-",
+            take_profit_usd=0,
+            stop_loss_usd=0,
+            entry_threshold_pct=0,
+        )
+        return empty, pd.DataFrame()
+
+    best = optimizer_leaderboard.iloc[0].to_dict()
+    mode = str(best["Mode"])
+    fast_window = int(best["Fast MA"])
+    slow_window = int(best["Slow MA"])
+    momentum_days = int(best["Momentum hari"])
+    threshold = float(best["Threshold entry (%)"])
+    take_profit = float(best["TP (USD)"])
+    stop_loss = float(best["SL (USD)"])
+    lot_size = float(best.get("Lot", 0.01))
+    base_strategy = str(best.get("Strategi", "Strategi Terbaik Optimizer"))
+
+    predictions = _indicator_predictions(
+        gold_ohlc,
+        mode,
+        fast_window,
+        slow_window,
+        momentum_days,
+        threshold,
+    )
+    signals = _fixed_lot_signals(predictions, lot_size)
+    candidates: list[dict[str, object]] = []
+
+    for risk_cap in [12.0, 18.0, 25.0, 35.0, 50.0]:
+        strategy_name = (
+            f"{base_strategy} | v4 dynamic risk cap {risk_cap:g}% | "
+            "posisi tidak dibatasi angka tetap"
+        )
+        result = _multiphase_result(
+            signals,
+            gold_ohlc,
+            "Strategi Optimizer v4",
+            strategy_name=strategy_name,
+            take_profit_usd=take_profit,
+            stop_loss_usd=stop_loss,
+            entry_threshold_pct=threshold,
+            max_buy_positions=10_000,
+            max_sell_positions=10_000,
+            risk_cap_pct=risk_cap,
+        )
+        summary = result.summary
+        candidates.append(
+            {
+                "Mode": mode,
+                "Strategi": strategy_name,
+                "Fast MA": fast_window,
+                "Slow MA": slow_window,
+                "Momentum hari": momentum_days,
+                "Threshold entry (%)": threshold,
+                "TP (USD)": take_profit,
+                "SL (USD)": stop_loss,
+                "Lot": lot_size,
+                "Risk cap floating SL (%)": risk_cap,
+                "Batas posisi BUY": "Tidak dibatasi angka tetap",
+                "Batas posisi SELL": "Tidak dibatasi angka tetap",
+                "Max open posisi": summary["Max open posisi"],
+                "Fase selesai": summary["Fase selesai"],
+                "Fase total": summary["Fase total"],
+                "Equity akhir": summary["Equity akhir"],
+                "Growth total": summary["Growth total"],
+                "Equity terendah": summary["Equity terendah"],
+                "Equity tertinggi": summary["Equity tertinggi"],
+                "Max drawdown": summary["Max drawdown"],
+                "Jumlah transaksi": summary["Jumlah transaksi"],
+                "Total BUY": summary["Total BUY"],
+                "Total SELL": summary["Total SELL"],
+                "Total swap": summary["Total swap"],
+                "Win rate": summary["Win rate"],
+                "Profit factor": summary["Profit factor"],
+                "Avg net P/L": summary["Avg net P/L"],
+                "_score": _strategy_score(summary),
+                "_result": result,
+            }
+        )
+
+    candidates.sort(key=lambda row: row["_score"], reverse=True)
+    best_result = candidates[0]["_result"]
+    leaderboard = pd.DataFrame([{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates])
+    return best_result, leaderboard
 
 
 def run_optimized_strategy_v2(
