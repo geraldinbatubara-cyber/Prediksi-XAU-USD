@@ -1117,10 +1117,11 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
     if signals.empty:
         st.info("Belum ada sinyal live yang tercatat sejak ledger dimulai.")
     else:
+        signal_display = signals[[column for column in signal_columns if column in signals.columns]].tail(50)
         st.dataframe(
-            signals[[column for column in signal_columns if column in signals.columns]].tail(50).style.format(
+            signal_display.style.format(
                 format_columns,
-                subset=[column for column in format_columns if column in signals.columns],
+                subset=[column for column in format_columns if column in signal_display.columns],
                 na_rep="-",
             ),
             use_container_width=True,
@@ -1153,10 +1154,11 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
             "floating_pl",
             "catatan",
         ]
+        open_table = open_display[[column for column in open_columns if column in open_display.columns]]
         st.dataframe(
-            open_display[[column for column in open_columns if column in open_display.columns]].style.format(
+            open_table.style.format(
                 {**format_columns, "floating_pl": "${:+,.2f}"},
-                subset=[column for column in [*format_columns, "floating_pl"] if column in open_display.columns],
+                subset=[column for column in [*format_columns, "floating_pl"] if column in open_table.columns],
                 na_rep="-",
             ),
             use_container_width=True,
@@ -1181,10 +1183,11 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
             "swap",
             "net_pl",
         ]
+        closed_table = closed_positions[[column for column in closed_columns if column in closed_positions.columns]].tail(100)
         st.dataframe(
-            closed_positions[[column for column in closed_columns if column in closed_positions.columns]].tail(100).style.format(
+            closed_table.style.format(
                 format_columns,
-                subset=[column for column in format_columns if column in closed_positions.columns],
+                subset=[column for column in format_columns if column in closed_table.columns],
                 na_rep="-",
             ),
             use_container_width=True,

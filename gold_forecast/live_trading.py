@@ -350,6 +350,26 @@ def _signal_waiting_state(gold_ohlc: pd.DataFrame, params: dict[str, object]) ->
     }
 
 
+def _signal_from_waiting_state(waiting_state: dict[str, object]) -> dict[str, object] | None:
+    status = str(waiting_state.get("Status sinyal", ""))
+    if status == "Kondisi BUY siap":
+        direction = "BUY"
+    elif status == "Kondisi SELL siap":
+        direction = "SELL"
+    else:
+        return None
+
+    reference_price = float(waiting_state["Harga terakhir"])
+    return {
+        "signal_date": pd.Timestamp(waiting_state["Tanggal evaluasi"]),
+        "prediction": reference_price,
+        "reference_price": reference_price,
+        "expected_change_pct": float(waiting_state.get("Momentum saat ini", 0.0)),
+        "arah": direction,
+        "source": "Checklist 3/3",
+    }
+
+
 def _unrealized(direction: str, entry_price: float, current_price: float, lot: float) -> float:
     units = lot * CONTRACT_OUNCES_PER_LOT
     if direction == "BUY":
@@ -449,7 +469,12 @@ def _maybe_open_position(
         and ((direction == "BUY" and buy_count < LIVE_MAX_BUY) or (direction == "SELL" and sell_count < LIVE_MAX_SELL))
     )
     status = "OPEN" if can_open else "SIGNAL"
-    note = "Posisi dibuka dari sinyal optimizer." if can_open else f"Sinyal terdeteksi, belum buka posisi: {session_note}"
+    source = str(signal.get("source", "optimizer"))
+    note = (
+        f"Posisi dibuka dari sinyal {source}: seluruh syarat strategi terpenuhi."
+        if can_open
+        else f"Sinyal {source} terdeteksi, belum buka posisi: {session_note}"
+    )
     next_id = int(pd.to_numeric(ledger["position_id"], errors="coerce").max() + 1) if not ledger.empty else 1
     if pd.isna(next_id):
         next_id = 1
@@ -506,8 +531,8 @@ def run_live_trading_update(
     else:
         latest_price = np.nan
 
-    signal = _current_optimizer_signal(usable_gold, params, now_wit)
     waiting_state = _signal_waiting_state(usable_gold, params)
+    signal = _signal_from_waiting_state(waiting_state)
     ledger = _maybe_open_position(ledger, signal, params, now_wit, can_trade, session_note)
     save_live_ledger(ledger, path)
 
