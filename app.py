@@ -982,6 +982,7 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
     summary = live["summary"]
     params = live["params"]
     signal = live["signal"]
+    reentry = live["reentry"]
     waiting_state = live["waiting_state"]
     signals = live["signals"].copy()
     open_positions = live["open_positions"].copy()
@@ -1083,6 +1084,26 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
         st.error(f"**Interpretasi:** {waiting_state['Interpretasi']}")
     else:
         st.info(f"**Kondisi Netral / Tunggu:** {waiting_state['Interpretasi']}")
+
+    st.markdown("**Status Re-entry Setelah CL**")
+    reentry_status = str(reentry.get("Status", "-"))
+    reentry_note = str(reentry.get("Catatan", "-"))
+    r1, r2, r3 = st.columns(3)
+    r1.metric("Status re-entry", reentry_status)
+    r2.metric(
+        "CL terakhir",
+        "-" if pd.isna(reentry.get("Harga CL terakhir", pd.NA)) else f"${float(reentry['Harga CL terakhir']):,.2f}",
+    )
+    r3.metric(
+        "Harga boleh re-entry",
+        "-" if pd.isna(reentry.get("Harga boleh re-entry", pd.NA)) else f"${float(reentry['Harga boleh re-entry']):,.2f}",
+    )
+    if bool(reentry.get("Boleh entry", False)):
+        st.success(reentry_note)
+    elif reentry_status.startswith("Terkunci"):
+        st.warning(reentry_note)
+    else:
+        st.info(reentry_note)
 
     format_columns = {
         "lot": "{:.2f}",
