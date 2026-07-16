@@ -1002,6 +1002,7 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
     params = live["params"]
     signal = live["signal"]
     waiting_state = live["waiting_state"]
+    trigger_state = live["trigger_state"]
     signals = live["signals"].copy()
     open_positions = live["open_positions"].copy()
     closed_positions = live["closed_positions"].copy()
@@ -1074,6 +1075,55 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
             st.error(signal_message)
         else:
             st.info(signal_message)
+
+    st.markdown("**Status Trigger Optimizer**")
+    trigger_note = trigger_state["Catatan"]
+    trigger_status = trigger_state["Status trigger"]
+    if str(trigger_status).startswith("Siap buka"):
+        st.success(f"**{trigger_status}** | {trigger_note}")
+    elif trigger_status in {"Sinyal sudah dieksekusi/dicatat", "Slot BUY penuh", "Slot SELL penuh"}:
+        st.warning(f"**{trigger_status}** | {trigger_note}")
+    elif trigger_status == "Menunggu threshold arah":
+        st.info(f"**{trigger_status}** | {trigger_note}")
+    else:
+        st.info(f"**{trigger_status}** | {trigger_note}")
+
+    t1, t2, t3, t4 = st.columns(4)
+    t1.metric("Arah sinyal Optimizer", trigger_state["Arah sinyal"])
+    t2.metric(
+        "Expected change",
+        "-" if pd.isna(trigger_state["Expected change (%)"]) else f"{trigger_state['Expected change (%)']:+.2f}%",
+        f"Threshold {trigger_state['Threshold entry (%)']:.2f}%",
+    )
+    t3.metric(
+        "Harga referensi",
+        "-" if pd.isna(trigger_state["Harga referensi"]) else f"${trigger_state['Harga referensi']:,.2f}",
+    )
+    t4.metric(
+        "Prediksi Optimizer",
+        "-" if pd.isna(trigger_state["Prediksi"]) else f"${trigger_state['Prediksi']:,.2f}",
+    )
+
+    slot_frame = pd.DataFrame(
+        [
+            {"Parameter": "Tanggal sinyal", "Nilai": "-" if pd.isna(trigger_state["Tanggal sinyal"]) else pd.Timestamp(trigger_state["Tanggal sinyal"]).strftime("%d %b %Y")},
+            {"Parameter": "Posisi BUY terbuka", "Nilai": trigger_state["Posisi BUY terbuka"]},
+            {"Parameter": "Sisa slot BUY", "Nilai": trigger_state["Sisa slot BUY"]},
+            {"Parameter": "Posisi SELL terbuka", "Nilai": trigger_state["Posisi SELL terbuka"]},
+            {"Parameter": "Sisa slot SELL", "Nilai": trigger_state["Sisa slot SELL"]},
+            {"Parameter": "Sinyal tanggal/arah sudah dicatat", "Nilai": "Ya" if trigger_state["Sudah dieksekusi"] else "Belum"},
+        ]
+    )
+    st.dataframe(slot_frame, use_container_width=True, hide_index=True)
+
+    trigger_checklist = pd.DataFrame(trigger_state["Checklist"])
+    if not trigger_checklist.empty:
+        st.dataframe(trigger_checklist, use_container_width=True, hide_index=True)
+    st.caption(
+        "Catatan pembelajaran: Strategi Terbaik Optimizer memakai sinyal harian. "
+        "Posisi baru dibuka hanya ketika arah sinyal melewati threshold, sesi trading aktif, slot posisi tersedia, "
+        "dan kombinasi tanggal sinyal + arah belum pernah dicatat di ledger."
+    )
 
     st.markdown("**Sinyal yang Sedang Ditunggu**")
     st.write(waiting_state["Yang ditunggu"])

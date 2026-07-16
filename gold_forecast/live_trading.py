@@ -495,6 +495,122 @@ def _maybe_open_position(
     return pd.concat([ledger, new_frame], ignore_index=True)
 
 
+def _optimizer_trigger_state(
+    ledger: pd.DataFrame,
+    signal: dict[str, object] | None,
+    params: dict[str, object],
+    can_trade: bool,
+    session_note: str,
+) -> dict[str, object]:
+    threshold = float(params["Threshold entry (%)"])
+    buy_count, sell_count = _open_counts(ledger)
+    remaining_buy = max(LIVE_MAX_BUY - buy_count, 0)
+    remaining_sell = max(LIVE_MAX_SELL - sell_count, 0)
+
+    if signal is None:
+        checklist = [
+            {"Syarat": "Ada sinyal Optimizer terbaru", "Status": "Menunggu", "Detail": "Belum ada prediksi yang melewati threshold."},
+            {"Syarat": "Jam trading aktif", "Status": "Lolos" if can_trade else "Menunggu", "Detail": session_note},
+            {
+                "Syarat": "Slot posisi tersedia",
+                "Status": "Lolos" if (remaining_buy > 0 or remaining_sell > 0) else "Menunggu",
+                "Detail": f"Sisa slot BUY {remaining_buy}, SELL {remaining_sell}.",
+            },
+        ]
+        return {
+            "Status trigger": "Menunggu sinyal Optimizer",
+            "Arah sinyal": "-",
+            "Tanggal sinyal": pd.NaT,
+            "Prediksi": np.nan,
+            "Harga referensi": np.nan,
+            "Expected change (%)": np.nan,
+            "Threshold entry (%)": threshold,
+            "Posisi BUY terbuka": buy_count,
+            "Posisi SELL terbuka": sell_count,
+            "Sisa slot BUY": remaining_buy,
+            "Sisa slot SELL": remaining_sell,
+            "Sudah dieksekusi": False,
+            "Catatan": "Strategi menunggu candle harian yang memenuhi pola Optimizer.",
+            "Checklist": checklist,
+        }
+
+    direction = str(signal["arah"])
+    signal_date = pd.Timestamp(signal["signal_date"]).strftime("%Y-%m-%d")
+    expected_change_pct = float(signal["expected_change_pct"])
+    executed_rows = ledger[
+        ledger["signal_date"].astype(str).str.startswith(signal_date)
+        & ledger["arah"].astype(str).eq(direction)
+    ]
+    already_executed = not executed_rows.empty
+    direction_slot = remaining_buy if direction == "BUY" else remaining_sell if direction == "SELL" else 0
+    threshold_ok = (
+        (direction == "BUY" and expected_change_pct >= threshold)
+        or (direction == "SELL" and expected_change_pct <= -threshold)
+    )
+    slot_ok = direction in {"BUY", "SELL"} and direction_slot > 0
+    can_open_now = direction in {"BUY", "SELL"} and threshold_ok and can_trade and slot_ok and not already_executed
+
+    if can_open_now:
+        status = f"Siap buka {direction}"
+        note = "Semua syarat eksekusi terpenuhi."
+    elif already_executed:
+        status = "Sinyal sudah dieksekusi/dicatat"
+        note = f"Sinyal {direction} untuk {signal_date} sudah ada di ledger, sehingga tidak dibuka ulang."
+    elif direction not in {"BUY", "SELL"} or not threshold_ok:
+        status = "Menunggu threshold arah"
+        note = f"Expected change {expected_change_pct:+.2f}% belum melewati threshold {threshold:.2f}%."
+    elif not can_trade:
+        status = "Menunggu jam trading"
+        note = session_note
+    elif not slot_ok:
+        status = f"Slot {direction} penuh"
+        note = f"Jumlah posisi {direction} sudah mencapai batas strategi."
+    else:
+        status = "Menunggu konfirmasi eksekusi"
+        note = "Ada syarat eksekusi yang belum terpenuhi."
+
+    checklist = [
+        {
+            "Syarat": "Ada sinyal Optimizer terbaru",
+            "Status": "Lolos",
+            "Detail": f"{direction} dari tanggal sinyal {signal_date}.",
+        },
+        {
+            "Syarat": "Expected change melewati threshold",
+            "Status": "Lolos" if threshold_ok else "Menunggu",
+            "Detail": f"{expected_change_pct:+.2f}% vs threshold +/-{threshold:.2f}%.",
+        },
+        {"Syarat": "Jam trading aktif", "Status": "Lolos" if can_trade else "Menunggu", "Detail": session_note},
+        {
+            "Syarat": f"Slot {direction} tersedia",
+            "Status": "Lolos" if slot_ok else "Menunggu",
+            "Detail": f"Sisa slot BUY {remaining_buy}, SELL {remaining_sell}.",
+        },
+        {
+            "Syarat": "Tanggal dan arah sinyal belum pernah dicatat",
+            "Status": "Lolos" if not already_executed else "Sudah tercatat",
+            "Detail": "Satu sinyal tanggal/arah hanya dicatat sekali agar tidak over-entry.",
+        },
+    ]
+
+    return {
+        "Status trigger": status,
+        "Arah sinyal": direction,
+        "Tanggal sinyal": pd.Timestamp(signal["signal_date"]),
+        "Prediksi": float(signal["prediction"]),
+        "Harga referensi": float(signal["reference_price"]),
+        "Expected change (%)": expected_change_pct,
+        "Threshold entry (%)": threshold,
+        "Posisi BUY terbuka": buy_count,
+        "Posisi SELL terbuka": sell_count,
+        "Sisa slot BUY": remaining_buy,
+        "Sisa slot SELL": remaining_sell,
+        "Sudah dieksekusi": already_executed,
+        "Catatan": note,
+        "Checklist": checklist,
+    }
+
+
 def run_live_trading_update(
     gold_ohlc: pd.DataFrame,
     optimizer_leaderboard: pd.DataFrame,
@@ -521,6 +637,7 @@ def run_live_trading_update(
     if signal is not None:
         signal["source"] = "Optimizer penuh"
     ledger = _maybe_open_position(ledger, signal, params, now_wit, can_trade, session_note)
+    trigger_state = _optimizer_trigger_state(ledger, signal, params, can_trade, session_note)
     save_live_ledger(ledger, path)
 
     open_positions = ledger[ledger["status"].eq("OPEN")].copy()
@@ -559,6 +676,7 @@ def run_live_trading_update(
         "params": params,
         "signal": signal,
         "waiting_state": waiting_state,
+        "trigger_state": trigger_state,
         "ledger": ledger,
         "signals": signal_rows,
         "open_positions": open_positions,
