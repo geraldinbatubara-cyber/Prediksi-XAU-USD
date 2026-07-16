@@ -14,6 +14,7 @@ INITIAL_EQUITY = 1000.0
 PHASE_GROWTH = 0.20
 BUY_SWAP_PER_001_LOT = 0.2
 SELL_SWAP_PER_001_LOT = 0.0
+LIVE_REENTRY_BUFFER_USD = 3.0
 
 
 @dataclass
@@ -263,12 +264,14 @@ def _simulate_phase(
     entry_threshold_pct: float = 0.15,
     stop_loss_usd: float | None = 10.0,
     strategy_name: str,
+    live_rules: bool = False,
 ) -> SimulationResult:
     cash_balance = initial_balance
     next_position_id = 1
     closed_rows: list[dict[str, object]] = []
     equity_rows: list[dict[str, object]] = []
     open_positions: list[DynamicPosition] = []
+    last_cl_price: dict[str, float] = {}
     if signals.empty or gold_ohlc.empty:
         return _result(closed_rows, equity_rows, initial_balance, target_equity)
 
@@ -318,6 +321,8 @@ def _simulate_phase(
 
             cash_balance += _dynamic_unrealized(position, exit_price)
             closed_rows.append(_dynamic_close_row(position, current_date, exit_price, exit_reason, cash_balance))
+            if live_rules and exit_reason == "SL tersentuh":
+                last_cl_price[position.direction] = exit_price
         open_positions = still_open
 
         for position in open_positions:
@@ -344,6 +349,12 @@ def _simulate_phase(
                 can_open = sell_count < max_sell_positions
             else:
                 can_open = False
+
+            if can_open and live_rules and direction in last_cl_price:
+                if direction == "SELL":
+                    can_open = close <= last_cl_price[direction] - LIVE_REENTRY_BUFFER_USD
+                else:
+                    can_open = close >= last_cl_price[direction] + LIVE_REENTRY_BUFFER_USD
 
             if can_open:
                 open_positions.append(
@@ -444,6 +455,7 @@ def _multiphase_result(
     take_profit_usd: float,
     stop_loss_usd: float,
     entry_threshold_pct: float,
+    live_rules: bool = False,
 ) -> MultiPhaseSimulationResult:
     clean_gold = gold_ohlc.loc[(gold_ohlc.index >= OPTIMIZATION_START) & (gold_ohlc.index <= OPTIMIZATION_END)].copy()
     clean_signals = signals.loc[(signals.index >= OPTIMIZATION_START) & (signals.index <= OPTIMIZATION_END)].copy()
@@ -472,6 +484,7 @@ def _multiphase_result(
             stop_loss_usd=stop_loss_usd,
             entry_threshold_pct=entry_threshold_pct,
             strategy_name=strategy_name,
+            live_rules=live_rules,
         )
         phase_rows.append(_phase_row(phase, result, start_equity, target_equity))
         if not result.trades.empty:
@@ -636,6 +649,88 @@ def run_optimized_strategy(
     best_result = candidates[0]["_result"]
     leaderboard = pd.DataFrame([{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates])
     return best_result, leaderboard
+
+
+def run_optimized_strategy_v3(
+    gold_ohlc: pd.DataFrame,
+    optimizer_leaderboard: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    if optimizer_leaderboard.empty:
+        empty = _multiphase_result(
+            pd.DataFrame(),
+            gold_ohlc,
+            "Strategi Optimizer v3",
+            strategy_name="-",
+            take_profit_usd=0,
+            stop_loss_usd=0,
+            entry_threshold_pct=0,
+            live_rules=True,
+        )
+        return empty, pd.DataFrame()
+
+    best = optimizer_leaderboard.iloc[0].to_dict()
+    mode = str(best["Mode"])
+    fast_window = int(best["Fast MA"])
+    slow_window = int(best["Slow MA"])
+    momentum_days = int(best["Momentum hari"])
+    threshold = float(best["Threshold entry (%)"])
+    take_profit = float(best["TP (USD)"])
+    stop_loss = float(best["SL (USD)"])
+    lot_size = float(best.get("Lot", 0.01))
+    base_strategy = str(best.get("Strategi", "Strategi Terbaik Optimizer"))
+    strategy_name = f"{base_strategy} | Live rules: anti-duplikat aktif + re-entry CL USD {LIVE_REENTRY_BUFFER_USD:g}"
+
+    predictions = _indicator_predictions(
+        gold_ohlc,
+        mode,
+        fast_window,
+        slow_window,
+        momentum_days,
+        threshold,
+    )
+    result = _multiphase_result(
+        _fixed_lot_signals(predictions, lot_size),
+        gold_ohlc,
+        "Strategi Optimizer v3",
+        strategy_name=strategy_name,
+        take_profit_usd=take_profit,
+        stop_loss_usd=stop_loss,
+        entry_threshold_pct=threshold,
+        live_rules=True,
+    )
+    summary = result.summary
+    leaderboard = pd.DataFrame(
+        [
+            {
+                "Mode": mode,
+                "Strategi": strategy_name,
+                "Fast MA": fast_window,
+                "Slow MA": slow_window,
+                "Momentum hari": momentum_days,
+                "Threshold entry (%)": threshold,
+                "TP (USD)": take_profit,
+                "SL (USD)": stop_loss,
+                "Lot": lot_size,
+                "Re-entry buffer (USD)": LIVE_REENTRY_BUFFER_USD,
+                "Rule tambahan": "Anti-duplikat aktif, re-entry setelah CL, guard candle entry",
+                "Fase selesai": summary["Fase selesai"],
+                "Fase total": summary["Fase total"],
+                "Equity akhir": summary["Equity akhir"],
+                "Growth total": summary["Growth total"],
+                "Equity terendah": summary["Equity terendah"],
+                "Equity tertinggi": summary["Equity tertinggi"],
+                "Max drawdown": summary["Max drawdown"],
+                "Jumlah transaksi": summary["Jumlah transaksi"],
+                "Total BUY": summary["Total BUY"],
+                "Total SELL": summary["Total SELL"],
+                "Total swap": summary["Total swap"],
+                "Win rate": summary["Win rate"],
+                "Profit factor": summary["Profit factor"],
+                "Avg net P/L": summary["Avg net P/L"],
+            }
+        ]
+    )
+    return result, leaderboard
 
 
 def run_optimized_strategy_v2(

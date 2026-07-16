@@ -30,10 +30,11 @@ from gold_forecast.strategy_optimizer import (
     OPTIMIZATION_START,
     run_optimized_strategy,
     run_optimized_strategy_v2,
+    run_optimized_strategy_v3,
 )
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v2"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v3-live-rules"
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -63,7 +64,15 @@ def get_models(market_data: pd.DataFrame):
 def get_simulations(gold_ohlc: pd.DataFrame, simulation_version: str):
     optimized_result, optimization_leaderboard = run_optimized_strategy(gold_ohlc)
     optimized_v2_result, optimization_v2_leaderboard = run_optimized_strategy_v2(gold_ohlc)
-    return optimized_result, optimization_leaderboard, optimized_v2_result, optimization_v2_leaderboard
+    optimized_v3_result, optimization_v3_leaderboard = run_optimized_strategy_v3(gold_ohlc, optimization_leaderboard)
+    return (
+        optimized_result,
+        optimization_leaderboard,
+        optimized_v2_result,
+        optimization_v2_leaderboard,
+        optimized_v3_result,
+        optimization_v3_leaderboard,
+    )
 
 
 def render_dashboard(
@@ -935,6 +944,8 @@ def render_simulation(
     optimization_leaderboard: pd.DataFrame,
     optimized_v2_result,
     optimization_v2_leaderboard: pd.DataFrame,
+    optimized_v3_result,
+    optimization_v3_leaderboard: pd.DataFrame,
     gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
@@ -948,11 +959,19 @@ def render_simulation(
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v2_tab = st.tabs(["Strategi Terbaik Optimizer", "Strategi Terbaik v.2"])
+    optimizer_tab, optimizer_v2_tab, optimizer_v3_tab = st.tabs(
+        ["Strategi Terbaik Optimizer", "Strategi Terbaik v.2", "Strategi Optimizer v3"]
+    )
     with optimizer_tab:
         _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
     with optimizer_v2_tab:
         _render_multiphase_result("Strategi Terbaik v.2", optimized_v2_result, optimization_v2_leaderboard, gold_ohlc)
+    with optimizer_v3_tab:
+        st.info(
+            "v3 memakai parameter Strategi Terbaik Optimizer, lalu backtest ulang dengan rule Live Trading: "
+            "anti-duplikat posisi aktif, re-entry setelah CL dengan buffer USD 3, dan guard candle entry."
+        )
+        _render_multiphase_result("Strategi Optimizer v3", optimized_v3_result, optimization_v3_leaderboard, gold_ohlc)
 
 
 def _render_signal_checklist(title: str, checklist: list[dict[str, object]], ready_status: str) -> None:
@@ -1487,7 +1506,14 @@ try:
     market, data_fetched_at = get_data()
     gold_ohlc = get_gold_ohlc()
     model_1, model_2, direction_model = get_models(market)
-    optimized_result, optimization_leaderboard, optimized_v2_result, optimization_v2_leaderboard = get_simulations(
+    (
+        optimized_result,
+        optimization_leaderboard,
+        optimized_v2_result,
+        optimization_v2_leaderboard,
+        optimized_v3_result,
+        optimization_v3_leaderboard,
+    ) = get_simulations(
         gold_ohlc,
         SIMULATION_CACHE_VERSION,
     )
@@ -1522,6 +1548,8 @@ with simulation_tab:
         optimization_leaderboard,
         optimized_v2_result,
         optimization_v2_leaderboard,
+        optimized_v3_result,
+        optimization_v3_leaderboard,
         gold_ohlc,
     )
 
