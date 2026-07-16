@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover - handled in deployed UI
 
 from gold_forecast.data import load_gold_data, load_market_data
 from gold_forecast.direction_model import train_direction_model
+from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
 from gold_forecast.live_trading import LIVE_INITIAL_EQUITY, LIVE_START_DATE, run_live_trading_update
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
@@ -1300,6 +1301,123 @@ def render_monitoring(title: str, data_path) -> None:
     )
 
 
+def render_intraday_audit(gold_ohlc: pd.DataFrame) -> None:
+    st.subheader("Audit Data Intraday Pihak Ketiga")
+    st.warning(
+        "Dataset 1-minute XAUUSD ini dicatat sebagai **data pihak ketiga**. "
+        "Hasil audit di tab ini dipakai untuk validasi kualitas data, belum untuk mengganti model utama atau Live Trading."
+    )
+
+    source_mode = st.radio("Sumber CSV", ["Upload CSV", "URL CSV"], horizontal=True)
+    raw_source = None
+    if source_mode == "Upload CSV":
+        uploaded_file = st.file_uploader("Upload file CSV intraday", type=["csv"])
+        if uploaded_file is not None:
+            raw_source = uploaded_file.getvalue()
+    else:
+        csv_url = st.text_input(
+            "URL CSV mentah",
+            placeholder="Contoh: https://raw.githubusercontent.com/.../XAUUSD_1m.csv",
+        )
+        if csv_url:
+            raw_source = csv_url.strip()
+
+    st.caption(
+        "Kolom yang didukung: `time/open/high/low/close/volume`. Alias umum seperti "
+        "`datetime`, `timestamp`, `o/h/l/c`, dan `vol` akan dinormalisasi otomatis."
+    )
+
+    if raw_source is None:
+        st.info("Masukkan file atau URL CSV untuk mulai audit.")
+        return
+
+    try:
+        intraday = load_intraday_csv(raw_source)
+        audit = audit_intraday_data(intraday)
+    except Exception as exc:
+        st.error(f"CSV intraday belum bisa diaudit: {exc}")
+        return
+
+    metrics = audit.metrics
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Jumlah baris", f"{metrics.get('Jumlah baris', 0):,}")
+    c2.metric("Hari agregasi", f"{metrics.get('Jumlah hari agregasi', 0):,}")
+    c3.metric("Gap > 1 menit", f"{metrics.get('Gap > 1 menit', 0):,}")
+    c4.metric("Duplikat timestamp", f"{metrics.get('Duplikat timestamp', 0):,}")
+
+    period_start = metrics.get("Periode awal UTC")
+    period_end = metrics.get("Periode akhir UTC")
+    if pd.notna(period_start) and pd.notna(period_end):
+        st.info(
+            "Periode data intraday: "
+            f"**{pd.Timestamp(period_start).strftime('%d %b %Y %H:%M UTC')}** sampai "
+            f"**{pd.Timestamp(period_end).strftime('%d %b %Y %H:%M UTC')}**. "
+            "Untuk Live Trading WIT, timestamp ini harus dikonversi dan dicek lagi."
+        )
+
+    st.markdown("**Checklist Kualitas Data**")
+    st.dataframe(audit.issues, use_container_width=True, hide_index=True)
+
+    if not audit.daily_ohlc.empty:
+        st.markdown("**Agregasi Harian dari Data 1 Menit**")
+        daily_preview = audit.daily_ohlc.tail(20).copy()
+        st.dataframe(
+            daily_preview.style.format(
+                {
+                    "open": "${:,.2f}",
+                    "high": "${:,.2f}",
+                    "low": "${:,.2f}",
+                    "close": "${:,.2f}",
+                    "volume": "{:,.0f}",
+                }
+            ),
+            use_container_width=True,
+        )
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=audit.daily_ohlc.index, y=audit.daily_ohlc["close"], name="Close intraday -> daily"))
+        fig.update_layout(
+            title="Close Harian Hasil Agregasi Data 1 Menit",
+            yaxis_title="XAUUSD",
+            height=420,
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        daily_compare = audit.daily_ohlc[["close"]].copy()
+        daily_compare.index = pd.to_datetime(daily_compare.index).tz_convert(None).normalize()
+        main_daily = gold_ohlc[["Close"]].copy()
+        main_daily.index = pd.to_datetime(main_daily.index).normalize()
+        comparison = daily_compare.join(main_daily, how="inner").rename(columns={"close": "Close intraday", "Close": "Close data utama"})
+        if comparison.empty:
+            st.warning("Belum ada overlap tanggal antara data intraday dan data utama dashboard.")
+        else:
+            comparison["Selisih"] = comparison["Close intraday"] - comparison["Close data utama"]
+            comparison["Selisih %"] = comparison["Selisih"] / comparison["Close data utama"] * 100
+            direction_match = (
+                comparison["Close intraday"].pct_change().gt(0)
+                == comparison["Close data utama"].pct_change().gt(0)
+            )
+            direction_accuracy = float(direction_match.iloc[1:].mean() * 100) if len(direction_match) > 1 else pd.NA
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Hari overlap", f"{len(comparison):,}")
+            m2.metric("MAE close vs data utama", f"${comparison['Selisih'].abs().mean():,.2f}")
+            m3.metric("Kecocokan arah harian", "-" if pd.isna(direction_accuracy) else f"{direction_accuracy:.1f}%")
+
+            st.markdown("**Perbandingan dengan Data Utama Dashboard**")
+            st.dataframe(
+                comparison.tail(30).style.format(
+                    {
+                        "Close intraday": "${:,.2f}",
+                        "Close data utama": "${:,.2f}",
+                        "Selisih": "${:+,.2f}",
+                        "Selisih %": "{:+.2f}%",
+                    }
+                ),
+                use_container_width=True,
+            )
+
+
 with st.sidebar:
     st.header("Pengaturan")
     auto_refresh = st.checkbox("Auto refresh dashboard", value=True)
@@ -1353,8 +1471,8 @@ except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
 
-dashboard_tab, simulation_tab, live_trading_tab, monitoring_model_2_tab, monitoring_model_1_tab = st.tabs(
-    ["Dashboard", "Simulasi", "Live Trading", "Monitoring Model 2", "Monitoring Model 1"]
+dashboard_tab, simulation_tab, live_trading_tab, monitoring_model_2_tab, monitoring_model_1_tab, intraday_audit_tab = st.tabs(
+    ["Dashboard", "Simulasi", "Live Trading", "Monitoring Model 2", "Monitoring Model 1", "Audit Intraday"]
 )
 with dashboard_tab:
     render_dashboard(
@@ -1385,3 +1503,6 @@ with simulation_tab:
 
 with live_trading_tab:
     render_live_trading(gold_ohlc, optimization_leaderboard)
+
+with intraday_audit_tab:
+    render_intraday_audit(gold_ohlc)
