@@ -11,6 +11,7 @@ from gold_forecast.strategy_optimizer import _indicator_predictions, _rsi
 
 
 LIVE_TRADING_PATH = Path("data/live_trading_optimizer.csv")
+LIVE_MANUAL_EXIT_PATH = Path("data/live_trading_manual_exits.csv")
 LIVE_INITIAL_EQUITY = 1000.0
 LIVE_START_DATE = pd.Timestamp("2026-07-15")
 LIVE_LOT_SIZE = 0.01
@@ -56,10 +57,41 @@ LIVE_TEXT_COLUMNS = [
     "last_update_wit",
     "catatan",
 ]
+LIVE_MANUAL_EXIT_COLUMNS = [
+    "manual_exit_id",
+    "position_id",
+    "optimizer_signal_date",
+    "optimizer_direction",
+    "optimizer_entry_time_wit",
+    "optimizer_entry_price",
+    "optimizer_tp_usd",
+    "optimizer_cl_usd",
+    "manual_exit_time_wit",
+    "manual_exit_price",
+    "manual_gross_pl",
+    "manual_swap_at_exit",
+    "manual_net_pl",
+    "manual_result_label",
+    "last_update_wit",
+    "catatan",
+]
+LIVE_MANUAL_EXIT_TEXT_COLUMNS = [
+    "optimizer_signal_date",
+    "optimizer_direction",
+    "optimizer_entry_time_wit",
+    "manual_exit_time_wit",
+    "manual_result_label",
+    "last_update_wit",
+    "catatan",
+]
 
 
 def _empty_ledger() -> pd.DataFrame:
     return pd.DataFrame(columns=LIVE_COLUMNS)
+
+
+def _empty_manual_exit_ledger() -> pd.DataFrame:
+    return pd.DataFrame(columns=LIVE_MANUAL_EXIT_COLUMNS)
 
 
 def load_live_ledger(path: Path = LIVE_TRADING_PATH) -> pd.DataFrame:
@@ -75,6 +107,23 @@ def load_live_ledger(path: Path = LIVE_TRADING_PATH) -> pd.DataFrame:
 
 
 def save_live_ledger(frame: pd.DataFrame, path: Path = LIVE_TRADING_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False)
+
+
+def load_manual_exit_ledger(path: Path = LIVE_MANUAL_EXIT_PATH) -> pd.DataFrame:
+    if not path.exists():
+        return _empty_manual_exit_ledger()
+    frame = pd.read_csv(path)
+    for column in LIVE_MANUAL_EXIT_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = np.nan
+    for column in LIVE_MANUAL_EXIT_TEXT_COLUMNS:
+        frame[column] = frame[column].fillna("").astype(str)
+    return frame[LIVE_MANUAL_EXIT_COLUMNS]
+
+
+def save_manual_exit_ledger(frame: pd.DataFrame, path: Path = LIVE_MANUAL_EXIT_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(path, index=False)
 
@@ -355,6 +404,80 @@ def _unrealized(direction: str, entry_price: float, current_price: float, lot: f
     if direction == "BUY":
         return (current_price - entry_price) * units
     return (entry_price - current_price) * units
+
+
+def record_manual_exit(
+    position_id: int,
+    latest_price: float,
+    now: pd.Timestamp | None = None,
+    live_path: Path = LIVE_TRADING_PATH,
+    manual_path: Path = LIVE_MANUAL_EXIT_PATH,
+) -> tuple[pd.DataFrame, str, bool]:
+    """Record a human exit decision without closing the optimizer position."""
+    now_wit = _now_wit(now)
+    ledger = load_live_ledger(live_path)
+    manual_ledger = load_manual_exit_ledger(manual_path)
+
+    if pd.isna(latest_price):
+        return manual_ledger, "Harga terbaru belum tersedia, exit manual belum bisa dicatat.", False
+
+    existing_manual = manual_ledger[pd.to_numeric(manual_ledger["position_id"], errors="coerce").eq(position_id)]
+    if not existing_manual.empty:
+        return manual_ledger, f"Exit manual untuk posisi #{position_id} sudah pernah dicatat.", False
+
+    matches = ledger[pd.to_numeric(ledger["position_id"], errors="coerce").eq(position_id)]
+    if matches.empty:
+        return manual_ledger, f"Posisi Optimizer #{position_id} tidak ditemukan.", False
+
+    row = matches.iloc[-1]
+    if str(row.get("status", "")) != "OPEN":
+        return manual_ledger, f"Posisi Optimizer #{position_id} sudah tidak terbuka.", False
+
+    direction = str(row["arah"])
+    lot = float(pd.to_numeric(row["lot"], errors="coerce"))
+    entry_price = float(pd.to_numeric(row["entry_price"], errors="coerce"))
+    manual_price = float(latest_price)
+    gross_pl = _unrealized(direction, entry_price, manual_price, lot)
+    swap_at_exit = float(pd.to_numeric(row.get("swap", 0.0), errors="coerce") or 0.0)
+    net_pl = gross_pl + swap_at_exit
+    if net_pl > 0:
+        result_label = "TP Manual"
+    elif net_pl < 0:
+        result_label = "CL Manual"
+    else:
+        result_label = "BE Manual"
+
+    if manual_ledger.empty:
+        next_id = 1
+    else:
+        max_id = pd.to_numeric(manual_ledger["manual_exit_id"], errors="coerce").max()
+        next_id = 1 if pd.isna(max_id) else int(max_id) + 1
+
+    new_row = {
+        "manual_exit_id": next_id,
+        "position_id": int(position_id),
+        "optimizer_signal_date": row.get("signal_date", ""),
+        "optimizer_direction": direction,
+        "optimizer_entry_time_wit": row.get("entry_time_wit", ""),
+        "optimizer_entry_price": entry_price,
+        "optimizer_tp_usd": float(pd.to_numeric(row.get("tp_usd", 0.0), errors="coerce") or 0.0),
+        "optimizer_cl_usd": float(pd.to_numeric(row.get("cl_usd", 0.0), errors="coerce") or 0.0),
+        "manual_exit_time_wit": now_wit.strftime("%Y-%m-%d %H:%M:%S WIT"),
+        "manual_exit_price": manual_price,
+        "manual_gross_pl": gross_pl,
+        "manual_swap_at_exit": swap_at_exit,
+        "manual_net_pl": net_pl,
+        "manual_result_label": result_label,
+        "last_update_wit": now_wit.strftime("%Y-%m-%d %H:%M:%S WIT"),
+        "catatan": "Keputusan manusia dicatat paralel; posisi Optimizer tetap mengikuti aturan algoritma.",
+    }
+    new_frame = pd.DataFrame([new_row], columns=LIVE_MANUAL_EXIT_COLUMNS)
+    if manual_ledger.empty:
+        manual_ledger = new_frame
+    else:
+        manual_ledger = pd.concat([manual_ledger, new_frame], ignore_index=True)
+    save_manual_exit_ledger(manual_ledger, manual_path)
+    return manual_ledger, f"Exit manual posisi #{position_id} dicatat pada ${manual_price:,.2f}.", True
 
 
 def _open_counts(ledger: pd.DataFrame) -> tuple[int, int]:

@@ -12,7 +12,14 @@ except ImportError:  # pragma: no cover - handled in deployed UI
 from gold_forecast.data import load_gold_data, load_market_data
 from gold_forecast.direction_model import train_direction_model
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
-from gold_forecast.live_trading import LIVE_INITIAL_EQUITY, LIVE_START_DATE, load_live_ledger, run_live_trading_update
+from gold_forecast.live_trading import (
+    LIVE_INITIAL_EQUITY,
+    LIVE_START_DATE,
+    load_live_ledger,
+    load_manual_exit_ledger,
+    record_manual_exit,
+    run_live_trading_update,
+)
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
 from gold_forecast.monitoring import (
@@ -1414,6 +1421,151 @@ def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: 
             )
 
 
+def _render_manual_exit_comparison(live: dict[str, object]) -> None:
+    summary = live["summary"]
+    ledger = live["ledger"].copy()
+    manual_exits = load_manual_exit_ledger()
+    latest_price = summary["Latest price"]
+
+    st.markdown("**Perbandingan Optimizer vs Intervensi Manual**")
+    st.caption(
+        "Tombol Exit Manual hanya mencatat keputusan manusia pada harga data terbaru. "
+        "Posisi Optimizer tidak ditutup oleh tombol ini dan tetap berjalan sampai TP/CL algoritma tersentuh."
+    )
+
+    trade_rows = ledger[
+        ledger["status"].isin(["OPEN", "CLOSED"])
+        & pd.to_numeric(ledger["entry_price"], errors="coerce").notna()
+    ].copy()
+    if trade_rows.empty:
+        st.info("Belum ada posisi Optimizer yang bisa dibandingkan dengan keputusan manual.")
+        return
+
+    manual_by_position = {}
+    if not manual_exits.empty:
+        manual_sorted = manual_exits.copy()
+        manual_sorted["position_id_numeric"] = pd.to_numeric(manual_sorted["position_id"], errors="coerce")
+        for _, manual_row in manual_sorted.dropna(subset=["position_id_numeric"]).iterrows():
+            manual_by_position[int(manual_row["position_id_numeric"])] = manual_row
+
+    rows = []
+    optimizer_current_total = 0.0
+    optimizer_closed_total = 0.0
+    human_total = 0.0
+    paired_optimizer_total = 0.0
+    for _, row in trade_rows.iterrows():
+        position_id = int(pd.to_numeric(row["position_id"], errors="coerce"))
+        direction = str(row["arah"])
+        lot = float(pd.to_numeric(row["lot"], errors="coerce") or 0.0)
+        entry_price = float(pd.to_numeric(row["entry_price"], errors="coerce") or 0.0)
+        swap = float(pd.to_numeric(row.get("swap", 0.0), errors="coerce") or 0.0)
+        if row["status"] == "CLOSED":
+            optimizer_net = float(pd.to_numeric(row.get("net_pl", 0.0), errors="coerce") or 0.0)
+            optimizer_exit_price = float(pd.to_numeric(row.get("exit_price", 0.0), errors="coerce") or 0.0)
+            optimizer_net_status = "Closed"
+            optimizer_closed_total += optimizer_net
+        elif pd.isna(latest_price):
+            optimizer_net = 0.0
+            optimizer_exit_price = pd.NA
+            optimizer_net_status = "Floating - harga belum tersedia"
+        else:
+            if direction == "BUY":
+                floating = (float(latest_price) - entry_price) * lot * 100
+            else:
+                floating = (entry_price - float(latest_price)) * lot * 100
+            optimizer_net = floating + swap
+            optimizer_exit_price = pd.NA
+            optimizer_net_status = "Floating"
+        optimizer_current_total += optimizer_net
+
+        manual_row = manual_by_position.get(position_id)
+        if manual_row is None:
+            manual_exit_price = pd.NA
+            manual_net = pd.NA
+            manual_label = "Belum exit manual"
+        else:
+            manual_exit_price = float(pd.to_numeric(manual_row.get("manual_exit_price", 0.0), errors="coerce") or 0.0)
+            manual_net = float(pd.to_numeric(manual_row.get("manual_net_pl", 0.0), errors="coerce") or 0.0)
+            manual_label = f"{manual_row.get('manual_result_label', 'Manual')} ({manual_net:+,.2f})"
+            human_total += manual_net
+            paired_optimizer_total += optimizer_net
+
+        rows.append(
+            {
+                "Position ID": position_id,
+                "Posisi Entry Optimizer (Buy/Sell)": direction,
+                "Harga Entry": entry_price,
+                "Nilai TP/CL Optimizer": f"TP ${float(row['tp_usd']):,.2f} | CL ${float(row['cl_usd']):,.2f}",
+                "Status Optimizer": row["status"],
+                "Exit Price Optimizer": optimizer_exit_price,
+                "Net Profit Optimizer": optimizer_net,
+                "Status Net Optimizer": optimizer_net_status,
+                "Exit Price Manual": manual_exit_price,
+                "TP/CL Manusia": manual_label,
+                "Net Profit Manusia": manual_net,
+            }
+        )
+
+    paired_delta = human_total - paired_optimizer_total
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Net Optimizer saat ini", f"${optimizer_current_total:+,.2f}")
+    m2.metric("Net Optimizer closed", f"${optimizer_closed_total:+,.2f}")
+    m3.metric("Net Manusia tercatat", f"${human_total:+,.2f}")
+    m4.metric("Selisih posisi yang sama", f"${paired_delta:+,.2f}")
+
+    comparison_frame = pd.DataFrame(rows)
+    money_columns = [
+        "Harga Entry",
+        "Exit Price Optimizer",
+        "Net Profit Optimizer",
+        "Exit Price Manual",
+        "Net Profit Manusia",
+    ]
+    st.dataframe(
+        comparison_frame.style.format(
+            {column: "${:,.2f}" for column in money_columns if column in comparison_frame.columns},
+            subset=[column for column in money_columns if column in comparison_frame.columns],
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    open_action_rows = trade_rows[trade_rows["status"].eq("OPEN")].copy()
+    open_action_rows = open_action_rows[
+        ~pd.to_numeric(open_action_rows["position_id"], errors="coerce").isin(list(manual_by_position.keys()))
+    ]
+    if open_action_rows.empty:
+        st.info("Tidak ada posisi terbuka yang menunggu exit manual baru.")
+        return
+    if pd.isna(latest_price):
+        st.warning("Harga terbaru belum tersedia, tombol exit manual dinonaktifkan.")
+        return
+
+    st.markdown("**Aksi Exit Manual**")
+    for _, row in open_action_rows.iterrows():
+        position_id = int(pd.to_numeric(row["position_id"], errors="coerce"))
+        direction = str(row["arah"])
+        entry_price = float(pd.to_numeric(row["entry_price"], errors="coerce") or 0.0)
+        if direction == "BUY":
+            floating = (float(latest_price) - entry_price) * float(row["lot"]) * 100
+        else:
+            floating = (entry_price - float(latest_price)) * float(row["lot"]) * 100
+        swap = float(pd.to_numeric(row.get("swap", 0.0), errors="coerce") or 0.0)
+        net_now = floating + swap
+        action_cols = st.columns([2, 2, 2, 2])
+        action_cols[0].write(f"#{position_id} | {direction}")
+        action_cols[1].write(f"Entry ${entry_price:,.2f}")
+        action_cols[2].write(f"Manual net sekarang ${net_now:+,.2f}")
+        if action_cols[3].button(f"Exit Manual #{position_id}", key=f"manual_exit_{position_id}"):
+            _, message, success = record_manual_exit(position_id, float(latest_price))
+            if success:
+                st.success(message)
+            else:
+                st.warning(message)
+            st.rerun()
+
+
 def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.DataFrame) -> None:
     live = run_live_trading_update(gold_ohlc, optimization_leaderboard)
     summary = live["summary"]
@@ -1685,6 +1837,8 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
             use_container_width=True,
             hide_index=True,
         )
+
+    _render_manual_exit_comparison(live)
 
 
 def render_monitoring(title: str, data_path) -> None:
