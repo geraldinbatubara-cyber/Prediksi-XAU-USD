@@ -32,6 +32,7 @@ class DynamicPosition:
     expected_change_pct: float
     take_profit_usd: float
     stop_loss_usd: float | None
+    profit_close_usd: float | None
     entry_threshold_pct: float
     max_positions: int
     swap_paid: float = 0.0
@@ -241,6 +242,7 @@ def _dynamic_close_row(
         "Alasan exit": exit_reason,
         "TP (USD)": position.take_profit_usd,
         "SL (USD)": np.nan if position.stop_loss_usd is None else position.stop_loss_usd,
+        "Floating profit close (USD)": np.nan if position.profit_close_usd is None else position.profit_close_usd,
         "Threshold entry (%)": position.entry_threshold_pct,
         "Gross P/L": gross_pnl,
         "Swap": -position.swap_paid,
@@ -266,6 +268,7 @@ def _simulate_phase(
     strategy_name: str,
     live_rules: bool = False,
     risk_cap_pct: float | None = None,
+    profit_close_usd: float | None = None,
 ) -> SimulationResult:
     cash_balance = initial_balance
     next_position_id = 1
@@ -289,8 +292,14 @@ def _simulate_phase(
         still_open: list[DynamicPosition] = []
         for position in open_positions:
             units = position.lot_size * CONTRACT_OUNCES_PER_LOT
-            take_profit_points = position.take_profit_usd / units
+            effective_profit_usd = position.profit_close_usd if position.profit_close_usd is not None else position.take_profit_usd
+            take_profit_points = effective_profit_usd / units
             stop_loss_points = None if position.stop_loss_usd is None else position.stop_loss_usd / units
+            profit_exit_reason = (
+                f"Floating profit >= USD {effective_profit_usd:g}"
+                if position.profit_close_usd is not None
+                else "TP tersentuh"
+            )
             if position.direction == "BUY":
                 tp_price = position.entry_price + take_profit_points
                 sl_price = None if stop_loss_points is None else position.entry_price - stop_loss_points
@@ -301,7 +310,7 @@ def _simulate_phase(
                     exit_reason = "SL tersentuh"
                 elif hit_tp:
                     exit_price = tp_price
-                    exit_reason = "TP tersentuh"
+                    exit_reason = profit_exit_reason
                 else:
                     still_open.append(position)
                     continue
@@ -315,7 +324,7 @@ def _simulate_phase(
                     exit_reason = "SL tersentuh"
                 elif hit_tp:
                     exit_price = tp_price
-                    exit_reason = "TP tersentuh"
+                    exit_reason = profit_exit_reason
                 else:
                     still_open.append(position)
                     continue
@@ -383,6 +392,7 @@ def _simulate_phase(
                         expected_change_pct=expected_change_pct,
                         take_profit_usd=take_profit_usd,
                         stop_loss_usd=stop_loss_usd,
+                        profit_close_usd=profit_close_usd,
                         entry_threshold_pct=entry_threshold_pct,
                         max_positions=max_positions,
                     )
@@ -478,6 +488,7 @@ def _multiphase_result(
     max_sell_positions: int = 10,
     risk_cap_pct: float | None = None,
     phase_growth: float = PHASE_GROWTH,
+    profit_close_usd: float | None = None,
 ) -> MultiPhaseSimulationResult:
     clean_gold = gold_ohlc.loc[(gold_ohlc.index >= OPTIMIZATION_START) & (gold_ohlc.index <= OPTIMIZATION_END)].copy()
     clean_signals = signals.loc[(signals.index >= OPTIMIZATION_START) & (signals.index <= OPTIMIZATION_END)].copy()
@@ -510,6 +521,7 @@ def _multiphase_result(
             strategy_name=strategy_name,
             live_rules=live_rules,
             risk_cap_pct=risk_cap_pct,
+            profit_close_usd=profit_close_usd,
         )
         phase_rows.append(_phase_row(phase, result, start_equity, target_equity))
         if not result.trades.empty:
@@ -600,6 +612,7 @@ def run_optimized_strategy(
     *,
     phase_growth: float = PHASE_GROWTH,
     model_name: str = "Strategi Optimizer",
+    profit_close_usd: float | None = None,
 ) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     candidates: list[dict[str, object]] = []
     modes = ["Trend", "Breakout", "Pullback"]
@@ -628,6 +641,8 @@ def run_optimized_strategy(
                                         f"{mode} | MA {fast_window}/{slow_window} | Mom {momentum_days} | "
                                         f"TP {take_profit:g} SL {stop_loss:g} | Lot {lot_size:.2f}"
                                     )
+                                    if profit_close_usd is not None:
+                                        strategy_name = f"{strategy_name} | Profit close {profit_close_usd:g}"
                                     result = _multiphase_result(
                                         _fixed_lot_signals(predictions, lot_size),
                                         gold_ohlc,
@@ -637,6 +652,7 @@ def run_optimized_strategy(
                                         stop_loss_usd=stop_loss,
                                         entry_threshold_pct=threshold,
                                         phase_growth=phase_growth,
+                                        profit_close_usd=profit_close_usd,
                                     )
                                     summary = result.summary
                                     if summary["Jumlah transaksi"] < 3:
@@ -653,6 +669,7 @@ def run_optimized_strategy(
                                             "SL (USD)": stop_loss,
                                             "Lot": lot_size,
                                             "Target fase (%)": phase_growth * 100,
+                                            "Floating profit close (USD)": profit_close_usd,
                                             "Fase selesai": summary["Fase selesai"],
                                             "Fase total": summary["Fase total"],
                                             "Equity akhir": summary["Equity akhir"],
@@ -682,6 +699,7 @@ def run_optimized_strategy(
             stop_loss_usd=0,
             entry_threshold_pct=0,
             phase_growth=phase_growth,
+            profit_close_usd=profit_close_usd,
         )
         return empty, pd.DataFrame()
 
@@ -698,6 +716,17 @@ def run_optimized_strategy_v5(
         gold_ohlc,
         phase_growth=0.30,
         model_name="Strategi Optimizer v5",
+    )
+
+
+def run_optimized_strategy_v6(
+    gold_ohlc: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    return run_optimized_strategy(
+        gold_ohlc,
+        phase_growth=PHASE_GROWTH,
+        model_name="Strategi Optimizer v6",
+        profit_close_usd=50.0,
     )
 
 
