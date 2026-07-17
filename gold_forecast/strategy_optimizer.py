@@ -33,9 +33,13 @@ class DynamicPosition:
     take_profit_usd: float
     stop_loss_usd: float | None
     profit_close_usd: float | None
+    profit_protection_activation_usd: float | None
+    profit_protection_floor_usd: float | None
+    profit_protection_trail_usd: float | None
     entry_threshold_pct: float
     max_positions: int
     swap_paid: float = 0.0
+    peak_profit_usd: float = 0.0
 
 
 @dataclass
@@ -243,6 +247,16 @@ def _dynamic_close_row(
         "TP (USD)": position.take_profit_usd,
         "SL (USD)": np.nan if position.stop_loss_usd is None else position.stop_loss_usd,
         "Floating profit close (USD)": np.nan if position.profit_close_usd is None else position.profit_close_usd,
+        "Profit protection aktif (USD)": (
+            np.nan if position.profit_protection_activation_usd is None else position.profit_protection_activation_usd
+        ),
+        "Profit protection floor (USD)": (
+            np.nan if position.profit_protection_floor_usd is None else position.profit_protection_floor_usd
+        ),
+        "Profit protection trail (USD)": (
+            np.nan if position.profit_protection_trail_usd is None else position.profit_protection_trail_usd
+        ),
+        "Peak floating profit (USD)": position.peak_profit_usd,
         "Threshold entry (%)": position.entry_threshold_pct,
         "Gross P/L": gross_pnl,
         "Swap": -position.swap_paid,
@@ -269,6 +283,9 @@ def _simulate_phase(
     live_rules: bool = False,
     risk_cap_pct: float | None = None,
     profit_close_usd: float | None = None,
+    profit_protection_activation_usd: float | None = None,
+    profit_protection_floor_usd: float | None = None,
+    profit_protection_trail_usd: float | None = None,
 ) -> SimulationResult:
     cash_balance = initial_balance
     next_position_id = 1
@@ -293,7 +310,7 @@ def _simulate_phase(
         for position in open_positions:
             units = position.lot_size * CONTRACT_OUNCES_PER_LOT
             effective_profit_usd = position.profit_close_usd if position.profit_close_usd is not None else position.take_profit_usd
-            take_profit_points = effective_profit_usd / units
+            take_profit_points = None if position.profit_protection_activation_usd is not None else effective_profit_usd / units
             stop_loss_points = None if position.stop_loss_usd is None else position.stop_loss_usd / units
             profit_exit_reason = (
                 f"Floating profit >= USD {effective_profit_usd:g}"
@@ -301,9 +318,12 @@ def _simulate_phase(
                 else "TP tersentuh"
             )
             if position.direction == "BUY":
-                tp_price = position.entry_price + take_profit_points
+                favorable_profit = _dynamic_unrealized(position, high)
+                adverse_profit = _dynamic_unrealized(position, low)
+                position.peak_profit_usd = max(position.peak_profit_usd, favorable_profit)
+                tp_price = None if take_profit_points is None else position.entry_price + take_profit_points
                 sl_price = None if stop_loss_points is None else position.entry_price - stop_loss_points
-                hit_tp = high >= tp_price
+                hit_tp = tp_price is not None and high >= tp_price
                 hit_sl = sl_price is not None and low <= sl_price
                 if hit_sl:
                     exit_price = sl_price
@@ -311,13 +331,33 @@ def _simulate_phase(
                 elif hit_tp:
                     exit_price = tp_price
                     exit_reason = profit_exit_reason
+                elif (
+                    position.profit_protection_activation_usd is not None
+                    and position.peak_profit_usd >= position.profit_protection_activation_usd
+                ):
+                    locked_profit = max(
+                        float(position.profit_protection_floor_usd or 0.0),
+                        position.peak_profit_usd - float(position.profit_protection_trail_usd or 0.0),
+                    )
+                    if adverse_profit <= locked_profit:
+                        exit_price = position.entry_price + (locked_profit / units)
+                        exit_reason = (
+                            f"Profit protection: peak USD {position.peak_profit_usd:g}, "
+                            f"lock USD {locked_profit:g}"
+                        )
+                    else:
+                        still_open.append(position)
+                        continue
                 else:
                     still_open.append(position)
                     continue
             else:
-                tp_price = position.entry_price - take_profit_points
+                favorable_profit = _dynamic_unrealized(position, low)
+                adverse_profit = _dynamic_unrealized(position, high)
+                position.peak_profit_usd = max(position.peak_profit_usd, favorable_profit)
+                tp_price = None if take_profit_points is None else position.entry_price - take_profit_points
                 sl_price = None if stop_loss_points is None else position.entry_price + stop_loss_points
-                hit_tp = low <= tp_price
+                hit_tp = tp_price is not None and low <= tp_price
                 hit_sl = sl_price is not None and high >= sl_price
                 if hit_sl:
                     exit_price = sl_price
@@ -325,6 +365,23 @@ def _simulate_phase(
                 elif hit_tp:
                     exit_price = tp_price
                     exit_reason = profit_exit_reason
+                elif (
+                    position.profit_protection_activation_usd is not None
+                    and position.peak_profit_usd >= position.profit_protection_activation_usd
+                ):
+                    locked_profit = max(
+                        float(position.profit_protection_floor_usd or 0.0),
+                        position.peak_profit_usd - float(position.profit_protection_trail_usd or 0.0),
+                    )
+                    if adverse_profit <= locked_profit:
+                        exit_price = position.entry_price - (locked_profit / units)
+                        exit_reason = (
+                            f"Profit protection: peak USD {position.peak_profit_usd:g}, "
+                            f"lock USD {locked_profit:g}"
+                        )
+                    else:
+                        still_open.append(position)
+                        continue
                 else:
                     still_open.append(position)
                     continue
@@ -393,6 +450,9 @@ def _simulate_phase(
                         take_profit_usd=take_profit_usd,
                         stop_loss_usd=stop_loss_usd,
                         profit_close_usd=profit_close_usd,
+                        profit_protection_activation_usd=profit_protection_activation_usd,
+                        profit_protection_floor_usd=profit_protection_floor_usd,
+                        profit_protection_trail_usd=profit_protection_trail_usd,
                         entry_threshold_pct=entry_threshold_pct,
                         max_positions=max_positions,
                     )
@@ -489,6 +549,9 @@ def _multiphase_result(
     risk_cap_pct: float | None = None,
     phase_growth: float = PHASE_GROWTH,
     profit_close_usd: float | None = None,
+    profit_protection_activation_usd: float | None = None,
+    profit_protection_floor_usd: float | None = None,
+    profit_protection_trail_usd: float | None = None,
 ) -> MultiPhaseSimulationResult:
     clean_gold = gold_ohlc.loc[(gold_ohlc.index >= OPTIMIZATION_START) & (gold_ohlc.index <= OPTIMIZATION_END)].copy()
     clean_signals = signals.loc[(signals.index >= OPTIMIZATION_START) & (signals.index <= OPTIMIZATION_END)].copy()
@@ -522,6 +585,9 @@ def _multiphase_result(
             live_rules=live_rules,
             risk_cap_pct=risk_cap_pct,
             profit_close_usd=profit_close_usd,
+            profit_protection_activation_usd=profit_protection_activation_usd,
+            profit_protection_floor_usd=profit_protection_floor_usd,
+            profit_protection_trail_usd=profit_protection_trail_usd,
         )
         phase_rows.append(_phase_row(phase, result, start_equity, target_equity))
         if not result.trades.empty:
@@ -613,6 +679,9 @@ def run_optimized_strategy(
     phase_growth: float = PHASE_GROWTH,
     model_name: str = "Strategi Optimizer",
     profit_close_usd: float | None = None,
+    profit_protection_activation_usd: float | None = None,
+    profit_protection_floor_usd: float | None = None,
+    profit_protection_trail_usd: float | None = None,
 ) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     candidates: list[dict[str, object]] = []
     modes = ["Trend", "Breakout", "Pullback"]
@@ -643,6 +712,11 @@ def run_optimized_strategy(
                                     )
                                     if profit_close_usd is not None:
                                         strategy_name = f"{strategy_name} | Profit close {profit_close_usd:g}"
+                                    if profit_protection_activation_usd is not None:
+                                        strategy_name = (
+                                            f"{strategy_name} | Protection {profit_protection_activation_usd:g}/"
+                                            f"{profit_protection_floor_usd:g}/{profit_protection_trail_usd:g}"
+                                        )
                                     result = _multiphase_result(
                                         _fixed_lot_signals(predictions, lot_size),
                                         gold_ohlc,
@@ -653,6 +727,9 @@ def run_optimized_strategy(
                                         entry_threshold_pct=threshold,
                                         phase_growth=phase_growth,
                                         profit_close_usd=profit_close_usd,
+                                        profit_protection_activation_usd=profit_protection_activation_usd,
+                                        profit_protection_floor_usd=profit_protection_floor_usd,
+                                        profit_protection_trail_usd=profit_protection_trail_usd,
                                     )
                                     summary = result.summary
                                     if summary["Jumlah transaksi"] < 3:
@@ -670,6 +747,9 @@ def run_optimized_strategy(
                                             "Lot": lot_size,
                                             "Target fase (%)": phase_growth * 100,
                                             "Floating profit close (USD)": profit_close_usd,
+                                            "Profit protection aktif (USD)": profit_protection_activation_usd,
+                                            "Profit protection floor (USD)": profit_protection_floor_usd,
+                                            "Profit protection trail (USD)": profit_protection_trail_usd,
                                             "Fase selesai": summary["Fase selesai"],
                                             "Fase total": summary["Fase total"],
                                             "Equity akhir": summary["Equity akhir"],
@@ -700,6 +780,9 @@ def run_optimized_strategy(
             entry_threshold_pct=0,
             phase_growth=phase_growth,
             profit_close_usd=profit_close_usd,
+            profit_protection_activation_usd=profit_protection_activation_usd,
+            profit_protection_floor_usd=profit_protection_floor_usd,
+            profit_protection_trail_usd=profit_protection_trail_usd,
         )
         return empty, pd.DataFrame()
 
@@ -727,6 +810,19 @@ def run_optimized_strategy_v6(
         phase_growth=PHASE_GROWTH,
         model_name="Strategi Optimizer v6",
         profit_close_usd=50.0,
+    )
+
+
+def run_optimized_strategy_v7(
+    gold_ohlc: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    return run_optimized_strategy(
+        gold_ohlc,
+        phase_growth=PHASE_GROWTH,
+        model_name="Strategi Optimizer v7",
+        profit_protection_activation_usd=50.0,
+        profit_protection_floor_usd=35.0,
+        profit_protection_trail_usd=15.0,
     )
 
 
