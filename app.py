@@ -1772,6 +1772,72 @@ def _render_manual_exit_comparison(
             st.rerun()
 
 
+def _format_live_param_value(value, value_type: str = "plain") -> str:
+    if pd.isna(value):
+        return "-"
+    if value_type == "money":
+        return f"USD {float(value):,.2f}"
+    if value_type == "percent":
+        return f"{float(value):,.2f}%"
+    if value_type == "bool":
+        return "Ya" if bool(value) else "Tidak"
+    if value_type == "number":
+        return f"{float(value):,.2f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _build_live_strategy_frame(params: dict[str, object], leaderboard: pd.DataFrame, title: str) -> pd.DataFrame:
+    rows = [
+        {"Parameter": "Strategi", "Nilai": params["Strategi"], "Keterangan": "Nama kandidat strategi yang dipakai."},
+        {"Parameter": "Mode", "Nilai": params["Mode"], "Keterangan": "Jenis sinyal utama: Trend, Breakout, atau Pullback."},
+        {
+            "Parameter": "MA cepat/lambat",
+            "Nilai": f"{params['Fast MA']} / {params['Slow MA']}",
+            "Keterangan": "Moving average harian yang menjadi filter arah.",
+        },
+        {"Parameter": "Momentum hari", "Nilai": params["Momentum hari"], "Keterangan": "Jendela momentum harian."},
+        {
+            "Parameter": "Threshold entry",
+            "Nilai": f"{params['Threshold entry (%)']:.2f}%",
+            "Keterangan": "Minimal expected change agar sinyal bisa dianggap valid.",
+        },
+        {"Parameter": "TP per posisi", "Nilai": f"USD {params['TP (USD)']:,.2f}", "Keterangan": "Target profit algoritma."},
+        {"Parameter": "CL/SL per posisi", "Nilai": f"USD {params['SL (USD)']:,.2f}", "Keterangan": "Batas rugi algoritma."},
+        {"Parameter": "Lot live", "Nilai": "0.01 tetap", "Keterangan": "Override live sesuai rule paper trading saat ini."},
+    ]
+
+    if leaderboard.empty:
+        return pd.DataFrame(rows)
+
+    best = leaderboard.iloc[0].to_dict()
+    extra_specs = [
+        ("Eksplorasi", "plain", "Sumber/preset hasil pencarian optimizer."),
+        ("Lot", "number", "Lot yang dipakai saat backtest v10; live tetap mengikuti override 0.01."),
+        ("Max BUY", "number", "Batas posisi BUY pada kandidat backtest."),
+        ("Max SELL", "number", "Batas posisi SELL pada kandidat backtest."),
+        ("Risk cap floating SL (%)", "percent", "Batas risiko floating sebelum strategi menahan penambahan risiko."),
+        ("Target fase (%)", "percent", "Target growth per fase pada simulasi optimizer."),
+        ("Profit protection aktif (USD)", "money", "Floating profit minimum sebelum proteksi profit aktif."),
+        ("Profit protection floor (USD)", "money", "Profit minimum yang ingin diamankan setelah proteksi aktif."),
+        ("Profit protection trail (USD)", "money", "Jarak trailing dari peak floating profit."),
+        ("Close-all target equity", "bool", "Apakah simulasi menutup semua posisi saat target equity fase tercapai."),
+        ("Max open posisi", "number", "Jumlah posisi terbuka maksimum yang terjadi pada backtest."),
+        ("Profit factor", "number", "Rasio total profit terhadap total loss pada backtest."),
+        ("Max drawdown", "money", "Drawdown maksimum pada backtest kandidat."),
+        ("Equity akhir", "money", "Equity akhir backtest kandidat."),
+    ]
+    for column, value_type, note in extra_specs:
+        if column in best:
+            rows.append(
+                {
+                    "Parameter": f"{column} ({title})",
+                    "Nilai": _format_live_param_value(best[column], value_type),
+                    "Keterangan": note,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def render_live_trading(
     gold_ohlc: pd.DataFrame,
     optimization_leaderboard: pd.DataFrame,
@@ -1839,18 +1905,7 @@ def render_live_trading(
     p3.metric("Closed net P/L", f"${summary['Closed net P/L']:+,.2f}")
     p4.metric("Swap posisi terbuka", f"${summary['Open swap']:+,.2f}")
 
-    strategy_frame = pd.DataFrame(
-        [
-            {"Parameter": "Strategi", "Nilai": params["Strategi"]},
-            {"Parameter": "Mode", "Nilai": params["Mode"]},
-            {"Parameter": "MA cepat/lambat", "Nilai": f"{params['Fast MA']} / {params['Slow MA']}"},
-            {"Parameter": "Momentum hari", "Nilai": params["Momentum hari"]},
-            {"Parameter": "Threshold entry", "Nilai": f"{params['Threshold entry (%)']:.2f}%"},
-            {"Parameter": "TP per posisi", "Nilai": f"USD {params['TP (USD)']:,.2f}"},
-            {"Parameter": "CL/SL per posisi", "Nilai": f"USD {params['SL (USD)']:,.2f}"},
-            {"Parameter": "Lot live", "Nilai": "0.01 tetap"},
-        ]
-    )
+    strategy_frame = _build_live_strategy_frame(params, optimization_leaderboard, title)
     st.markdown("**Pola Strategi yang Dipakai**")
     st.dataframe(strategy_frame, use_container_width=True, hide_index=True)
 
