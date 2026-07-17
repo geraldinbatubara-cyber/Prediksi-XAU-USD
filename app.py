@@ -34,18 +34,12 @@ from gold_forecast.monitoring import (
     monitoring_summary,
 )
 from gold_forecast.signals import build_signal
-from gold_forecast.strategy_optimizer import (
-    OPTIMIZATION_END,
-    OPTIMIZATION_START,
-    _rsi,
-    run_optimized_strategy,
-    run_optimized_strategy_v2,
-    run_optimized_strategy_v3,
-    run_optimized_strategy_v4,
-    run_optimized_strategy_v5,
-    run_optimized_strategy_v6,
-    run_optimized_strategy_v7,
-)
+from gold_forecast import strategy_optimizer as strategy_optimizer_module
+
+
+OPTIMIZATION_END = strategy_optimizer_module.OPTIMIZATION_END
+OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
+_rsi = strategy_optimizer_module._rsi
 
 
 SIMULATION_CACHE_VERSION = "optimizer-multiphase-v7-profit-protection"
@@ -87,13 +81,34 @@ def get_simulations(simulation_version: str):
             PRECOMPUTED_SIMULATION_PATH.unlink(missing_ok=True)
 
     gold_ohlc = get_gold_ohlc()
-    optimized_result, optimization_leaderboard = run_optimized_strategy(gold_ohlc)
-    optimized_v2_result, optimization_v2_leaderboard = run_optimized_strategy_v2(gold_ohlc)
-    optimized_v3_result, optimization_v3_leaderboard = run_optimized_strategy_v3(gold_ohlc, optimization_leaderboard)
-    optimized_v4_result, optimization_v4_leaderboard = run_optimized_strategy_v4(gold_ohlc, optimization_leaderboard)
-    optimized_v5_result, optimization_v5_leaderboard = run_optimized_strategy_v5(gold_ohlc)
-    optimized_v6_result, optimization_v6_leaderboard = run_optimized_strategy_v6(gold_ohlc)
-    optimized_v7_result, optimization_v7_leaderboard = run_optimized_strategy_v7(gold_ohlc)
+    optimized_result, optimization_leaderboard = strategy_optimizer_module.run_optimized_strategy(gold_ohlc)
+    optimized_v2_result, optimization_v2_leaderboard = strategy_optimizer_module.run_optimized_strategy_v2(gold_ohlc)
+    optimized_v3_result, optimization_v3_leaderboard = strategy_optimizer_module.run_optimized_strategy_v3(
+        gold_ohlc,
+        optimization_leaderboard,
+    )
+    optimized_v4_result, optimization_v4_leaderboard = strategy_optimizer_module.run_optimized_strategy_v4(
+        gold_ohlc,
+        optimization_leaderboard,
+    )
+    optimized_v5_runner = getattr(
+        strategy_optimizer_module,
+        "run_optimized_strategy_v5",
+        strategy_optimizer_module.run_optimized_strategy,
+    )
+    optimized_v6_runner = getattr(
+        strategy_optimizer_module,
+        "run_optimized_strategy_v6",
+        optimized_v5_runner,
+    )
+    optimized_v7_runner = getattr(
+        strategy_optimizer_module,
+        "run_optimized_strategy_v7",
+        optimized_v6_runner,
+    )
+    optimized_v5_result, optimization_v5_leaderboard = optimized_v5_runner(gold_ohlc)
+    optimized_v6_result, optimization_v6_leaderboard = optimized_v6_runner(gold_ohlc)
+    optimized_v7_result, optimization_v7_leaderboard = optimized_v7_runner(gold_ohlc)
     payload = (
         optimized_result,
         optimization_leaderboard,
