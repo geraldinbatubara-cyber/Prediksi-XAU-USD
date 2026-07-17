@@ -69,19 +69,32 @@ def get_models(market_data: pd.DataFrame):
     )
 
 
+def load_precomputed_simulations(simulation_version: str):
+    if not PRECOMPUTED_SIMULATION_PATH.exists():
+        return None
+    try:
+        with PRECOMPUTED_SIMULATION_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == simulation_version:
+            return saved["payload"]
+    except Exception:
+        PRECOMPUTED_SIMULATION_PATH.unlink(missing_ok=True)
+    return None
+
+
+@st.cache_data(ttl=3600)
+def get_base_optimizer(gold_ohlc: pd.DataFrame):
+    return strategy_optimizer_module.run_optimized_strategy(gold_ohlc)
+
+
 @st.cache_data(ttl=3600)
 def get_simulations(simulation_version: str):
-    if PRECOMPUTED_SIMULATION_PATH.exists():
-        try:
-            with PRECOMPUTED_SIMULATION_PATH.open("rb") as file:
-                saved = pickle.load(file)
-            if saved.get("version") == simulation_version:
-                return saved["payload"]
-        except Exception:
-            PRECOMPUTED_SIMULATION_PATH.unlink(missing_ok=True)
+    cached = load_precomputed_simulations(simulation_version)
+    if cached is not None:
+        return cached
 
     gold_ohlc = get_gold_ohlc()
-    optimized_result, optimization_leaderboard = strategy_optimizer_module.run_optimized_strategy(gold_ohlc)
+    optimized_result, optimization_leaderboard = get_base_optimizer(gold_ohlc)
     optimized_v6_runner = getattr(
         strategy_optimizer_module,
         "run_optimized_strategy_v6",
@@ -2209,6 +2222,7 @@ with st.sidebar:
         get_data.clear()
         get_gold_ohlc.clear()
         get_models.clear()
+        get_base_optimizer.clear()
         get_simulations.clear()
         st.rerun()
     history_years = st.slider("Riwayat grafik (tahun)", 1, 10, 3)
@@ -2228,20 +2242,7 @@ try:
     market, data_fetched_at = get_data()
     gold_ohlc = get_gold_ohlc()
     model_1, model_2, direction_model = get_models(market)
-    (
-        optimized_result,
-        optimization_leaderboard,
-        optimized_v6_result,
-        optimization_v6_leaderboard,
-        optimized_v7_result,
-        optimization_v7_leaderboard,
-        optimized_v8_result,
-        optimization_v8_leaderboard,
-        optimized_v9_result,
-        optimization_v9_leaderboard,
-    ) = get_simulations(
-        SIMULATION_CACHE_VERSION,
-    )
+    optimized_result, optimization_leaderboard = get_base_optimizer(gold_ohlc)
 except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
@@ -2268,19 +2269,18 @@ with monitoring_model_1_tab:
     render_monitoring("Monitoring Model 1", MODEL_1_DATA_PATH)
 
 with simulation_tab:
-    render_simulation(
-        optimized_result,
-        optimization_leaderboard,
-        optimized_v6_result,
-        optimization_v6_leaderboard,
-        optimized_v7_result,
-        optimization_v7_leaderboard,
-        optimized_v8_result,
-        optimization_v8_leaderboard,
-        optimized_v9_result,
-        optimization_v9_leaderboard,
-        gold_ohlc,
-    )
+    simulation_payload = load_precomputed_simulations(SIMULATION_CACHE_VERSION)
+    if simulation_payload is None:
+        st.warning(
+            "Hasil simulasi precomputed untuk versi terbaru belum tersedia. "
+            "Aplikasi sengaja tidak menghitung v6-v9 saat startup agar dashboard bisa dibuka lebih cepat."
+        )
+        if st.button("Bangun ulang simulasi v1/v6/v7/v8/v9", use_container_width=True):
+            with st.spinner("Menghitung simulasi lengkap. Proses ini bisa memakan waktu di Streamlit Cloud."):
+                simulation_payload = get_simulations(SIMULATION_CACHE_VERSION)
+            st.rerun()
+    else:
+        render_simulation(*simulation_payload, gold_ohlc)
 
 with live_trading_tab:
     render_live_trading(gold_ohlc, optimization_leaderboard)
