@@ -1228,19 +1228,109 @@ def _exit_checklist_rows(gold_ohlc: pd.DataFrame, params: dict[str, object]) -> 
     return pd.DataFrame(rows)
 
 
-def _new_entry_signal_columns(entry_rows: pd.DataFrame) -> pd.DataFrame:
-    if entry_rows.empty:
-        return pd.DataFrame()
+def _optimizer_logic_summary_rows(
+    gold_ohlc: pd.DataFrame,
+    params: dict[str, object],
+    entry_rows: pd.DataFrame,
+    exit_rows: pd.DataFrame,
+) -> pd.DataFrame:
+    latest_date = gold_ohlc.index.max() if not gold_ohlc.empty else pd.NaT
+    latest_close = float(gold_ohlc.iloc[-1]["Close"]) if not gold_ohlc.empty else pd.NA
+    latest_entry = pd.DataFrame()
+    if not entry_rows.empty:
+        latest_entry = entry_rows[entry_rows["Tanggal"].eq(entry_rows["Tanggal"].max())].copy()
 
-    signal_columns = [
-        column
-        for signal_number in range(1, 6)
-        for column in (f"Sinyal {signal_number}", f"Status Sinyal {signal_number}", f"Nilai Sinyal {signal_number}")
-        if column in entry_rows.columns
-    ]
-    base_columns = ["Tanggal", "Mode", "Arah", "Status", "Keterangan", "Close"]
-    display_columns = [column for column in base_columns + signal_columns if column in entry_rows.columns]
-    return entry_rows[display_columns].copy()
+    buy_entry = latest_entry[latest_entry["Arah"].eq("BUY")] if not latest_entry.empty else pd.DataFrame()
+    sell_entry = latest_entry[latest_entry["Arah"].eq("SELL")] if not latest_entry.empty else pd.DataFrame()
+    buy_ready = not buy_entry.empty and bool(buy_entry.iloc[0]["Status"] == "LOLOS")
+    sell_ready = not sell_entry.empty and bool(sell_entry.iloc[0]["Status"] == "LOLOS")
+    if buy_ready:
+        entry_status = "BUY"
+        entry_note = str(buy_entry.iloc[0]["Keterangan"])
+    elif sell_ready:
+        entry_status = "SELL"
+        entry_note = str(sell_entry.iloc[0]["Keterangan"])
+    else:
+        entry_status = "NETRAL / BELUM"
+        entry_note = "Belum ada arah BUY/SELL yang seluruh sinyalnya lolos pada data terbaru."
+
+    if exit_rows.empty:
+        exit_status = "BELUM ADA POSISI"
+        exit_note = "Belum ada ledger Live Trading untuk dievaluasi."
+    else:
+        exit_ready = exit_rows[exit_rows["Status"].eq("LOLOS")]
+        if exit_ready.empty:
+            exit_status = "BELUM EXIT"
+            exit_note = "Belum ada TP atau CL/SL yang memenuhi rule exit."
+        else:
+            exit_directions = sorted(exit_ready["Arah"].dropna().astype(str).unique())
+            exit_status = " / ".join(f"EXIT {direction}" for direction in exit_directions)
+            exit_note = f"{len(exit_ready)} checklist exit sudah LOLOS."
+
+    return pd.DataFrame(
+        [
+            {
+                "Elemen Strategi": "1. Data yang Dipakai",
+                "Keterangan": (
+                    "Data utama memakai OHLC harian GC=F. Evaluasi terbaru: "
+                    f"{_format_date(latest_date)} dengan close "
+                    f"{'-' if pd.isna(latest_close) else f'USD {latest_close:,.2f}'}."
+                ),
+                "Status BUY / SELL": "NETRAL / INFORMASI",
+            },
+            {
+                "Elemen Strategi": "2. Mode Strategi",
+                "Keterangan": (
+                    f"Mode aktif Optimizer adalah {params['Mode']}. Mode ini menentukan apakah rule yang dipakai "
+                    "berbasis tren, breakout, atau pullback."
+                ),
+                "Status BUY / SELL": "BUY / SELL",
+            },
+            {
+                "Elemen Strategi": "3. Parameter Strategi",
+                "Keterangan": (
+                    f"MA {params['Fast MA']}/{params['Slow MA']}, momentum {params['Momentum hari']} hari, "
+                    f"threshold {params['Threshold entry (%)']:.2f}%, TP USD {params['TP (USD)']:,.2f}, "
+                    f"CL/SL USD {params['SL (USD)']:,.2f}, lot {params['Lot']:.2f}."
+                ),
+                "Status BUY / SELL": "NETRAL / PARAMETER",
+            },
+            {
+                "Elemen Strategi": "4. Sinyal Entry",
+                "Keterangan": f"Entry membaca seluruh checklist BUY dan SELL pada candle harian terbaru. {entry_note}",
+                "Status BUY / SELL": entry_status,
+            },
+            {
+                "Elemen Strategi": "5. Sinyal Exit",
+                "Keterangan": f"Exit membaca TP dan CL/SL dari posisi Live Trading yang tercatat. {exit_note}",
+                "Status BUY / SELL": exit_status,
+            },
+            {
+                "Elemen Strategi": "6. Multi-Fase Equity",
+                "Keterangan": (
+                    "Simulasi Optimizer mengejar target +20% per fase. Saat target fase tercapai, semua posisi "
+                    "ditutup dan fase berikutnya dimulai dari equity baru."
+                ),
+                "Status BUY / SELL": "MANAJEMEN MODAL",
+            },
+            {
+                "Elemen Strategi": "7. Penilaian Strategi",
+                "Keterangan": (
+                    "Strategi terbaik dipilih dari kombinasi fase selesai, equity akhir, max drawdown, "
+                    "profit factor, dan jumlah transaksi."
+                ),
+                "Status BUY / SELL": "EVALUASI PERFORMA",
+            },
+            {
+                "Elemen Strategi": "8. Batas Posisi",
+                "Keterangan": (
+                    "Live Trading membatasi maksimal 8 BUY dan 10 SELL, serta tidak mencatat ulang kombinasi "
+                    "tanggal sinyal dan arah yang sama."
+                ),
+                "Status BUY / SELL": "KONTROL BUY / SELL",
+            },
+        ]
+    )
 
 
 def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.DataFrame) -> None:
@@ -1256,9 +1346,19 @@ def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: 
         f"Threshold {params['Threshold entry (%)']:.2f}% | TP USD {params['TP (USD)']:,.2f} | CL/SL USD {params['SL (USD)']:,.2f}"
     )
 
-    evaluation_entry_tab, new_entry_tab, exit_tab = st.tabs(
-        ["Evaluasi Strategi Entry", "Sinyal New Entry", "Strategi EXIT"]
+    summary_tab, evaluation_entry_tab, exit_tab = st.tabs(
+        ["Ringkasan Logika Optimizer", "Evaluasi Strategi Entry", "Evaluasi Strategi Exit"]
     )
+    with summary_tab:
+        entry_rows = _entry_checklist_rows(gold_ohlc, params, None)
+        exit_rows = _exit_checklist_rows(gold_ohlc, params)
+        summary_rows = _optimizer_logic_summary_rows(gold_ohlc, params, entry_rows, exit_rows)
+        st.dataframe(summary_rows, use_container_width=True, hide_index=True)
+        st.caption(
+            "Kolom status menunjukkan apakah elemen tersebut sedang mengarah ke BUY, SELL, EXIT, "
+            "atau hanya menjadi informasi/manajemen risiko."
+        )
+
     with evaluation_entry_tab:
         limit_choice = st.selectbox(
             "Jumlah evaluasi ENTRY yang ditampilkan",
@@ -1283,39 +1383,6 @@ def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: 
                         "MA lambat": "${:,.2f}",
                         "Momentum (%)": "{:+.2f}%",
                         "RSI": "{:.1f}",
-                    },
-                    na_rep="-",
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    with new_entry_tab:
-        limit_choice = st.selectbox(
-            "Jumlah Sinyal New Entry yang ditampilkan",
-            ["120 baris terbaru", "240 baris terbaru", "Semua"],
-            index=0,
-            key="new_entry_limit",
-        )
-        limit = None if limit_choice == "Semua" else int(limit_choice.split()[0])
-        entry_rows = _entry_checklist_rows(gold_ohlc, params, limit)
-        new_entry_rows = _new_entry_signal_columns(entry_rows)
-        if new_entry_rows.empty:
-            st.warning("Belum ada Sinyal New Entry yang dapat dievaluasi.")
-        else:
-            completed = new_entry_rows[new_entry_rows["Status"].eq("LOLOS")]
-            c1, c2, c3 = st.columns(3)
-            c1.metric("New Entry tampil", f"{len(new_entry_rows):,.0f}")
-            c2.metric("Final LOLOS", f"{len(completed):,.0f}")
-            c3.metric("Final BELUM", f"{len(new_entry_rows) - len(completed):,.0f}")
-            st.caption(
-                "Setiap kolom Sinyal adalah syarat yang berasal dari Strategi Terbaik Optimizer aktif. "
-                "Status final LOLOS hanya jika seluruh sinyal pada arah tersebut LOLOS."
-            )
-            st.dataframe(
-                new_entry_rows.style.format(
-                    {
-                        "Close": "${:,.2f}",
                     },
                     na_rep="-",
                 ),
