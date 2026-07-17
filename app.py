@@ -42,7 +42,7 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-expanded-search"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-real-data-july"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -120,11 +120,17 @@ def get_simulations(simulation_version: str):
         "run_optimized_strategy_v10",
         optimized_v9_runner,
     )
+    optimized_v10_real_runner = getattr(
+        strategy_optimizer_module,
+        "run_optimized_strategy_v10_real_data",
+        optimized_v10_runner,
+    )
     optimized_v6_result, optimization_v6_leaderboard = optimized_v6_runner(gold_ohlc)
     optimized_v7_result, optimization_v7_leaderboard = optimized_v7_runner(gold_ohlc)
     optimized_v8_result, optimization_v8_leaderboard = optimized_v8_runner(gold_ohlc)
     optimized_v9_result, optimization_v9_leaderboard = optimized_v9_runner(gold_ohlc)
     optimized_v10_result, optimization_v10_leaderboard = optimized_v10_runner(gold_ohlc)
+    optimized_v10_real_result, optimization_v10_real_leaderboard = optimized_v10_real_runner(gold_ohlc)
     payload = (
         optimized_result,
         optimization_leaderboard,
@@ -138,6 +144,8 @@ def get_simulations(simulation_version: str):
         optimization_v9_leaderboard,
         optimized_v10_result,
         optimization_v10_leaderboard,
+        optimized_v10_real_result,
+        optimization_v10_real_leaderboard,
     )
     try:
         PRECOMPUTED_SIMULATION_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -704,11 +712,17 @@ def _render_strategy_trade_chart(
     momentum_days = int(best.get("Momentum hari", 10))
     threshold = float(best.get("Threshold entry (%)", 0.15))
 
+    trade_rows = trades.copy()
+    trade_rows["Tanggal entry"] = pd.to_datetime(trade_rows["Tanggal entry"], errors="coerce")
+    trade_rows["Tanggal tutup"] = pd.to_datetime(trade_rows["Tanggal tutup"], errors="coerce")
+    trade_rows = trade_rows.dropna(subset=["Tanggal entry", "Tanggal tutup"])
+    if trade_rows.empty:
+        return
+
+    chart_start = trade_rows["Tanggal entry"].min() - pd.Timedelta(days=max(slow_window, momentum_days) + 30)
+    chart_end = trade_rows["Tanggal tutup"].max()
     chart_data = gold_ohlc.copy()
-    chart_data = chart_data.loc[
-        (chart_data.index >= OPTIMIZATION_START - pd.Timedelta(days=120))
-        & (chart_data.index <= OPTIMIZATION_END)
-    ].copy()
+    chart_data = chart_data.loc[(chart_data.index >= chart_start) & (chart_data.index <= chart_end)].copy()
     if chart_data.empty:
         return
 
@@ -716,11 +730,6 @@ def _render_strategy_trade_chart(
     chart_data["MA cepat"] = close.rolling(fast_window).mean()
     chart_data["MA lambat"] = close.rolling(slow_window).mean()
     chart_data["Momentum"] = close.pct_change(momentum_days) * 100
-
-    trade_rows = trades.copy()
-    trade_rows["Tanggal entry"] = pd.to_datetime(trade_rows["Tanggal entry"], errors="coerce")
-    trade_rows["Tanggal tutup"] = pd.to_datetime(trade_rows["Tanggal tutup"], errors="coerce")
-    trade_rows = trade_rows.dropna(subset=["Tanggal entry", "Tanggal tutup"])
 
     figure = make_subplots(
         rows=2,
@@ -813,7 +822,7 @@ def _render_strategy_trade_chart(
     )
     figure.update_yaxes(title_text="Harga XAU/USD", row=1, col=1)
     figure.update_yaxes(title_text="Momentum (%)", row=2, col=1)
-    figure.update_xaxes(range=[OPTIMIZATION_START, OPTIMIZATION_END], row=2, col=1)
+    figure.update_xaxes(range=[chart_start, chart_end], row=2, col=1)
 
     st.markdown("**Visual Strategi: Harga, MA, Momentum, Entry dan Exit**")
     st.caption(
@@ -1085,6 +1094,8 @@ def render_simulation(
     optimization_v9_leaderboard: pd.DataFrame,
     optimized_v10_result,
     optimization_v10_leaderboard: pd.DataFrame,
+    optimized_v10_real_result,
+    optimization_v10_real_leaderboard: pd.DataFrame,
     gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
@@ -1099,11 +1110,20 @@ def render_simulation(
         "Optimizer v8 memakai rule v7 tetapi tanpa target equity close-all/fase berikutnya. "
         "Optimizer v9 melakukan grid search profit protection di atas kerangka v8. "
         "Optimizer v10 memperluas pencarian dari v8 ke parameter sinyal, TP/SL, lot, batas posisi, risk cap, dan profit protection. "
+        "v10 Data Real menguji parameter terbaik v10 pada periode 1-16 Juli 2026 tanpa optimasi ulang. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v6_tab, optimizer_v7_tab, optimizer_v8_tab, optimizer_v9_tab, optimizer_v10_tab = st.tabs(
+    (
+        optimizer_tab,
+        optimizer_v6_tab,
+        optimizer_v7_tab,
+        optimizer_v8_tab,
+        optimizer_v9_tab,
+        optimizer_v10_tab,
+        optimizer_v10_real_tab,
+    ) = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v6",
@@ -1111,6 +1131,7 @@ def render_simulation(
             "Strategi Optimizer v8",
             "Strategi Optimizer v9",
             "Strategi Optimizer v10",
+            "v10 Data Real",
         ]
     )
     with optimizer_tab:
@@ -1148,6 +1169,17 @@ def render_simulation(
             "risk cap, dan profit protection. Pemilihan kandidat v10 mengutamakan equity akhir tertinggi."
         )
         _render_multiphase_result("Strategi Optimizer v10", optimized_v10_result, optimization_v10_leaderboard, gold_ohlc)
+    with optimizer_v10_real_tab:
+        st.info(
+            "Tab ini adalah uji out-of-sample pendek. Parameter yang dipakai adalah kandidat terbaik dari Optimizer v10, "
+            "lalu diterapkan pada data real 1 Juli 2026 sampai 16 Juli 2026 tanpa optimasi ulang di periode tersebut."
+        )
+        _render_multiphase_result(
+            "Strategi Optimizer v10 - Data Real 1-16 Juli 2026",
+            optimized_v10_real_result,
+            optimization_v10_real_leaderboard,
+            gold_ohlc,
+        )
 
 
 def _render_signal_checklist(title: str, checklist: list[dict[str, object]], ready_status: str) -> None:
@@ -2292,9 +2324,9 @@ with simulation_tab:
     if simulation_payload is None:
         st.warning(
             "Hasil simulasi precomputed untuk versi terbaru belum tersedia. "
-            "Aplikasi sengaja tidak menghitung v6-v10 saat startup agar dashboard bisa dibuka lebih cepat."
+            "Aplikasi sengaja tidak menghitung v6-v10 dan v10 Data Real saat startup agar dashboard bisa dibuka lebih cepat."
         )
-        if st.button("Bangun ulang simulasi v1/v6/v7/v8/v9/v10", use_container_width=True):
+        if st.button("Bangun ulang simulasi v1/v6/v7/v8/v9/v10/v10 Data Real", use_container_width=True):
             with st.spinner("Menghitung simulasi lengkap. Proses ini bisa memakan waktu di Streamlit Cloud."):
                 simulation_payload = get_simulations(SIMULATION_CACHE_VERSION)
             st.rerun()

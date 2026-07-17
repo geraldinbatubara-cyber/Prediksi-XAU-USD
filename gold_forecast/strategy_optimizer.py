@@ -10,6 +10,8 @@ from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT, SimulationResult, 
 
 OPTIMIZATION_START = pd.Timestamp("2025-01-01")
 OPTIMIZATION_END = pd.Timestamp("2026-06-30")
+REAL_DATA_TEST_START = pd.Timestamp("2026-07-01")
+REAL_DATA_TEST_END = pd.Timestamp("2026-07-16")
 INITIAL_EQUITY = 1000.0
 PHASE_GROWTH = 0.20
 BUY_SWAP_PER_001_LOT = 0.2
@@ -554,17 +556,19 @@ def _multiphase_result(
     profit_protection_floor_usd: float | None = None,
     profit_protection_trail_usd: float | None = None,
     close_on_target_equity: bool = True,
+    test_start: pd.Timestamp = OPTIMIZATION_START,
+    test_end: pd.Timestamp = OPTIMIZATION_END,
 ) -> MultiPhaseSimulationResult:
-    clean_gold = gold_ohlc.loc[(gold_ohlc.index >= OPTIMIZATION_START) & (gold_ohlc.index <= OPTIMIZATION_END)].copy()
-    clean_signals = signals.loc[(signals.index >= OPTIMIZATION_START) & (signals.index <= OPTIMIZATION_END)].copy()
+    clean_gold = gold_ohlc.loc[(gold_ohlc.index >= test_start) & (gold_ohlc.index <= test_end)].copy()
+    clean_signals = signals.loc[(signals.index >= test_start) & (signals.index <= test_end)].copy()
     phase = 1
     start_equity = INITIAL_EQUITY
     phase_rows: list[dict[str, object]] = []
     trade_frames: list[pd.DataFrame] = []
     equity_frames: list[pd.DataFrame] = []
-    cursor_date = OPTIMIZATION_START - pd.Timedelta(days=1)
+    cursor_date = test_start - pd.Timedelta(days=1)
 
-    while cursor_date < OPTIMIZATION_END:
+    while cursor_date < test_end:
         phase_signals = clean_signals[clean_signals.index > cursor_date]
         phase_gold = clean_gold[clean_gold.index > cursor_date]
         if phase_signals.empty or phase_gold.empty:
@@ -1033,6 +1037,119 @@ def run_optimized_strategy_v10(
     best_result = candidates[0]["_result"]
     leaderboard = pd.DataFrame([{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates])
     return best_result, leaderboard
+
+
+def run_optimized_strategy_v10_real_data(
+    gold_ohlc: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    _, v10_leaderboard = run_optimized_strategy_v10(gold_ohlc)
+    if v10_leaderboard.empty:
+        empty = _multiphase_result(
+            pd.DataFrame(),
+            gold_ohlc,
+            "Strategi Optimizer v10 Data Real",
+            strategy_name="-",
+            take_profit_usd=0,
+            stop_loss_usd=0,
+            entry_threshold_pct=0,
+            close_on_target_equity=False,
+            test_start=REAL_DATA_TEST_START,
+            test_end=REAL_DATA_TEST_END,
+        )
+        return empty, pd.DataFrame()
+
+    best = v10_leaderboard.iloc[0].to_dict()
+    mode = str(best["Mode"])
+    fast_window = int(best["Fast MA"])
+    slow_window = int(best["Slow MA"])
+    momentum_days = int(best["Momentum hari"])
+    threshold = float(best["Threshold entry (%)"])
+    take_profit = float(best["TP (USD)"])
+    stop_loss = float(best["SL (USD)"])
+    lot_size = float(best.get("Lot", 0.02))
+    max_buy = int(best.get("Max BUY", 8))
+    max_sell = int(best.get("Max SELL", 10))
+    risk_cap = best.get("Risk cap floating SL (%)")
+    risk_cap = None if pd.isna(risk_cap) else float(risk_cap)
+    protection_activation = best.get("Profit protection aktif (USD)")
+    protection_floor = best.get("Profit protection floor (USD)")
+    protection_trail = best.get("Profit protection trail (USD)")
+    protection_activation = None if pd.isna(protection_activation) else float(protection_activation)
+    protection_floor = None if pd.isna(protection_floor) else float(protection_floor)
+    protection_trail = None if pd.isna(protection_trail) else float(protection_trail)
+    strategy_name = f"{best.get('Strategi', 'Strategi Optimizer v10')} | Real data 1-16 Jul 2026"
+
+    predictions = _indicator_predictions(
+        gold_ohlc,
+        mode,
+        fast_window,
+        slow_window,
+        momentum_days,
+        threshold,
+        test_start=REAL_DATA_TEST_START,
+        test_end=REAL_DATA_TEST_END,
+    )
+    result = _multiphase_result(
+        _fixed_lot_signals(predictions, lot_size),
+        gold_ohlc,
+        "Strategi Optimizer v10 Data Real",
+        strategy_name=strategy_name,
+        take_profit_usd=take_profit,
+        stop_loss_usd=stop_loss,
+        entry_threshold_pct=threshold,
+        max_buy_positions=max_buy,
+        max_sell_positions=max_sell,
+        risk_cap_pct=risk_cap,
+        phase_growth=PHASE_GROWTH,
+        profit_protection_activation_usd=protection_activation,
+        profit_protection_floor_usd=protection_floor,
+        profit_protection_trail_usd=protection_trail,
+        close_on_target_equity=False,
+        test_start=REAL_DATA_TEST_START,
+        test_end=REAL_DATA_TEST_END,
+    )
+    summary = result.summary
+    leaderboard = pd.DataFrame(
+        [
+            {
+                "Periode uji": "1 Jul 2026 - 16 Jul 2026",
+                "Sumber parameter": "Best candidate Optimizer v10",
+                "Mode": mode,
+                "Strategi": strategy_name,
+                "Fast MA": fast_window,
+                "Slow MA": slow_window,
+                "Momentum hari": momentum_days,
+                "Threshold entry (%)": threshold,
+                "TP (USD)": take_profit,
+                "SL (USD)": stop_loss,
+                "Lot": lot_size,
+                "Max BUY": max_buy,
+                "Max SELL": max_sell,
+                "Risk cap floating SL (%)": risk_cap,
+                "Target fase (%)": PHASE_GROWTH * 100,
+                "Profit protection aktif (USD)": protection_activation,
+                "Profit protection floor (USD)": protection_floor,
+                "Profit protection trail (USD)": protection_trail,
+                "Close-all target equity": False,
+                "Fase selesai": summary["Fase selesai"],
+                "Fase total": summary["Fase total"],
+                "Equity akhir": summary["Equity akhir"],
+                "Growth total": summary["Growth total"],
+                "Equity terendah": summary["Equity terendah"],
+                "Equity tertinggi": summary["Equity tertinggi"],
+                "Max drawdown": summary["Max drawdown"],
+                "Jumlah transaksi": summary["Jumlah transaksi"],
+                "Total BUY": summary["Total BUY"],
+                "Total SELL": summary["Total SELL"],
+                "Max open posisi": summary["Max open posisi"],
+                "Total swap": summary["Total swap"],
+                "Win rate": summary["Win rate"],
+                "Profit factor": summary["Profit factor"],
+                "Avg net P/L": summary["Avg net P/L"],
+            }
+        ]
+    )
+    return result, leaderboard
 
 
 def run_optimized_strategy_v3(
