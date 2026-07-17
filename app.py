@@ -42,7 +42,7 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v7-profit-protection"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v7-core-tabs-profit-summary"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -82,44 +82,21 @@ def get_simulations(simulation_version: str):
 
     gold_ohlc = get_gold_ohlc()
     optimized_result, optimization_leaderboard = strategy_optimizer_module.run_optimized_strategy(gold_ohlc)
-    optimized_v2_result, optimization_v2_leaderboard = strategy_optimizer_module.run_optimized_strategy_v2(gold_ohlc)
-    optimized_v3_result, optimization_v3_leaderboard = strategy_optimizer_module.run_optimized_strategy_v3(
-        gold_ohlc,
-        optimization_leaderboard,
-    )
-    optimized_v4_result, optimization_v4_leaderboard = strategy_optimizer_module.run_optimized_strategy_v4(
-        gold_ohlc,
-        optimization_leaderboard,
-    )
-    optimized_v5_runner = getattr(
-        strategy_optimizer_module,
-        "run_optimized_strategy_v5",
-        strategy_optimizer_module.run_optimized_strategy,
-    )
     optimized_v6_runner = getattr(
         strategy_optimizer_module,
         "run_optimized_strategy_v6",
-        optimized_v5_runner,
+        strategy_optimizer_module.run_optimized_strategy,
     )
     optimized_v7_runner = getattr(
         strategy_optimizer_module,
         "run_optimized_strategy_v7",
         optimized_v6_runner,
     )
-    optimized_v5_result, optimization_v5_leaderboard = optimized_v5_runner(gold_ohlc)
     optimized_v6_result, optimization_v6_leaderboard = optimized_v6_runner(gold_ohlc)
     optimized_v7_result, optimization_v7_leaderboard = optimized_v7_runner(gold_ohlc)
     payload = (
         optimized_result,
         optimization_leaderboard,
-        optimized_v2_result,
-        optimization_v2_leaderboard,
-        optimized_v3_result,
-        optimization_v3_leaderboard,
-        optimized_v4_result,
-        optimization_v4_leaderboard,
-        optimized_v5_result,
-        optimization_v5_leaderboard,
         optimized_v6_result,
         optimization_v6_leaderboard,
         optimized_v7_result,
@@ -548,9 +525,11 @@ def _build_phase_execution_summary(phases: pd.DataFrame, trades: pd.DataFrame) -
 
         if phase_trades.empty:
             total_tp = total_cl = total_swap = total_other = 0.0
+            total_profit = total_loss = total_net = 0.0
             buy_count = sell_count = close_count = tp_count = cl_count = 0
         else:
             gross = pd.to_numeric(phase_trades.get("Gross P/L", 0.0), errors="coerce").fillna(0.0)
+            net = pd.to_numeric(phase_trades.get("Net P/L", 0.0), errors="coerce").fillna(0.0)
             swap = pd.to_numeric(phase_trades.get("Swap", 0.0), errors="coerce").fillna(0.0)
             reasons = phase_trades.get("Alasan exit", pd.Series("", index=phase_trades.index)).astype(str)
 
@@ -560,6 +539,9 @@ def _build_phase_execution_summary(phases: pd.DataFrame, trades: pd.DataFrame) -
             total_cl = float(gross[cl_mask].sum())
             total_other = float(gross[~tp_mask & ~cl_mask].sum())
             total_swap = float(swap.sum())
+            total_profit = float(net[net > 0].sum())
+            total_loss = float(net[net < 0].sum())
+            total_net = float(net.sum())
             directions = phase_trades.get("Arah", pd.Series("", index=phase_trades.index)).astype(str)
             buy_count = int(directions.eq("BUY").sum())
             sell_count = int(directions.eq("SELL").sum())
@@ -579,6 +561,9 @@ def _build_phase_execution_summary(phases: pd.DataFrame, trades: pd.DataFrame) -
                 "Nilai total TP": total_tp,
                 "Nilai total CL/SL": total_cl,
                 "Nilai close-all/lainnya": total_other,
+                "Total Profit": total_profit,
+                "Total Loss": total_loss,
+                "Total Net P/L": total_net,
                 "Posisi BUY": buy_count,
                 "Posisi SELL": sell_count,
                 "Jumlah CLOSE": close_count,
@@ -651,6 +636,9 @@ def _render_strategy_explanation(title: str, summary: dict, phases: pd.DataFrame
                 "Nilai total TP": "${:+,.2f}",
                 "Nilai total CL/SL": "${:+,.2f}",
                 "Nilai close-all/lainnya": "${:+,.2f}",
+                "Total Profit": "${:+,.2f}",
+                "Total Loss": "${:+,.2f}",
+                "Total Net P/L": "${:+,.2f}",
                 "Posisi BUY": "{:.0f}",
                 "Posisi SELL": "{:.0f}",
                 "Jumlah CLOSE": "{:.0f}",
@@ -1048,14 +1036,6 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
-    optimized_v2_result,
-    optimization_v2_leaderboard: pd.DataFrame,
-    optimized_v3_result,
-    optimization_v3_leaderboard: pd.DataFrame,
-    optimized_v4_result,
-    optimization_v4_leaderboard: pd.DataFrame,
-    optimized_v5_result,
-    optimization_v5_leaderboard: pd.DataFrame,
     optimized_v6_result,
     optimization_v6_leaderboard: pd.DataFrame,
     optimized_v7_result,
@@ -1068,48 +1048,22 @@ def render_simulation(
         "Model 1 dan Model 2 lama dihapus dari tab ini karena performanya tidak memadai."
     )
     st.warning(
-        "Asumsi utama: equity awal USD 1.000, target tiap fase +20% untuk Optimizer/v2/v3/v4, "
-        "+30% khusus Optimizer v5, dan +20% dengan floating profit close USD 50 khusus Optimizer v6. "
-        "Optimizer v7 memakai target +20% dengan profit protection aktif setelah floating USD 50. "
-        "Maksimal 8 BUY dan 10 SELL kecuali v4 yang memakai risk cap dinamis. "
+        "Asumsi utama: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
+        "Optimizer v6 memakai floating profit close USD 50. "
+        "Optimizer v7 memakai profit protection aktif setelah floating USD 50. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v2_tab, optimizer_v3_tab, optimizer_v4_tab, optimizer_v5_tab, optimizer_v6_tab, optimizer_v7_tab = st.tabs(
+    optimizer_tab, optimizer_v6_tab, optimizer_v7_tab = st.tabs(
         [
             "Strategi Terbaik Optimizer",
-            "Strategi Terbaik v.2",
-            "Strategi Optimizer v3",
-            "Strategi Optimizer v4",
-            "Strategi Optimizer v5",
             "Strategi Optimizer v6",
             "Strategi Optimizer v7",
         ]
     )
     with optimizer_tab:
         _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
-    with optimizer_v2_tab:
-        _render_multiphase_result("Strategi Terbaik v.2", optimized_v2_result, optimization_v2_leaderboard, gold_ohlc)
-    with optimizer_v3_tab:
-        st.info(
-            "v3 memakai parameter Strategi Terbaik Optimizer, lalu backtest ulang dengan rule Live Trading: "
-            "anti-duplikat posisi aktif, re-entry setelah CL dengan buffer USD 3, dan guard candle entry."
-        )
-        _render_multiphase_result("Strategi Optimizer v3", optimized_v3_result, optimization_v3_leaderboard, gold_ohlc)
-    with optimizer_v4_tab:
-        st.info(
-            "v4 memakai parameter Strategi Terbaik Optimizer, tetapi batas posisi BUY/SELL 8/10 diganti "
-            "menjadi risk cap dinamis. Posisi boleh lebih banyak selama total potensi SL posisi terbuka "
-            "masih berada di bawah batas risiko terhadap equity fase."
-        )
-        _render_multiphase_result("Strategi Optimizer v4", optimized_v4_result, optimization_v4_leaderboard, gold_ohlc)
-    with optimizer_v5_tab:
-        st.info(
-            "v5 menguji ulang kandidat Strategi Terbaik Optimizer dengan target tiap fase +30% dari equity awal fase. "
-            "Saat target fase tercapai, seluruh posisi yang masih open tetap di-close all seperti simulasi multi-fase lainnya."
-        )
-        _render_multiphase_result("Strategi Optimizer v5", optimized_v5_result, optimization_v5_leaderboard, gold_ohlc)
     with optimizer_v6_tab:
         st.info(
             "v6 menguji ulang kandidat Strategi Terbaik Optimizer dengan target fase tetap +20%, "
@@ -2239,14 +2193,6 @@ try:
     (
         optimized_result,
         optimization_leaderboard,
-        optimized_v2_result,
-        optimization_v2_leaderboard,
-        optimized_v3_result,
-        optimization_v3_leaderboard,
-        optimized_v4_result,
-        optimization_v4_leaderboard,
-        optimized_v5_result,
-        optimization_v5_leaderboard,
         optimized_v6_result,
         optimization_v6_leaderboard,
         optimized_v7_result,
@@ -2283,14 +2229,6 @@ with simulation_tab:
     render_simulation(
         optimized_result,
         optimization_leaderboard,
-        optimized_v2_result,
-        optimization_v2_leaderboard,
-        optimized_v3_result,
-        optimization_v3_leaderboard,
-        optimized_v4_result,
-        optimization_v4_leaderboard,
-        optimized_v5_result,
-        optimization_v5_leaderboard,
         optimized_v6_result,
         optimization_v6_leaderboard,
         optimized_v7_result,
