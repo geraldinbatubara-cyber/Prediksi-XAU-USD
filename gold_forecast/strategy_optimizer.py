@@ -899,6 +899,142 @@ def run_optimized_strategy_v9(
     return best_result, leaderboard
 
 
+def run_optimized_strategy_v10(
+    gold_ohlc: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    signal_configs = [
+        (mode, fast_window, slow_window, momentum_days, threshold)
+        for mode in ["Trend", "Breakout", "Pullback"]
+        for fast_window in [5, 10, 20]
+        for slow_window in [50, 100]
+        for momentum_days in [5, 10, 14]
+        for threshold in [0.10, 0.15, 0.25]
+        if fast_window < slow_window
+    ]
+    risk_configs = [
+        (15.0, 18.0, 0.02, 8, 10, None, 50.0, 35.0, 15.0),
+        (25.0, 18.0, 0.02, 8, 10, None, 50.0, 35.0, 15.0),
+        (35.0, 18.0, 0.02, 8, 10, None, 50.0, 35.0, 15.0),
+        (50.0, 18.0, 0.02, 8, 10, None, 50.0, 35.0, 15.0),
+        (50.0, 25.0, 0.02, 8, 10, None, 75.0, 50.0, 25.0),
+        (75.0, 25.0, 0.02, 8, 10, None, 75.0, 50.0, 25.0),
+        (35.0, 12.0, 0.02, 8, 10, 45.0, 50.0, 35.0, 15.0),
+        (50.0, 18.0, 0.03, 8, 10, 50.0, 60.0, 40.0, 20.0),
+        (75.0, 25.0, 0.03, 8, 10, 50.0, 75.0, 50.0, 25.0),
+        (50.0, 25.0, 0.02, 12, 12, 50.0, 60.0, 40.0, 20.0),
+        (75.0, 35.0, 0.02, 12, 12, 60.0, 100.0, 65.0, 30.0),
+        (100.0, 35.0, 0.02, 12, 12, 60.0, 125.0, 80.0, 40.0),
+    ]
+    candidates: list[dict[str, object]] = []
+    baseline_result, baseline_leaderboard = run_optimized_strategy_v8(gold_ohlc)
+    if not baseline_leaderboard.empty:
+        baseline_row = baseline_leaderboard.iloc[0].to_dict()
+        baseline_summary = baseline_result.summary
+        baseline_row["Eksplorasi"] = "Baseline v8"
+        baseline_row["_score"] = (
+            float(baseline_summary["Equity akhir"]),
+            -float(baseline_summary["Max drawdown"]),
+            float(baseline_summary["Profit factor"]) if not pd.isna(baseline_summary["Profit factor"]) else 0.0,
+            float(baseline_summary["Jumlah transaksi"]),
+        )
+        baseline_row["_result"] = baseline_result
+        candidates.append(baseline_row)
+
+    for mode, fast_window, slow_window, momentum_days, threshold in signal_configs:
+        predictions = _indicator_predictions(gold_ohlc, mode, fast_window, slow_window, momentum_days, threshold)
+        if predictions.empty:
+            continue
+        for (
+            take_profit,
+            stop_loss,
+            lot_size,
+            max_buy,
+            max_sell,
+            risk_cap,
+            protection_activation,
+            protection_floor,
+            protection_trail,
+        ) in risk_configs:
+            strategy_name = (
+                f"{mode} | MA {fast_window}/{slow_window} | Mom {momentum_days} | "
+                f"TP {take_profit:g} SL {stop_loss:g} | Lot {lot_size:.2f} | "
+                f"Max {max_buy}/{max_sell} | Protection {protection_activation:g}/"
+                f"{protection_floor:g}/{protection_trail:g}"
+            )
+            result = _multiphase_result(
+                _fixed_lot_signals(predictions, lot_size),
+                gold_ohlc,
+                "Strategi Optimizer v10",
+                strategy_name=strategy_name,
+                take_profit_usd=take_profit,
+                stop_loss_usd=stop_loss,
+                entry_threshold_pct=threshold,
+                max_buy_positions=max_buy,
+                max_sell_positions=max_sell,
+                risk_cap_pct=risk_cap,
+                phase_growth=PHASE_GROWTH,
+                profit_protection_activation_usd=protection_activation,
+                profit_protection_floor_usd=protection_floor,
+                profit_protection_trail_usd=protection_trail,
+                close_on_target_equity=False,
+            )
+            summary = result.summary
+            if summary["Jumlah transaksi"] < 3:
+                continue
+            candidates.append(
+                {
+                    "Eksplorasi": "Expanded fixed lot",
+                    "Mode": mode,
+                    "Strategi": strategy_name,
+                    "Fast MA": fast_window,
+                    "Slow MA": slow_window,
+                    "Momentum hari": momentum_days,
+                    "Threshold entry (%)": threshold,
+                    "TP (USD)": take_profit,
+                    "SL (USD)": stop_loss,
+                    "Lot": lot_size,
+                    "Max BUY": max_buy,
+                    "Max SELL": max_sell,
+                    "Risk cap floating SL (%)": risk_cap,
+                    "Target fase (%)": PHASE_GROWTH * 100,
+                    "Profit protection aktif (USD)": protection_activation,
+                    "Profit protection floor (USD)": protection_floor,
+                    "Profit protection trail (USD)": protection_trail,
+                    "Close-all target equity": False,
+                    "Fase selesai": summary["Fase selesai"],
+                    "Fase total": summary["Fase total"],
+                    "Equity akhir": summary["Equity akhir"],
+                    "Growth total": summary["Growth total"],
+                    "Equity terendah": summary["Equity terendah"],
+                    "Equity tertinggi": summary["Equity tertinggi"],
+                    "Max drawdown": summary["Max drawdown"],
+                    "Jumlah transaksi": summary["Jumlah transaksi"],
+                    "Total BUY": summary["Total BUY"],
+                    "Total SELL": summary["Total SELL"],
+                    "Max open posisi": summary["Max open posisi"],
+                    "Total swap": summary["Total swap"],
+                    "Win rate": summary["Win rate"],
+                    "Profit factor": summary["Profit factor"],
+                    "Avg net P/L": summary["Avg net P/L"],
+                    "_score": (
+                        float(summary["Equity akhir"]),
+                        -float(summary["Max drawdown"]),
+                        float(summary["Profit factor"]) if not pd.isna(summary["Profit factor"]) else 0.0,
+                        float(summary["Jumlah transaksi"]),
+                    ),
+                    "_result": result,
+                }
+            )
+
+    if not candidates:
+        return run_optimized_strategy_v8(gold_ohlc)
+
+    candidates.sort(key=lambda row: row["_score"], reverse=True)
+    best_result = candidates[0]["_result"]
+    leaderboard = pd.DataFrame([{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates])
+    return best_result, leaderboard
+
+
 def run_optimized_strategy_v3(
     gold_ohlc: pd.DataFrame,
     optimizer_leaderboard: pd.DataFrame,
