@@ -164,9 +164,13 @@ def _best_optimizer_params(leaderboard: pd.DataFrame) -> dict[str, object]:
             "Threshold entry (%)": 0.15,
             "TP (USD)": 25.0,
             "SL (USD)": 18.0,
+            "Max BUY": LIVE_MAX_BUY,
+            "Max SELL": LIVE_MAX_SELL,
             "Strategi": "Fallback Optimizer",
         }
     best = leaderboard.iloc[0].to_dict()
+    max_buy = pd.to_numeric(best.get("Max BUY", LIVE_MAX_BUY), errors="coerce")
+    max_sell = pd.to_numeric(best.get("Max SELL", LIVE_MAX_SELL), errors="coerce")
     return {
         "Mode": best.get("Mode", "Trend"),
         "Fast MA": int(best.get("Fast MA", 20)),
@@ -175,6 +179,8 @@ def _best_optimizer_params(leaderboard: pd.DataFrame) -> dict[str, object]:
         "Threshold entry (%)": float(best.get("Threshold entry (%)", 0.15)),
         "TP (USD)": float(best.get("TP (USD)", 25.0)),
         "SL (USD)": float(best.get("SL (USD)", 18.0)),
+        "Max BUY": LIVE_MAX_BUY if pd.isna(max_buy) else int(max_buy),
+        "Max SELL": LIVE_MAX_SELL if pd.isna(max_sell) else int(max_sell),
         "Strategi": best.get("Strategi", "Strategi Terbaik Optimizer"),
     }
 
@@ -574,11 +580,13 @@ def _maybe_open_position(
         return ledger
 
     buy_count, sell_count = _open_counts(ledger)
+    max_buy = int(params.get("Max BUY", LIVE_MAX_BUY))
+    max_sell = int(params.get("Max SELL", LIVE_MAX_SELL))
     direction = str(signal["arah"])
     can_open = (
         can_trade
         and direction in {"BUY", "SELL"}
-        and ((direction == "BUY" and buy_count < LIVE_MAX_BUY) or (direction == "SELL" and sell_count < LIVE_MAX_SELL))
+        and ((direction == "BUY" and buy_count < max_buy) or (direction == "SELL" and sell_count < max_sell))
     )
     status = "OPEN" if can_open else "SIGNAL"
     source = str(signal.get("source", "Optimizer penuh"))
@@ -631,8 +639,10 @@ def _optimizer_trigger_state(
 ) -> dict[str, object]:
     threshold = float(params["Threshold entry (%)"])
     buy_count, sell_count = _open_counts(ledger)
-    remaining_buy = max(LIVE_MAX_BUY - buy_count, 0)
-    remaining_sell = max(LIVE_MAX_SELL - sell_count, 0)
+    max_buy = int(params.get("Max BUY", LIVE_MAX_BUY))
+    max_sell = int(params.get("Max SELL", LIVE_MAX_SELL))
+    remaining_buy = max(max_buy - buy_count, 0)
+    remaining_sell = max(max_sell - sell_count, 0)
 
     if signal is None:
         checklist = [
@@ -652,6 +662,8 @@ def _optimizer_trigger_state(
             "Harga referensi": np.nan,
             "Expected change (%)": np.nan,
             "Threshold entry (%)": threshold,
+            "Max BUY": max_buy,
+            "Max SELL": max_sell,
             "Posisi BUY terbuka": buy_count,
             "Posisi SELL terbuka": sell_count,
             "Sisa slot BUY": remaining_buy,
@@ -728,6 +740,8 @@ def _optimizer_trigger_state(
         "Harga referensi": float(signal["reference_price"]),
         "Expected change (%)": expected_change_pct,
         "Threshold entry (%)": threshold,
+        "Max BUY": max_buy,
+        "Max SELL": max_sell,
         "Posisi BUY terbuka": buy_count,
         "Posisi SELL terbuka": sell_count,
         "Sisa slot BUY": remaining_buy,
