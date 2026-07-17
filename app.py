@@ -49,12 +49,12 @@ st.title("Prediksi Harga Emas")
 st.caption("Estimasi hari bursa berikutnya dan tujuh hari ke depan")
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def get_data() -> tuple[pd.DataFrame, pd.Timestamp]:
     return load_market_data(), pd.Timestamp.now(tz=WIT)
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def get_gold_ohlc() -> pd.DataFrame:
     return load_gold_data()
 
