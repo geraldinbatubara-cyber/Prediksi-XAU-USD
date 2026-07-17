@@ -42,7 +42,7 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-real-data-july"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-real-data-july-strict"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -120,11 +120,7 @@ def get_simulations(simulation_version: str):
         "run_optimized_strategy_v10",
         optimized_v9_runner,
     )
-    optimized_v10_real_runner = getattr(
-        strategy_optimizer_module,
-        "run_optimized_strategy_v10_real_data",
-        optimized_v10_runner,
-    )
+    optimized_v10_real_runner = strategy_optimizer_module.run_optimized_strategy_v10_real_data
     optimized_v6_result, optimization_v6_leaderboard = optimized_v6_runner(gold_ohlc)
     optimized_v7_result, optimization_v7_leaderboard = optimized_v7_runner(gold_ohlc)
     optimized_v8_result, optimization_v8_leaderboard = optimized_v8_runner(gold_ohlc)
@@ -884,6 +880,11 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
         "Target tiap fase: **+20% dari start equity fase tersebut**. "
         "Saat target tercapai, semua posisi ditutup dan fase berikutnya dimulai dari equity close-all."
     )
+    if summary.get("Periode uji"):
+        st.warning(
+            f"Periode uji khusus: **{summary['Periode uji']}** | "
+            f"Sumber parameter: **{summary.get('Sumber parameter', '-')}**"
+        )
 
     st.markdown("**Ringkasan Fase**")
     if phases.empty:

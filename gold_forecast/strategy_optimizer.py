@@ -1109,6 +1109,8 @@ def run_optimized_strategy_v10_real_data(
         test_end=REAL_DATA_TEST_END,
     )
     summary = result.summary
+    summary["Periode uji"] = "1 Jul 2026 - 16 Jul 2026"
+    summary["Sumber parameter"] = "Best candidate Optimizer v10"
     leaderboard = pd.DataFrame(
         [
             {
