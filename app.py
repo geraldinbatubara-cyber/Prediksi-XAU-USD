@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -43,6 +46,7 @@ from gold_forecast.strategy_optimizer import (
 
 
 SIMULATION_CACHE_VERSION = "optimizer-multiphase-v4-dynamic-risk"
+PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -69,12 +73,22 @@ def get_models(market_data: pd.DataFrame):
 
 
 @st.cache_data(ttl=3600)
-def get_simulations(gold_ohlc: pd.DataFrame, simulation_version: str):
+def get_simulations(simulation_version: str):
+    if PRECOMPUTED_SIMULATION_PATH.exists():
+        try:
+            with PRECOMPUTED_SIMULATION_PATH.open("rb") as file:
+                saved = pickle.load(file)
+            if saved.get("version") == simulation_version:
+                return saved["payload"]
+        except Exception:
+            PRECOMPUTED_SIMULATION_PATH.unlink(missing_ok=True)
+
+    gold_ohlc = get_gold_ohlc()
     optimized_result, optimization_leaderboard = run_optimized_strategy(gold_ohlc)
     optimized_v2_result, optimization_v2_leaderboard = run_optimized_strategy_v2(gold_ohlc)
     optimized_v3_result, optimization_v3_leaderboard = run_optimized_strategy_v3(gold_ohlc, optimization_leaderboard)
     optimized_v4_result, optimization_v4_leaderboard = run_optimized_strategy_v4(gold_ohlc, optimization_leaderboard)
-    return (
+    payload = (
         optimized_result,
         optimization_leaderboard,
         optimized_v2_result,
@@ -84,6 +98,13 @@ def get_simulations(gold_ohlc: pd.DataFrame, simulation_version: str):
         optimized_v4_result,
         optimization_v4_leaderboard,
     )
+    try:
+        PRECOMPUTED_SIMULATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with PRECOMPUTED_SIMULATION_PATH.open("wb") as file:
+            pickle.dump({"version": simulation_version, "payload": payload}, file)
+    except Exception:
+        pass
+    return payload
 
 
 def render_dashboard(
@@ -2126,7 +2147,6 @@ try:
         optimized_v4_result,
         optimization_v4_leaderboard,
     ) = get_simulations(
-        gold_ohlc,
         SIMULATION_CACHE_VERSION,
     )
 except Exception as exc:
