@@ -42,10 +42,11 @@ from gold_forecast.strategy_optimizer import (
     run_optimized_strategy_v2,
     run_optimized_strategy_v3,
     run_optimized_strategy_v4,
+    run_optimized_strategy_v5,
 )
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v4-dynamic-risk"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v5-target-30pct"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -88,6 +89,7 @@ def get_simulations(simulation_version: str):
     optimized_v2_result, optimization_v2_leaderboard = run_optimized_strategy_v2(gold_ohlc)
     optimized_v3_result, optimization_v3_leaderboard = run_optimized_strategy_v3(gold_ohlc, optimization_leaderboard)
     optimized_v4_result, optimization_v4_leaderboard = run_optimized_strategy_v4(gold_ohlc, optimization_leaderboard)
+    optimized_v5_result, optimization_v5_leaderboard = run_optimized_strategy_v5(gold_ohlc)
     payload = (
         optimized_result,
         optimization_leaderboard,
@@ -97,6 +99,8 @@ def get_simulations(simulation_version: str):
         optimization_v3_leaderboard,
         optimized_v4_result,
         optimization_v4_leaderboard,
+        optimized_v5_result,
+        optimization_v5_leaderboard,
     )
     try:
         PRECOMPUTED_SIMULATION_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -951,6 +955,7 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
                 leaderboard.head(25).style.format(
                     {
                         "Threshold entry (%)": "{:.2f}%",
+                        "Target fase (%)": "{:.0f}%",
                         "Confidence cutoff": "{:.0%}",
                         "Risk cap floating SL (%)": "{:.1f}%",
                         "TP (USD)": "${:,.2f}",
@@ -992,21 +997,30 @@ def render_simulation(
     optimization_v3_leaderboard: pd.DataFrame,
     optimized_v4_result,
     optimization_v4_leaderboard: pd.DataFrame,
+    optimized_v5_result,
+    optimization_v5_leaderboard: pd.DataFrame,
     gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
     st.caption(
-        "Simulasi hanya menampilkan Strategi Terbaik Optimizer dan Strategi Terbaik v.2. "
+        "Simulasi menampilkan eksperimen Optimizer yang sudah dipilih untuk dibandingkan. "
         "Model 1 dan Model 2 lama dihapus dari tab ini karena performanya tidak memadai."
     )
     st.warning(
-        "Asumsi: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
+        "Asumsi utama: equity awal USD 1.000, target tiap fase +20% untuk Optimizer/v2/v3/v4, "
+        "+30% khusus Optimizer v5, maksimal 8 BUY dan 10 SELL kecuali v4 yang memakai risk cap dinamis. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v2_tab, optimizer_v3_tab, optimizer_v4_tab = st.tabs(
-        ["Strategi Terbaik Optimizer", "Strategi Terbaik v.2", "Strategi Optimizer v3", "Strategi Optimizer v4"]
+    optimizer_tab, optimizer_v2_tab, optimizer_v3_tab, optimizer_v4_tab, optimizer_v5_tab = st.tabs(
+        [
+            "Strategi Terbaik Optimizer",
+            "Strategi Terbaik v.2",
+            "Strategi Optimizer v3",
+            "Strategi Optimizer v4",
+            "Strategi Optimizer v5",
+        ]
     )
     with optimizer_tab:
         _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
@@ -1025,6 +1039,12 @@ def render_simulation(
             "masih berada di bawah batas risiko terhadap equity fase."
         )
         _render_multiphase_result("Strategi Optimizer v4", optimized_v4_result, optimization_v4_leaderboard, gold_ohlc)
+    with optimizer_v5_tab:
+        st.info(
+            "v5 menguji ulang kandidat Strategi Terbaik Optimizer dengan target tiap fase +30% dari equity awal fase. "
+            "Saat target fase tercapai, seluruh posisi yang masih open tetap di-close all seperti simulasi multi-fase lainnya."
+        )
+        _render_multiphase_result("Strategi Optimizer v5", optimized_v5_result, optimization_v5_leaderboard, gold_ohlc)
 
 
 def _render_signal_checklist(title: str, checklist: list[dict[str, object]], ready_status: str) -> None:
@@ -2146,6 +2166,8 @@ try:
         optimization_v3_leaderboard,
         optimized_v4_result,
         optimization_v4_leaderboard,
+        optimized_v5_result,
+        optimization_v5_leaderboard,
     ) = get_simulations(
         SIMULATION_CACHE_VERSION,
     )
@@ -2184,6 +2206,8 @@ with simulation_tab:
         optimization_v3_leaderboard,
         optimized_v4_result,
         optimization_v4_leaderboard,
+        optimized_v5_result,
+        optimization_v5_leaderboard,
         gold_ohlc,
     )
 
