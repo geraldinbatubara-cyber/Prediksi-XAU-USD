@@ -44,10 +44,11 @@ from gold_forecast.strategy_optimizer import (
     run_optimized_strategy_v4,
     run_optimized_strategy_v5,
     run_optimized_strategy_v6,
+    run_optimized_strategy_v7,
 )
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v6-floating-profit-50"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v7-profit-protection"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -92,6 +93,7 @@ def get_simulations(simulation_version: str):
     optimized_v4_result, optimization_v4_leaderboard = run_optimized_strategy_v4(gold_ohlc, optimization_leaderboard)
     optimized_v5_result, optimization_v5_leaderboard = run_optimized_strategy_v5(gold_ohlc)
     optimized_v6_result, optimization_v6_leaderboard = run_optimized_strategy_v6(gold_ohlc)
+    optimized_v7_result, optimization_v7_leaderboard = run_optimized_strategy_v7(gold_ohlc)
     payload = (
         optimized_result,
         optimization_leaderboard,
@@ -105,6 +107,8 @@ def get_simulations(simulation_version: str):
         optimization_v5_leaderboard,
         optimized_v6_result,
         optimization_v6_leaderboard,
+        optimized_v7_result,
+        optimization_v7_leaderboard,
     )
     try:
         PRECOMPUTED_SIMULATION_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -439,6 +443,10 @@ def _render_simulation_result(title: str, result) -> None:
         "TP (USD)",
         "SL (USD)",
         "Floating profit close (USD)",
+        "Profit protection aktif (USD)",
+        "Profit protection floor (USD)",
+        "Profit protection trail (USD)",
+        "Peak floating profit (USD)",
         "Threshold entry (%)",
         "Gross P/L",
         "Swap",
@@ -464,6 +472,10 @@ def _render_simulation_result(title: str, result) -> None:
             "TP (USD)",
             "SL (USD)",
             "Floating profit close (USD)",
+            "Profit protection aktif (USD)",
+            "Profit protection floor (USD)",
+            "Profit protection trail (USD)",
+            "Peak floating profit (USD)",
             "Threshold entry (%)",
             "Gross P/L",
             "Swap",
@@ -484,6 +496,10 @@ def _render_simulation_result(title: str, result) -> None:
                 "TP (USD)": "${:,.2f}",
                 "SL (USD)": "${:,.2f}",
                 "Floating profit close (USD)": "${:,.2f}",
+                "Profit protection aktif (USD)": "${:,.2f}",
+                "Profit protection floor (USD)": "${:,.2f}",
+                "Profit protection trail (USD)": "${:,.2f}",
+                "Peak floating profit (USD)": "${:,.2f}",
                 "Threshold entry (%)": "{:.2f}%",
                 "Gross P/L": "${:+,.2f}",
                 "Swap": "${:+,.2f}",
@@ -899,6 +915,10 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
             "TP (USD)",
             "SL (USD)",
             "Floating profit close (USD)",
+            "Profit protection aktif (USD)",
+            "Profit protection floor (USD)",
+            "Profit protection trail (USD)",
+            "Peak floating profit (USD)",
             "Threshold entry (%)",
             "Gross P/L",
             "Swap",
@@ -925,6 +945,10 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
                 "TP (USD)",
                 "SL (USD)",
                 "Floating profit close (USD)",
+                "Profit protection aktif (USD)",
+                "Profit protection floor (USD)",
+                "Profit protection trail (USD)",
+                "Peak floating profit (USD)",
                 "Threshold entry (%)",
                 "Gross P/L",
                 "Swap",
@@ -945,6 +969,10 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
                     "TP (USD)": "${:,.2f}",
                     "SL (USD)": "${:,.2f}",
                     "Floating profit close (USD)": "${:,.2f}",
+                    "Profit protection aktif (USD)": "${:,.2f}",
+                    "Profit protection floor (USD)": "${:,.2f}",
+                    "Profit protection trail (USD)": "${:,.2f}",
+                    "Peak floating profit (USD)": "${:,.2f}",
                     "Threshold entry (%)": "{:.2f}%",
                     "Gross P/L": "${:+,.2f}",
                     "Swap": "${:+,.2f}",
@@ -971,6 +999,9 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
                         "TP (USD)": "${:,.2f}",
                         "SL (USD)": "${:,.2f}",
                         "Floating profit close (USD)": "${:,.2f}",
+                        "Profit protection aktif (USD)": "${:,.2f}",
+                        "Profit protection floor (USD)": "${:,.2f}",
+                        "Profit protection trail (USD)": "${:,.2f}",
                         "Lot": "{:.2f}",
                         "Lot minimum": "{:.2f}",
                         "Lot maksimum": "{:.2f}",
@@ -1012,6 +1043,8 @@ def render_simulation(
     optimization_v5_leaderboard: pd.DataFrame,
     optimized_v6_result,
     optimization_v6_leaderboard: pd.DataFrame,
+    optimized_v7_result,
+    optimization_v7_leaderboard: pd.DataFrame,
     gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
@@ -1022,12 +1055,13 @@ def render_simulation(
     st.warning(
         "Asumsi utama: equity awal USD 1.000, target tiap fase +20% untuk Optimizer/v2/v3/v4, "
         "+30% khusus Optimizer v5, dan +20% dengan floating profit close USD 50 khusus Optimizer v6. "
+        "Optimizer v7 memakai target +20% dengan profit protection aktif setelah floating USD 50. "
         "Maksimal 8 BUY dan 10 SELL kecuali v4 yang memakai risk cap dinamis. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v2_tab, optimizer_v3_tab, optimizer_v4_tab, optimizer_v5_tab, optimizer_v6_tab = st.tabs(
+    optimizer_tab, optimizer_v2_tab, optimizer_v3_tab, optimizer_v4_tab, optimizer_v5_tab, optimizer_v6_tab, optimizer_v7_tab = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Terbaik v.2",
@@ -1035,6 +1069,7 @@ def render_simulation(
             "Strategi Optimizer v4",
             "Strategi Optimizer v5",
             "Strategi Optimizer v6",
+            "Strategi Optimizer v7",
         ]
     )
     with optimizer_tab:
@@ -1067,6 +1102,13 @@ def render_simulation(
             "kerangka Optimizer."
         )
         _render_multiphase_result("Strategi Optimizer v6", optimized_v6_result, optimization_v6_leaderboard, gold_ohlc)
+    with optimizer_v7_tab:
+        st.info(
+            "v7 menguji Profit Protection: setelah floating profit posisi mencapai USD 50, sistem mencatat peak profit. "
+            "Posisi baru ditutup jika profit turun ke floor USD 35 atau mundur USD 15 dari peak, sehingga profit besar "
+            "tidak langsung dipotong tetapi juga tidak dibiarkan kembali ke TP kecil."
+        )
+        _render_multiphase_result("Strategi Optimizer v7", optimized_v7_result, optimization_v7_leaderboard, gold_ohlc)
 
 
 def _render_signal_checklist(title: str, checklist: list[dict[str, object]], ready_status: str) -> None:
@@ -2192,6 +2234,8 @@ try:
         optimization_v5_leaderboard,
         optimized_v6_result,
         optimization_v6_leaderboard,
+        optimized_v7_result,
+        optimization_v7_leaderboard,
     ) = get_simulations(
         SIMULATION_CACHE_VERSION,
     )
@@ -2234,6 +2278,8 @@ with simulation_tab:
         optimization_v5_leaderboard,
         optimized_v6_result,
         optimization_v6_leaderboard,
+        optimized_v7_result,
+        optimization_v7_leaderboard,
         gold_ohlc,
     )
 
