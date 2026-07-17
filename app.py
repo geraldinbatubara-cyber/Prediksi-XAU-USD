@@ -12,12 +12,11 @@ except ImportError:  # pragma: no cover - handled in deployed UI
 from gold_forecast.data import load_gold_data, load_market_data
 from gold_forecast.direction_model import train_direction_model
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
+from gold_forecast import live_trading as live_trading_module
 from gold_forecast.live_trading import (
     LIVE_INITIAL_EQUITY,
     LIVE_START_DATE,
     load_live_ledger,
-    load_manual_exit_ledger,
-    record_manual_exit,
     run_live_trading_update,
 )
 from gold_forecast.model import train_and_forecast
@@ -1424,7 +1423,9 @@ def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: 
 def _render_manual_exit_comparison(live: dict[str, object]) -> None:
     summary = live["summary"]
     ledger = live["ledger"].copy()
-    manual_exits = load_manual_exit_ledger()
+    manual_loader = getattr(live_trading_module, "load_manual_exit_ledger", None)
+    manual_recorder = getattr(live_trading_module, "record_manual_exit", None)
+    manual_exits = manual_loader() if manual_loader is not None else pd.DataFrame()
     latest_price = summary["Latest price"]
 
     st.markdown("**Perbandingan Optimizer vs Intervensi Manual**")
@@ -1541,6 +1542,9 @@ def _render_manual_exit_comparison(live: dict[str, object]) -> None:
     if pd.isna(latest_price):
         st.warning("Harga terbaru belum tersedia, tombol exit manual dinonaktifkan.")
         return
+    if manual_recorder is None:
+        st.warning("Fungsi exit manual belum siap pada runtime ini. Refresh/redeploy aplikasi, lalu coba lagi.")
+        return
 
     st.markdown("**Aksi Exit Manual**")
     for _, row in open_action_rows.iterrows():
@@ -1558,7 +1562,7 @@ def _render_manual_exit_comparison(live: dict[str, object]) -> None:
         action_cols[1].write(f"Entry ${entry_price:,.2f}")
         action_cols[2].write(f"Manual net sekarang ${net_now:+,.2f}")
         if action_cols[3].button(f"Exit Manual #{position_id}", key=f"manual_exit_{position_id}"):
-            _, message, success = record_manual_exit(position_id, float(latest_price))
+            _, message, success = manual_recorder(position_id, float(latest_price))
             if success:
                 st.success(message)
             else:
