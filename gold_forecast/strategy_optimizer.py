@@ -477,6 +477,7 @@ def _multiphase_result(
     max_buy_positions: int = 8,
     max_sell_positions: int = 10,
     risk_cap_pct: float | None = None,
+    phase_growth: float = PHASE_GROWTH,
 ) -> MultiPhaseSimulationResult:
     clean_gold = gold_ohlc.loc[(gold_ohlc.index >= OPTIMIZATION_START) & (gold_ohlc.index <= OPTIMIZATION_END)].copy()
     clean_signals = signals.loc[(signals.index >= OPTIMIZATION_START) & (signals.index <= OPTIMIZATION_END)].copy()
@@ -493,7 +494,7 @@ def _multiphase_result(
         if phase_signals.empty or phase_gold.empty:
             break
 
-        target_equity = start_equity * (1 + PHASE_GROWTH)
+        target_equity = start_equity * (1 + phase_growth)
         result = _simulate_phase(
             phase_signals,
             phase_gold,
@@ -530,7 +531,7 @@ def _multiphase_result(
         equity_curve.index.name = "Tanggal"
 
     if phases.empty:
-        summary = _result([], [], INITIAL_EQUITY, INITIAL_EQUITY * (1 + PHASE_GROWTH)).summary
+        summary = _result([], [], INITIAL_EQUITY, INITIAL_EQUITY * (1 + phase_growth)).summary
         summary.update({"Fase selesai": 0.0, "Fase total": 0.0, "Growth total": 0.0})
         return MultiPhaseSimulationResult(summary, phases, trades, equity_curve)
 
@@ -596,6 +597,9 @@ def _multiphase_result(
 
 def run_optimized_strategy(
     gold_ohlc: pd.DataFrame,
+    *,
+    phase_growth: float = PHASE_GROWTH,
+    model_name: str = "Strategi Optimizer",
 ) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     candidates: list[dict[str, object]] = []
     modes = ["Trend", "Breakout", "Pullback"]
@@ -627,11 +631,12 @@ def run_optimized_strategy(
                                     result = _multiphase_result(
                                         _fixed_lot_signals(predictions, lot_size),
                                         gold_ohlc,
-                                        "Strategi Optimizer",
+                                        model_name,
                                         strategy_name=strategy_name,
                                         take_profit_usd=take_profit,
                                         stop_loss_usd=stop_loss,
                                         entry_threshold_pct=threshold,
+                                        phase_growth=phase_growth,
                                     )
                                     summary = result.summary
                                     if summary["Jumlah transaksi"] < 3:
@@ -647,6 +652,7 @@ def run_optimized_strategy(
                                             "TP (USD)": take_profit,
                                             "SL (USD)": stop_loss,
                                             "Lot": lot_size,
+                                            "Target fase (%)": phase_growth * 100,
                                             "Fase selesai": summary["Fase selesai"],
                                             "Fase total": summary["Fase total"],
                                             "Equity akhir": summary["Equity akhir"],
@@ -667,13 +673,32 @@ def run_optimized_strategy(
                                     )
 
     if not candidates:
-        empty = _multiphase_result(pd.DataFrame(), gold_ohlc, "Strategi Optimizer", strategy_name="-", take_profit_usd=0, stop_loss_usd=0, entry_threshold_pct=0)
+        empty = _multiphase_result(
+            pd.DataFrame(),
+            gold_ohlc,
+            model_name,
+            strategy_name="-",
+            take_profit_usd=0,
+            stop_loss_usd=0,
+            entry_threshold_pct=0,
+            phase_growth=phase_growth,
+        )
         return empty, pd.DataFrame()
 
     candidates.sort(key=lambda row: row["_score"], reverse=True)
     best_result = candidates[0]["_result"]
     leaderboard = pd.DataFrame([{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates])
     return best_result, leaderboard
+
+
+def run_optimized_strategy_v5(
+    gold_ohlc: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    return run_optimized_strategy(
+        gold_ohlc,
+        phase_growth=0.30,
+        model_name="Strategi Optimizer v5",
+    )
 
 
 def run_optimized_strategy_v3(
