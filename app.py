@@ -1123,22 +1123,33 @@ def _entry_checklist_rows(gold_ohlc: pd.DataFrame, params: dict[str, object], li
             checklist = " | ".join(
                 f"{item[0]} ({'LOLOS' if item[4] else 'BELUM'})" for item in checks
             )
-            rows.append(
-                {
-                    "Tanggal": current_date,
-                    "Strategi": "ENTRY",
-                    "Mode": mode,
-                    "Arah": direction,
-                    "Checklist sinyal harian": checklist,
-                    "Status": "LOLOS" if passed == total and total > 0 else "BELUM",
-                    "Keterangan": f"{passed}/{total} syarat lolos",
-                    "Close": values["Close"],
-                    "MA cepat": values["MA cepat"],
-                    "MA lambat": values["MA lambat"],
-                    "Momentum (%)": values["Momentum"],
-                    "RSI": values["RSI"],
-                }
-            )
+            def _format_signal_value(value) -> str:
+                numeric_value = pd.to_numeric(value, errors="coerce")
+                if pd.isna(numeric_value):
+                    return "-"
+                return f"{numeric_value:,.2f}"
+
+            row = {
+                "Tanggal": current_date,
+                "Strategi": "ENTRY",
+                "Mode": mode,
+                "Arah": direction,
+                "Checklist sinyal harian": checklist,
+                "Status": "LOLOS" if passed == total and total > 0 else "BELUM",
+                "Keterangan": f"{passed}/{total} syarat lolos",
+                "Close": values["Close"],
+                "MA cepat": values["MA cepat"],
+                "MA lambat": values["MA lambat"],
+                "Momentum (%)": values["Momentum"],
+                "RSI": values["RSI"],
+            }
+            for signal_number, item in enumerate(checks, start=1):
+                row[f"Sinyal {signal_number}"] = item[0]
+                row[f"Status Sinyal {signal_number}"] = "LOLOS" if item[4] else "BELUM"
+                row[f"Nilai Sinyal {signal_number}"] = (
+                    f"{_format_signal_value(item[1])} {item[2]} {_format_signal_value(item[3])}"
+                )
+            rows.append(row)
 
     result = pd.DataFrame(rows)
     result = result.sort_values("Tanggal", ascending=False)
@@ -1217,6 +1228,21 @@ def _exit_checklist_rows(gold_ohlc: pd.DataFrame, params: dict[str, object]) -> 
     return pd.DataFrame(rows)
 
 
+def _new_entry_signal_columns(entry_rows: pd.DataFrame) -> pd.DataFrame:
+    if entry_rows.empty:
+        return pd.DataFrame()
+
+    signal_columns = [
+        column
+        for signal_number in range(1, 6)
+        for column in (f"Sinyal {signal_number}", f"Status Sinyal {signal_number}", f"Nilai Sinyal {signal_number}")
+        if column in entry_rows.columns
+    ]
+    base_columns = ["Tanggal", "Mode", "Arah", "Status", "Keterangan", "Close"]
+    display_columns = [column for column in base_columns + signal_columns if column in entry_rows.columns]
+    return entry_rows[display_columns].copy()
+
+
 def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.DataFrame) -> None:
     params = _optimizer_best_params(optimization_leaderboard)
     st.subheader("Sinyal Optimizer")
@@ -1230,8 +1256,10 @@ def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: 
         f"Threshold {params['Threshold entry (%)']:.2f}% | TP USD {params['TP (USD)']:,.2f} | CL/SL USD {params['SL (USD)']:,.2f}"
     )
 
-    entry_tab, exit_tab = st.tabs(["Strategi ENTRY", "Strategi EXIT"])
-    with entry_tab:
+    evaluation_entry_tab, new_entry_tab, exit_tab = st.tabs(
+        ["Evaluasi Strategi Entry", "Sinyal New Entry", "Strategi EXIT"]
+    )
+    with evaluation_entry_tab:
         limit_choice = st.selectbox(
             "Jumlah evaluasi ENTRY yang ditampilkan",
             ["120 baris terbaru", "240 baris terbaru", "Semua"],
@@ -1255,6 +1283,39 @@ def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: 
                         "MA lambat": "${:,.2f}",
                         "Momentum (%)": "{:+.2f}%",
                         "RSI": "{:.1f}",
+                    },
+                    na_rep="-",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with new_entry_tab:
+        limit_choice = st.selectbox(
+            "Jumlah Sinyal New Entry yang ditampilkan",
+            ["120 baris terbaru", "240 baris terbaru", "Semua"],
+            index=0,
+            key="new_entry_limit",
+        )
+        limit = None if limit_choice == "Semua" else int(limit_choice.split()[0])
+        entry_rows = _entry_checklist_rows(gold_ohlc, params, limit)
+        new_entry_rows = _new_entry_signal_columns(entry_rows)
+        if new_entry_rows.empty:
+            st.warning("Belum ada Sinyal New Entry yang dapat dievaluasi.")
+        else:
+            completed = new_entry_rows[new_entry_rows["Status"].eq("LOLOS")]
+            c1, c2, c3 = st.columns(3)
+            c1.metric("New Entry tampil", f"{len(new_entry_rows):,.0f}")
+            c2.metric("Final LOLOS", f"{len(completed):,.0f}")
+            c3.metric("Final BELUM", f"{len(new_entry_rows) - len(completed):,.0f}")
+            st.caption(
+                "Setiap kolom Sinyal adalah syarat yang berasal dari Strategi Terbaik Optimizer aktif. "
+                "Status final LOLOS hanya jika seluruh sinyal pada arah tersebut LOLOS."
+            )
+            st.dataframe(
+                new_entry_rows.style.format(
+                    {
+                        "Close": "${:,.2f}",
                     },
                     na_rep="-",
                 ),
