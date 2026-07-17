@@ -167,6 +167,16 @@ def get_v10_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def get_v1_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
+    cached = load_precomputed_simulations(simulation_version)
+    if cached is None or len(cached) < 2:
+        return pd.DataFrame()
+    leaderboard = cached[1]
+    if isinstance(leaderboard, pd.DataFrame):
+        return leaderboard
+    return pd.DataFrame()
+
+
 def render_dashboard(
     market: pd.DataFrame,
     data_fetched_at: pd.Timestamp,
@@ -2400,13 +2410,12 @@ try:
     market, data_fetched_at = get_data()
     gold_ohlc = get_gold_ohlc()
     model_1, model_2, direction_model = get_models(market)
-    optimized_result, optimization_leaderboard = get_base_optimizer(gold_ohlc)
 except Exception as exc:
     st.error(f"Data belum dapat diproses: {exc}")
     st.stop()
 
-dashboard_tab, simulation_tab, live_trading_tab, optimizer_signals_tab, monitoring_model_2_tab, monitoring_model_1_tab, intraday_audit_tab = st.tabs(
-    ["Dashboard", "Simulasi", "Live Trading", "Sinyal Optimizer", "Monitoring Model 2", "Monitoring Model 1", "Audit Intraday"]
+dashboard_tab, simulation_tab, live_trading_tab, intraday_audit_tab = st.tabs(
+    ["Dashboard", "Simulasi", "Live Trading", "Audit Intraday"]
 )
 with dashboard_tab:
     render_dashboard(
@@ -2420,12 +2429,6 @@ with dashboard_tab:
         history_years,
     )
 
-with monitoring_model_2_tab:
-    render_monitoring("Monitoring Model 2", DATA_PATH)
-
-with monitoring_model_1_tab:
-    render_monitoring("Monitoring Model 1", MODEL_1_DATA_PATH)
-
 with simulation_tab:
     simulation_payload = load_precomputed_simulations(SIMULATION_CACHE_VERSION)
     if simulation_payload is None:
@@ -2438,14 +2441,20 @@ with simulation_tab:
                 simulation_payload = get_simulations(SIMULATION_CACHE_VERSION)
             st.rerun()
     else:
-        render_simulation(*simulation_payload, gold_ohlc)
+        st.info(
+            "Hasil simulasi precomputed tersedia. Untuk menjaga aplikasi ringan saat dibuka, "
+            "visualisasi simulasi tidak dirender otomatis."
+        )
+        if st.checkbox("Tampilkan hasil simulasi precomputed", value=False):
+            render_simulation(*simulation_payload, gold_ohlc)
 
 with live_trading_tab:
     live_v1_tab, live_v10_tab = st.tabs(["Optimizer v1", "Optimizer v10"])
     with live_v1_tab:
+        optimization_v1_live_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
         render_live_trading(
             gold_ohlc,
-            optimization_leaderboard,
+            optimization_v1_live_leaderboard,
             title="Optimizer v1",
             start_date=LIVE_START_DATE,
             live_path=LIVE_TRADING_PATH,
@@ -2471,9 +2480,6 @@ with live_trading_tab:
                 "sehingga tidak menghitung ulang optimizer berat saat dashboard dibuka."
             ),
         )
-
-with optimizer_signals_tab:
-    render_optimizer_signals(gold_ohlc, optimization_leaderboard)
 
 with intraday_audit_tab:
     render_intraday_audit(gold_ohlc)
