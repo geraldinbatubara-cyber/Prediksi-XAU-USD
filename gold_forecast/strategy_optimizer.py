@@ -286,6 +286,7 @@ def _simulate_phase(
     profit_protection_activation_usd: float | None = None,
     profit_protection_floor_usd: float | None = None,
     profit_protection_trail_usd: float | None = None,
+    close_on_target_equity: bool = True,
 ) -> SimulationResult:
     cash_balance = initial_balance
     next_position_id = 1
@@ -475,7 +476,7 @@ def _simulate_phase(
             }
         )
 
-        if equity >= target_equity:
+        if close_on_target_equity and equity >= target_equity:
             for position in open_positions:
                 cash_balance += _dynamic_unrealized(position, close)
                 closed_rows.append(_dynamic_close_row(position, current_date, close, "Target equity tercapai", cash_balance))
@@ -552,6 +553,7 @@ def _multiphase_result(
     profit_protection_activation_usd: float | None = None,
     profit_protection_floor_usd: float | None = None,
     profit_protection_trail_usd: float | None = None,
+    close_on_target_equity: bool = True,
 ) -> MultiPhaseSimulationResult:
     clean_gold = gold_ohlc.loc[(gold_ohlc.index >= OPTIMIZATION_START) & (gold_ohlc.index <= OPTIMIZATION_END)].copy()
     clean_signals = signals.loc[(signals.index >= OPTIMIZATION_START) & (signals.index <= OPTIMIZATION_END)].copy()
@@ -588,6 +590,7 @@ def _multiphase_result(
             profit_protection_activation_usd=profit_protection_activation_usd,
             profit_protection_floor_usd=profit_protection_floor_usd,
             profit_protection_trail_usd=profit_protection_trail_usd,
+            close_on_target_equity=close_on_target_equity,
         )
         phase_rows.append(_phase_row(phase, result, start_equity, target_equity))
         if not result.trades.empty:
@@ -595,7 +598,11 @@ def _multiphase_result(
         if not result.equity_curve.empty:
             equity_frames.append(result.equity_curve)
 
-        if not result.summary["Target tercapai"] or pd.isna(result.summary["Tanggal target"]):
+        if (
+            not close_on_target_equity
+            or not result.summary["Target tercapai"]
+            or pd.isna(result.summary["Tanggal target"])
+        ):
             break
 
         cursor_date = pd.Timestamp(result.summary["Tanggal target"])
@@ -682,6 +689,7 @@ def run_optimized_strategy(
     profit_protection_activation_usd: float | None = None,
     profit_protection_floor_usd: float | None = None,
     profit_protection_trail_usd: float | None = None,
+    close_on_target_equity: bool = True,
 ) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     candidates: list[dict[str, object]] = []
     modes = ["Trend", "Breakout", "Pullback"]
@@ -730,6 +738,7 @@ def run_optimized_strategy(
                                         profit_protection_activation_usd=profit_protection_activation_usd,
                                         profit_protection_floor_usd=profit_protection_floor_usd,
                                         profit_protection_trail_usd=profit_protection_trail_usd,
+                                        close_on_target_equity=close_on_target_equity,
                                     )
                                     summary = result.summary
                                     if summary["Jumlah transaksi"] < 3:
@@ -750,6 +759,7 @@ def run_optimized_strategy(
                                             "Profit protection aktif (USD)": profit_protection_activation_usd,
                                             "Profit protection floor (USD)": profit_protection_floor_usd,
                                             "Profit protection trail (USD)": profit_protection_trail_usd,
+                                            "Close-all target equity": close_on_target_equity,
                                             "Fase selesai": summary["Fase selesai"],
                                             "Fase total": summary["Fase total"],
                                             "Equity akhir": summary["Equity akhir"],
@@ -783,6 +793,7 @@ def run_optimized_strategy(
             profit_protection_activation_usd=profit_protection_activation_usd,
             profit_protection_floor_usd=profit_protection_floor_usd,
             profit_protection_trail_usd=profit_protection_trail_usd,
+            close_on_target_equity=close_on_target_equity,
         )
         return empty, pd.DataFrame()
 
@@ -823,6 +834,20 @@ def run_optimized_strategy_v7(
         profit_protection_activation_usd=50.0,
         profit_protection_floor_usd=35.0,
         profit_protection_trail_usd=15.0,
+    )
+
+
+def run_optimized_strategy_v8(
+    gold_ohlc: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    return run_optimized_strategy(
+        gold_ohlc,
+        phase_growth=PHASE_GROWTH,
+        model_name="Strategi Optimizer v8",
+        profit_protection_activation_usd=50.0,
+        profit_protection_floor_usd=35.0,
+        profit_protection_trail_usd=15.0,
+        close_on_target_equity=False,
     )
 
 
