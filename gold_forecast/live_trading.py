@@ -12,8 +12,11 @@ from gold_forecast.strategy_optimizer import _indicator_predictions, _rsi
 
 LIVE_TRADING_PATH = Path("data/live_trading_optimizer.csv")
 LIVE_MANUAL_EXIT_PATH = Path("data/live_trading_manual_exits.csv")
+LIVE_TRADING_V10_PATH = Path("data/live_trading_optimizer_v10.csv")
+LIVE_MANUAL_EXIT_V10_PATH = Path("data/live_trading_manual_exits_v10.csv")
 LIVE_INITIAL_EQUITY = 1000.0
 LIVE_START_DATE = pd.Timestamp("2026-07-15")
+LIVE_V10_START_DATE = pd.Timestamp("2026-07-20")
 LIVE_LOT_SIZE = 0.01
 LIVE_BUY_SWAP_PER_001_LOT = 0.02
 LIVE_SELL_SWAP_PER_001_LOT = 0.0
@@ -180,6 +183,7 @@ def _current_optimizer_signal(
     gold_ohlc: pd.DataFrame,
     params: dict[str, object],
     now: pd.Timestamp,
+    start_date: pd.Timestamp = LIVE_START_DATE,
 ) -> dict[str, object] | None:
     if gold_ohlc.empty:
         return None
@@ -195,7 +199,7 @@ def _current_optimizer_signal(
     )
     if signals.empty:
         return None
-    signals = signals[(signals.index >= LIVE_START_DATE) & (signals.index <= now.tz_localize(None).normalize())]
+    signals = signals[(signals.index >= start_date) & (signals.index <= now.tz_localize(None).normalize())]
     if signals.empty:
         return None
 
@@ -739,6 +743,7 @@ def run_live_trading_update(
     optimizer_leaderboard: pd.DataFrame,
     now: pd.Timestamp | None = None,
     path: Path = LIVE_TRADING_PATH,
+    start_date: pd.Timestamp = LIVE_START_DATE,
 ) -> dict[str, object]:
     now_wit = _now_wit(now)
     cutoff_date = now_wit.tz_localize(None).normalize()
@@ -746,6 +751,10 @@ def run_live_trading_update(
     ledger = load_live_ledger(path)
     params = _best_optimizer_params(optimizer_leaderboard)
     can_trade, session_note = _is_live_session_open(now_wit)
+    start_date = pd.Timestamp(start_date)
+    if cutoff_date < start_date:
+        can_trade = False
+        session_note = f"Paper live trading strategi ini baru dimulai {start_date.strftime('%d %b %Y')}."
 
     if not usable_gold.empty:
         latest_candle = usable_gold.iloc[-1]
@@ -756,7 +765,7 @@ def run_live_trading_update(
         latest_price = np.nan
 
     waiting_state = _signal_waiting_state(usable_gold, params)
-    signal = _current_optimizer_signal(usable_gold, params, now_wit)
+    signal = _current_optimizer_signal(usable_gold, params, now_wit, start_date)
     if signal is not None:
         signal["source"] = "Optimizer penuh"
     ledger = _maybe_open_position(ledger, signal, params, now_wit, can_trade, session_note)
@@ -793,6 +802,7 @@ def run_live_trading_update(
         "Can trade": can_trade,
         "Session note": session_note,
         "Now WIT": now_wit,
+        "Ledger start date": start_date,
     }
     return {
         "summary": summary,

@@ -19,6 +19,11 @@ from gold_forecast import live_trading as live_trading_module
 from gold_forecast.live_trading import (
     LIVE_INITIAL_EQUITY,
     LIVE_START_DATE,
+    LIVE_MANUAL_EXIT_PATH,
+    LIVE_MANUAL_EXIT_V10_PATH,
+    LIVE_TRADING_PATH,
+    LIVE_TRADING_V10_PATH,
+    LIVE_V10_START_DATE,
     load_live_ledger,
     run_live_trading_update,
 )
@@ -150,6 +155,16 @@ def get_simulations(simulation_version: str):
     except Exception:
         pass
     return payload
+
+
+def get_v10_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
+    cached = load_precomputed_simulations(simulation_version)
+    if cached is None or len(cached) < 12:
+        return pd.DataFrame()
+    leaderboard = cached[11]
+    if isinstance(leaderboard, pd.DataFrame):
+        return leaderboard
+    return pd.DataFrame()
 
 
 def render_dashboard(
@@ -1597,12 +1612,17 @@ def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: 
             )
 
 
-def _render_manual_exit_comparison(live: dict[str, object]) -> None:
+def _render_manual_exit_comparison(
+    live: dict[str, object],
+    live_path=LIVE_TRADING_PATH,
+    manual_path=LIVE_MANUAL_EXIT_PATH,
+    key_prefix: str = "v1",
+) -> None:
     summary = live["summary"]
     ledger = live["ledger"].copy()
     manual_loader = getattr(live_trading_module, "load_manual_exit_ledger", None)
     manual_recorder = getattr(live_trading_module, "record_manual_exit", None)
-    manual_exits = manual_loader() if manual_loader is not None else pd.DataFrame()
+    manual_exits = manual_loader(manual_path) if manual_loader is not None else pd.DataFrame()
     latest_price = summary["Latest price"]
 
     st.markdown("**Perbandingan Optimizer vs Intervensi Manual**")
@@ -1738,8 +1758,13 @@ def _render_manual_exit_comparison(live: dict[str, object]) -> None:
         action_cols[0].write(f"#{position_id} | {direction}")
         action_cols[1].write(f"Entry ${entry_price:,.2f}")
         action_cols[2].write(f"Manual net sekarang ${net_now:+,.2f}")
-        if action_cols[3].button(f"Exit Manual #{position_id}", key=f"manual_exit_{position_id}"):
-            _, message, success = manual_recorder(position_id, float(latest_price))
+        if action_cols[3].button(f"Exit Manual #{position_id}", key=f"{key_prefix}_manual_exit_{position_id}"):
+            _, message, success = manual_recorder(
+                position_id,
+                float(latest_price),
+                live_path=live_path,
+                manual_path=manual_path,
+            )
             if success:
                 st.success(message)
             else:
@@ -1747,8 +1772,29 @@ def _render_manual_exit_comparison(live: dict[str, object]) -> None:
             st.rerun()
 
 
-def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.DataFrame) -> None:
-    live = run_live_trading_update(gold_ohlc, optimization_leaderboard)
+def render_live_trading(
+    gold_ohlc: pd.DataFrame,
+    optimization_leaderboard: pd.DataFrame,
+    title: str = "Optimizer v1",
+    start_date: pd.Timestamp = LIVE_START_DATE,
+    live_path=LIVE_TRADING_PATH,
+    manual_path=LIVE_MANUAL_EXIT_PATH,
+    key_prefix: str = "v1",
+    strategy_note: str | None = None,
+) -> None:
+    if optimization_leaderboard.empty:
+        st.warning(
+            f"Parameter {title} belum tersedia. Bangun ulang simulasi precomputed lebih dulu agar Live Trading "
+            "bisa memakai parameter strategi yang benar."
+        )
+        return
+
+    live = run_live_trading_update(
+        gold_ohlc,
+        optimization_leaderboard,
+        path=live_path,
+        start_date=start_date,
+    )
     summary = live["summary"]
     params = live["params"]
     signal = live["signal"]
@@ -1758,21 +1804,22 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
     open_positions = live["open_positions"].copy()
     closed_positions = live["closed_positions"].copy()
 
-    st.subheader("Live Trading - Strategi Terbaik Optimizer")
+    st.subheader(f"Live Trading - {title}")
     st.caption(
         "Mode ini adalah paper-trading live berbasis data dashboard. Posisi dibuka mengikuti pola "
-        "Strategi Terbaik Optimizer, bukan order broker sungguhan."
+        f"{title}, bukan order broker sungguhan."
     )
     st.warning(
         "Asumsi live: equity awal USD 1.000, lot tetap 0.01, swap BUY USD 0.02 per 0.01 lot per hari, "
         "swap SELL USD 0. Jam trading Senin-Jumat 07:00 WIT sampai 06:00 WIT hari berikutnya; "
-        f"Sabtu dan Minggu tidak membuka posisi baru. Ledger live dimulai **{LIVE_START_DATE.strftime('%d %b %Y')}**."
+        f"Sabtu dan Minggu tidak membuka posisi baru. Ledger live dimulai **{pd.Timestamp(start_date).strftime('%d %b %Y')}**."
     )
-    st.info(
-        "Live Trading sekarang memakai **Strategi Terbaik Optimizer secara penuh**. "
-        "Entry mengikuti sinyal Optimizer, boleh menambah posisi dari sinyal hari berbeda sampai batas "
-        "maksimal 8 BUY dan 10 SELL. Re-entry guard USD 3 tidak dipakai untuk eksekusi live."
-    )
+    if strategy_note is None:
+        strategy_note = (
+            "Entry mengikuti sinyal Optimizer, boleh menambah posisi dari sinyal hari berbeda sampai batas "
+            "maksimal 8 BUY dan 10 SELL. Re-entry guard USD 3 tidak dipakai untuk eksekusi live."
+        )
+    st.info(f"Live Trading memakai **{title} secara penuh**. {strategy_note}")
 
     status_text = "Aktif" if summary["Can trade"] else "Tidak membuka posisi baru"
     st.info(
@@ -2019,7 +2066,7 @@ def render_live_trading(gold_ohlc: pd.DataFrame, optimization_leaderboard: pd.Da
             hide_index=True,
         )
 
-    _render_manual_exit_comparison(live)
+    _render_manual_exit_comparison(live, live_path=live_path, manual_path=manual_path, key_prefix=key_prefix)
 
 
 def render_monitoring(title: str, data_path) -> None:
@@ -2335,7 +2382,36 @@ with simulation_tab:
         render_simulation(*simulation_payload, gold_ohlc)
 
 with live_trading_tab:
-    render_live_trading(gold_ohlc, optimization_leaderboard)
+    live_v1_tab, live_v10_tab = st.tabs(["Optimizer v1", "Optimizer v10"])
+    with live_v1_tab:
+        render_live_trading(
+            gold_ohlc,
+            optimization_leaderboard,
+            title="Optimizer v1",
+            start_date=LIVE_START_DATE,
+            live_path=LIVE_TRADING_PATH,
+            manual_path=LIVE_MANUAL_EXIT_PATH,
+            key_prefix="v1",
+            strategy_note=(
+                "Ini adalah Live Trading lama yang sudah berjalan. Entry mengikuti sinyal Optimizer v1, "
+                "boleh menambah posisi dari sinyal hari berbeda sampai batas maksimal 8 BUY dan 10 SELL."
+            ),
+        )
+    with live_v10_tab:
+        optimization_v10_live_leaderboard = get_v10_leaderboard_for_live(SIMULATION_CACHE_VERSION)
+        render_live_trading(
+            gold_ohlc,
+            optimization_v10_live_leaderboard,
+            title="Optimizer v10",
+            start_date=LIVE_V10_START_DATE,
+            live_path=LIVE_TRADING_V10_PATH,
+            manual_path=LIVE_MANUAL_EXIT_V10_PATH,
+            key_prefix="v10",
+            strategy_note=(
+                "Paper live v10 mulai 20 Juli 2026. Parameter diambil dari hasil Optimizer v10 precomputed, "
+                "sehingga tidak menghitung ulang optimizer berat saat dashboard dibuka."
+            ),
+        )
 
 with optimizer_signals_tab:
     render_optimizer_signals(gold_ohlc, optimization_leaderboard)
