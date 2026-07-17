@@ -42,7 +42,7 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v9-protection-grid"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-expanded-search"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -115,10 +115,16 @@ def get_simulations(simulation_version: str):
         "run_optimized_strategy_v9",
         optimized_v8_runner,
     )
+    optimized_v10_runner = getattr(
+        strategy_optimizer_module,
+        "run_optimized_strategy_v10",
+        optimized_v9_runner,
+    )
     optimized_v6_result, optimization_v6_leaderboard = optimized_v6_runner(gold_ohlc)
     optimized_v7_result, optimization_v7_leaderboard = optimized_v7_runner(gold_ohlc)
     optimized_v8_result, optimization_v8_leaderboard = optimized_v8_runner(gold_ohlc)
     optimized_v9_result, optimization_v9_leaderboard = optimized_v9_runner(gold_ohlc)
+    optimized_v10_result, optimization_v10_leaderboard = optimized_v10_runner(gold_ohlc)
     payload = (
         optimized_result,
         optimization_leaderboard,
@@ -130,6 +136,8 @@ def get_simulations(simulation_version: str):
         optimization_v8_leaderboard,
         optimized_v9_result,
         optimization_v9_leaderboard,
+        optimized_v10_result,
+        optimization_v10_leaderboard,
     )
     try:
         PRECOMPUTED_SIMULATION_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1075,6 +1083,8 @@ def render_simulation(
     optimization_v8_leaderboard: pd.DataFrame,
     optimized_v9_result,
     optimization_v9_leaderboard: pd.DataFrame,
+    optimized_v10_result,
+    optimization_v10_leaderboard: pd.DataFrame,
     gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
@@ -1088,17 +1098,19 @@ def render_simulation(
         "Optimizer v7 memakai profit protection aktif setelah floating USD 50. "
         "Optimizer v8 memakai rule v7 tetapi tanpa target equity close-all/fase berikutnya. "
         "Optimizer v9 melakukan grid search profit protection di atas kerangka v8. "
+        "Optimizer v10 memperluas pencarian dari v8 ke parameter sinyal, TP/SL, lot, batas posisi, risk cap, dan profit protection. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v6_tab, optimizer_v7_tab, optimizer_v8_tab, optimizer_v9_tab = st.tabs(
+    optimizer_tab, optimizer_v6_tab, optimizer_v7_tab, optimizer_v8_tab, optimizer_v9_tab, optimizer_v10_tab = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v6",
             "Strategi Optimizer v7",
             "Strategi Optimizer v8",
             "Strategi Optimizer v9",
+            "Strategi Optimizer v10",
         ]
     )
     with optimizer_tab:
@@ -1129,6 +1141,13 @@ def render_simulation(
             "activation/floor/trail dan memilih preset terbaik berdasarkan skor optimizer."
         )
         _render_multiphase_result("Strategi Optimizer v9", optimized_v9_result, optimization_v9_leaderboard, gold_ohlc)
+    with optimizer_v10_tab:
+        st.info(
+            "v10 berangkat dari v8 tetapi memperluas eksplorasi parameter. Kandidat v8 tetap masuk sebagai baseline, "
+            "lalu optimizer menguji mode sinyal, MA, momentum, threshold, TP/SL, lot sampai 0.03, batas posisi, "
+            "risk cap, dan profit protection. Pemilihan kandidat v10 mengutamakan equity akhir tertinggi."
+        )
+        _render_multiphase_result("Strategi Optimizer v10", optimized_v10_result, optimization_v10_leaderboard, gold_ohlc)
 
 
 def _render_signal_checklist(title: str, checklist: list[dict[str, object]], ready_status: str) -> None:
@@ -2273,9 +2292,9 @@ with simulation_tab:
     if simulation_payload is None:
         st.warning(
             "Hasil simulasi precomputed untuk versi terbaru belum tersedia. "
-            "Aplikasi sengaja tidak menghitung v6-v9 saat startup agar dashboard bisa dibuka lebih cepat."
+            "Aplikasi sengaja tidak menghitung v6-v10 saat startup agar dashboard bisa dibuka lebih cepat."
         )
-        if st.button("Bangun ulang simulasi v1/v6/v7/v8/v9", use_container_width=True):
+        if st.button("Bangun ulang simulasi v1/v6/v7/v8/v9/v10", use_container_width=True):
             with st.spinner("Menghitung simulasi lengkap. Proses ini bisa memakan waktu di Streamlit Cloud."):
                 simulation_payload = get_simulations(SIMULATION_CACHE_VERSION)
             st.rerun()
