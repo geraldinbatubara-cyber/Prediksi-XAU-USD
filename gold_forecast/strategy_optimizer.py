@@ -851,6 +851,54 @@ def run_optimized_strategy_v8(
     )
 
 
+def run_optimized_strategy_v9(
+    gold_ohlc: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    protection_sets = [
+        (40.0, 25.0, 10.0),
+        (50.0, 35.0, 15.0),
+        (60.0, 40.0, 20.0),
+        (75.0, 50.0, 25.0),
+    ]
+    candidates: list[dict[str, object]] = []
+
+    for activation, floor, trail in protection_sets:
+        result, leaderboard = run_optimized_strategy(
+            gold_ohlc,
+            phase_growth=PHASE_GROWTH,
+            model_name="Strategi Optimizer v9",
+            profit_protection_activation_usd=activation,
+            profit_protection_floor_usd=floor,
+            profit_protection_trail_usd=trail,
+            close_on_target_equity=False,
+        )
+        if leaderboard.empty:
+            continue
+        top_row = leaderboard.iloc[0].to_dict()
+        top_row["Protection preset"] = f"{activation:g}/{floor:g}/{trail:g}"
+        top_row["_score"] = _strategy_score(result.summary)
+        top_row["_result"] = result
+        candidates.append(top_row)
+
+    if not candidates:
+        empty = _multiphase_result(
+            pd.DataFrame(),
+            gold_ohlc,
+            "Strategi Optimizer v9",
+            strategy_name="-",
+            take_profit_usd=0,
+            stop_loss_usd=0,
+            entry_threshold_pct=0,
+            close_on_target_equity=False,
+        )
+        return empty, pd.DataFrame()
+
+    candidates.sort(key=lambda row: row["_score"], reverse=True)
+    best_result = candidates[0]["_result"]
+    leaderboard = pd.DataFrame([{key: value for key, value in row.items() if not key.startswith("_")} for row in candidates])
+    return best_result, leaderboard
+
+
 def run_optimized_strategy_v3(
     gold_ohlc: pd.DataFrame,
     optimizer_leaderboard: pd.DataFrame,
