@@ -1804,6 +1804,8 @@ def _build_live_strategy_frame(params: dict[str, object], leaderboard: pd.DataFr
         {"Parameter": "TP per posisi", "Nilai": f"USD {params['TP (USD)']:,.2f}", "Keterangan": "Target profit algoritma."},
         {"Parameter": "CL/SL per posisi", "Nilai": f"USD {params['SL (USD)']:,.2f}", "Keterangan": "Batas rugi algoritma."},
         {"Parameter": "Lot live", "Nilai": "0.01 tetap", "Keterangan": "Override live sesuai rule paper trading saat ini."},
+        {"Parameter": "Max BUY live", "Nilai": params.get("Max BUY", "-"), "Keterangan": "Batas posisi BUY yang dipakai engine live."},
+        {"Parameter": "Max SELL live", "Nilai": params.get("Max SELL", "-"), "Keterangan": "Batas posisi SELL yang dipakai engine live."},
     ]
 
     if leaderboard.empty:
@@ -1960,8 +1962,10 @@ def render_live_trading(
     slot_frame = pd.DataFrame(
         [
             {"Parameter": "Tanggal sinyal", "Nilai": "-" if pd.isna(trigger_state["Tanggal sinyal"]) else pd.Timestamp(trigger_state["Tanggal sinyal"]).strftime("%d %b %Y")},
+            {"Parameter": "Batas BUY strategi", "Nilai": trigger_state["Max BUY"]},
             {"Parameter": "Posisi BUY terbuka", "Nilai": trigger_state["Posisi BUY terbuka"]},
             {"Parameter": "Sisa slot BUY", "Nilai": trigger_state["Sisa slot BUY"]},
+            {"Parameter": "Batas SELL strategi", "Nilai": trigger_state["Max SELL"]},
             {"Parameter": "Posisi SELL terbuka", "Nilai": trigger_state["Posisi SELL terbuka"]},
             {"Parameter": "Sisa slot SELL", "Nilai": trigger_state["Sisa slot SELL"]},
             {"Parameter": "Sinyal tanggal/arah sudah dicatat", "Nilai": "Ya" if trigger_state["Sudah dieksekusi"] else "Belum"},
@@ -1993,15 +1997,15 @@ def render_live_trading(
     buy_col, sell_col = st.columns(2)
     with buy_col:
         _render_signal_checklist(
-            "Kondisi BUY",
+            "Kondisi Market BUY",
             waiting_state["Checklist BUY"],
-            "BUY hanya dibuka jika seluruh syarat BUY berstatus LOLOS.",
+            "Ini adalah syarat market BUY. Eksekusi akhir tetap dicek lagi pada Status Trigger Optimizer.",
         )
     with sell_col:
         _render_signal_checklist(
-            "Kondisi SELL",
+            "Kondisi Market SELL",
             waiting_state["Checklist SELL"],
-            "SELL hanya dibuka jika seluruh syarat SELL berstatus LOLOS.",
+            "Ini adalah syarat market SELL. Eksekusi akhir tetap dicek lagi pada Status Trigger Optimizer.",
         )
 
     if waiting_state["Status sinyal"] == "Kondisi BUY siap":
