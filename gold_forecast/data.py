@@ -24,6 +24,7 @@ MARKET_SYMBOLS = {
 CACHE_DIR = Path("data/cache")
 GOLD_CACHE_PATH = CACHE_DIR / "gold_ohlc.csv"
 MARKET_CACHE_PATH = CACHE_DIR / "market_data.csv"
+REQUIRED_CACHE_START = pd.Timestamp("2023-01-01")
 
 
 def _read_cached_frame(path: Path, required_columns: list[str]) -> pd.DataFrame:
@@ -130,7 +131,13 @@ def refresh_market_cache(incremental_period: str = "14d", bootstrap_period: str 
     """Update local CSV caches. Use a short Yahoo window when cache already exists."""
     gold_cached = _read_cached_frame(GOLD_CACHE_PATH, ["Open", "High", "Low", "Close", "Volume"])
     market_cached = _read_cached_frame(MARKET_CACHE_PATH, list(MARKET_SYMBOLS.keys()))
-    period = incremental_period if not gold_cached.empty and not market_cached.empty else bootstrap_period
+    has_required_history = (
+        not gold_cached.empty
+        and not market_cached.empty
+        and gold_cached.index.min() <= REQUIRED_CACHE_START
+        and market_cached.index.min() <= REQUIRED_CACHE_START
+    )
+    period = incremental_period if has_required_history else bootstrap_period
 
     gold_latest = _download_gold_data(period)
     market_latest = _download_market_data(period)

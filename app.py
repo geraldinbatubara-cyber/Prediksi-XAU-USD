@@ -47,7 +47,7 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-walk-forward-2023q1-2026q2"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-walk-forward-backfill-2023q1-2026q2"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
