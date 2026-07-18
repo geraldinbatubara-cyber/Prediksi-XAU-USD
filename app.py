@@ -2396,31 +2396,33 @@ with st.sidebar:
         get_base_optimizer.clear()
         get_simulations.clear()
         st.rerun()
-    history_years = st.slider("Riwayat grafik (tahun)", 1, 10, 3)
-    model_choice = st.radio(
-        "Model prediksi",
-        ["Model 2 - Lintas Pasar", "Model 1 - Harga Historis"],
+    page = st.radio(
+        "Halaman",
+        ["Dashboard", "Simulasi", "Live Trading", "Audit Intraday"],
+        index=0,
     )
-    direction_threshold = st.select_slider(
-        "Threshold sinyal arah",
-        options=[0.50, 0.55, 0.60, 0.65, 0.70],
-        value=0.65,
-        format_func=lambda value: f"{value:.0%}",
-    )
+    if page == "Dashboard":
+        history_years = st.slider("Riwayat grafik (tahun)", 1, 10, 3)
+        model_choice = st.radio(
+            "Model prediksi",
+            ["Model 2 - Lintas Pasar", "Model 1 - Harga Historis"],
+        )
+        direction_threshold = st.select_slider(
+            "Threshold sinyal arah",
+            options=[0.50, 0.55, 0.60, 0.65, 0.70],
+            value=0.65,
+            format_func=lambda value: f"{value:.0%}",
+        )
     st.info("Harga emas memakai COMEX `GC=F`, USD per troy ounce.")
 
-try:
-    market, data_fetched_at = get_data()
-    gold_ohlc = get_gold_ohlc()
-    model_1, model_2, direction_model = get_models(market)
-except Exception as exc:
-    st.error(f"Data belum dapat diproses: {exc}")
-    st.stop()
+if page == "Dashboard":
+    try:
+        market, data_fetched_at = get_data()
+        model_1, model_2, direction_model = get_models(market)
+    except Exception as exc:
+        st.error(f"Data belum dapat diproses: {exc}")
+        st.stop()
 
-dashboard_tab, simulation_tab, live_trading_tab, intraday_audit_tab = st.tabs(
-    ["Dashboard", "Simulasi", "Live Trading", "Audit Intraday"]
-)
-with dashboard_tab:
     render_dashboard(
         market,
         data_fetched_at,
@@ -2432,7 +2434,7 @@ with dashboard_tab:
         history_years,
     )
 
-with simulation_tab:
+elif page == "Simulasi":
     simulation_payload = load_precomputed_simulations(SIMULATION_CACHE_VERSION)
     if simulation_payload is None:
         st.warning(
@@ -2449,9 +2451,20 @@ with simulation_tab:
             "visualisasi simulasi tidak dirender otomatis."
         )
         if st.checkbox("Tampilkan hasil simulasi precomputed", value=False):
+            try:
+                gold_ohlc = get_gold_ohlc()
+            except Exception as exc:
+                st.error(f"Data OHLC belum dapat diproses: {exc}")
+                st.stop()
             render_simulation(*simulation_payload, gold_ohlc)
 
-with live_trading_tab:
+elif page == "Live Trading":
+    try:
+        gold_ohlc = get_gold_ohlc()
+    except Exception as exc:
+        st.error(f"Data OHLC belum dapat diproses: {exc}")
+        st.stop()
+
     live_v1_tab, live_v10_tab = st.tabs(["Optimizer v1", "Optimizer v10"])
     st.info("Rencana evaluasi: paper live trading paralel Optimizer v1 dan Optimizer v10 berjalan sampai **30 Agustus 2026**.")
     with live_v1_tab:
@@ -2485,5 +2498,11 @@ with live_trading_tab:
             ),
         )
 
-with intraday_audit_tab:
+else:
+    try:
+        gold_ohlc = get_gold_ohlc()
+    except Exception as exc:
+        st.error(f"Data OHLC belum dapat diproses: {exc}")
+        st.stop()
+
     render_intraday_audit(gold_ohlc)
