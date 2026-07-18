@@ -2370,7 +2370,7 @@ with st.sidebar:
     refresh_interval_seconds = st.selectbox(
         "Interval auto refresh",
         options=[60, 300, 900],
-        index=0,
+        index=1,
         format_func=lambda value: f"{value // 60} menit" if value >= 60 else f"{value} detik",
         disabled=not auto_refresh,
     )

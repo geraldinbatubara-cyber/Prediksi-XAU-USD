@@ -21,10 +21,32 @@ MARKET_SYMBOLS = {
     "vix": "^VIX",
     "silver": "SI=F",
 }
+CACHE_DIR = Path("data/cache")
+GOLD_CACHE_PATH = CACHE_DIR / "gold_ohlc.csv"
+MARKET_CACHE_PATH = CACHE_DIR / "market_data.csv"
 
 
-def load_gold_data(period: str = "10y") -> pd.DataFrame:
-    """Download and normalize daily COMEX gold futures prices."""
+def _read_cached_frame(path: Path, required_columns: list[str]) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    frame = pd.read_csv(path, index_col=0, parse_dates=True)
+    missing = [column for column in required_columns if column not in frame.columns]
+    if missing:
+        return pd.DataFrame()
+    frame.index = pd.to_datetime(frame.index).tz_localize(None)
+    return frame[required_columns].sort_index().dropna(how="all")
+
+
+def _write_cached_frame(frame: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    output = frame.copy()
+    output.index = pd.to_datetime(output.index).tz_localize(None)
+    output = output[~output.index.duplicated(keep="last")].sort_index()
+    output.to_csv(path, index_label="Date")
+
+
+def _download_gold_data(period: str = "10y") -> pd.DataFrame:
+    """Download and normalize daily COMEX gold futures prices from Yahoo."""
     data = yf.download(
         "GC=F",
         period=period,
@@ -47,8 +69,8 @@ def load_gold_data(period: str = "10y") -> pd.DataFrame:
     return frame
 
 
-def load_market_data(period: str = "10y") -> pd.DataFrame:
-    """Download aligned close prices for gold and related global markets."""
+def _download_market_data(period: str = "10y") -> pd.DataFrame:
+    """Download aligned close prices for gold and related global markets from Yahoo."""
     symbols = list(MARKET_SYMBOLS.values())
     data = pd.DataFrame()
     for attempt in range(3):
@@ -73,12 +95,50 @@ def load_market_data(period: str = "10y") -> pd.DataFrame:
                 series[name] = close_data[symbol].rename(name)
 
     if "gold" not in series:
-        gold = load_gold_data(period)
+        gold = _download_gold_data(period)
         series["gold"] = gold["Close"].rename("gold")
 
     if "gold" not in series:
         raise RuntimeError("Data harga emas tidak tersedia dari Yahoo Finance.")
 
     frame = pd.concat(series.values(), axis=1).sort_index()
+    for name in MARKET_SYMBOLS:
+        if name not in frame.columns:
+            frame[name] = pd.NA
+    frame = frame[list(MARKET_SYMBOLS.keys())]
     frame = frame.ffill(limit=3).dropna(subset=["gold"])
     return frame
+
+
+def load_gold_data(period: str = "10y") -> pd.DataFrame:
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    cached = _read_cached_frame(GOLD_CACHE_PATH, required)
+    if not cached.empty:
+        return cached.dropna(subset=["Close"])
+    return _download_gold_data(period)
+
+
+def load_market_data(period: str = "10y") -> pd.DataFrame:
+    required = list(MARKET_SYMBOLS.keys())
+    cached = _read_cached_frame(MARKET_CACHE_PATH, required)
+    if not cached.empty:
+        return cached.ffill(limit=3).dropna(subset=["gold"])
+    return _download_market_data(period)
+
+
+def refresh_market_cache(incremental_period: str = "14d", bootstrap_period: str = "10y") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Update local CSV caches. Use a short Yahoo window when cache already exists."""
+    gold_cached = _read_cached_frame(GOLD_CACHE_PATH, ["Open", "High", "Low", "Close", "Volume"])
+    market_cached = _read_cached_frame(MARKET_CACHE_PATH, list(MARKET_SYMBOLS.keys()))
+    period = incremental_period if not gold_cached.empty and not market_cached.empty else bootstrap_period
+
+    gold_latest = _download_gold_data(period)
+    market_latest = _download_market_data(period)
+    gold = pd.concat([gold_cached, gold_latest]).sort_index()
+    market = pd.concat([market_cached, market_latest]).sort_index()
+
+    gold = gold[~gold.index.duplicated(keep="last")].dropna(subset=["Close"])
+    market = market[~market.index.duplicated(keep="last")].ffill(limit=3).dropna(subset=["gold"])
+    _write_cached_frame(gold, GOLD_CACHE_PATH)
+    _write_cached_frame(market, MARKET_CACHE_PATH)
+    return gold, market
