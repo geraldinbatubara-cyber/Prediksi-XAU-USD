@@ -1154,6 +1154,190 @@ def run_optimized_strategy_v10_real_data(
     return result, leaderboard
 
 
+def _run_v10_best_on_period(
+    gold_ohlc: pd.DataFrame,
+    best: dict[str, object],
+    *,
+    model_name: str,
+    test_start: pd.Timestamp,
+    test_end: pd.Timestamp,
+    strategy_suffix: str,
+) -> MultiPhaseSimulationResult:
+    mode = str(best["Mode"])
+    fast_window = int(best["Fast MA"])
+    slow_window = int(best["Slow MA"])
+    momentum_days = int(best["Momentum hari"])
+    threshold = float(best["Threshold entry (%)"])
+    take_profit = float(best["TP (USD)"])
+    stop_loss = float(best["SL (USD)"])
+    lot_size = float(best.get("Lot", 0.02))
+    max_buy = int(best.get("Max BUY", 8))
+    max_sell = int(best.get("Max SELL", 10))
+    risk_cap = best.get("Risk cap floating SL (%)")
+    risk_cap = None if pd.isna(risk_cap) else float(risk_cap)
+    protection_activation = best.get("Profit protection aktif (USD)")
+    protection_floor = best.get("Profit protection floor (USD)")
+    protection_trail = best.get("Profit protection trail (USD)")
+    protection_activation = None if pd.isna(protection_activation) else float(protection_activation)
+    protection_floor = None if pd.isna(protection_floor) else float(protection_floor)
+    protection_trail = None if pd.isna(protection_trail) else float(protection_trail)
+    strategy_name = f"{best.get('Strategi', 'Strategi Optimizer v10')} | {strategy_suffix}"
+
+    predictions = _indicator_predictions(
+        gold_ohlc,
+        mode,
+        fast_window,
+        slow_window,
+        momentum_days,
+        threshold,
+        test_start=test_start,
+        test_end=test_end,
+    )
+    return _multiphase_result(
+        _fixed_lot_signals(predictions, lot_size),
+        gold_ohlc,
+        model_name,
+        strategy_name=strategy_name,
+        take_profit_usd=take_profit,
+        stop_loss_usd=stop_loss,
+        entry_threshold_pct=threshold,
+        max_buy_positions=max_buy,
+        max_sell_positions=max_sell,
+        risk_cap_pct=risk_cap,
+        phase_growth=PHASE_GROWTH,
+        profit_protection_activation_usd=protection_activation,
+        profit_protection_floor_usd=protection_floor,
+        profit_protection_trail_usd=protection_trail,
+        close_on_target_equity=False,
+        test_start=test_start,
+        test_end=test_end,
+    )
+
+
+def run_optimized_strategy_v10_walk_forward(
+    gold_ohlc: pd.DataFrame,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    folds = [
+        ("Fold 1", pd.Timestamp("2025-06-30"), pd.Timestamp("2025-07-01"), pd.Timestamp("2025-09-30")),
+        ("Fold 2", pd.Timestamp("2025-09-30"), pd.Timestamp("2025-10-01"), pd.Timestamp("2025-12-31")),
+        ("Fold 3", pd.Timestamp("2025-12-31"), pd.Timestamp("2026-01-01"), pd.Timestamp("2026-03-31")),
+        ("Fold 4", pd.Timestamp("2026-03-31"), pd.Timestamp("2026-04-01"), pd.Timestamp("2026-06-30")),
+        ("Fold 5", pd.Timestamp("2026-06-30"), REAL_DATA_TEST_START, REAL_DATA_TEST_END),
+    ]
+    rows: list[dict[str, object]] = []
+    trade_frames: list[pd.DataFrame] = []
+    equity_frames: list[pd.DataFrame] = []
+
+    for fold_name, train_end, test_start, test_end in folds:
+        train_gold = gold_ohlc.loc[gold_ohlc.index <= train_end].copy()
+        if train_gold.empty:
+            continue
+        train_result, train_leaderboard = run_optimized_strategy_v10(train_gold)
+        if train_leaderboard.empty:
+            continue
+        best = train_leaderboard.iloc[0].to_dict()
+        test_result = _run_v10_best_on_period(
+            gold_ohlc,
+            best,
+            model_name="Strategi Optimizer v10 Walk-Forward",
+            test_start=test_start,
+            test_end=test_end,
+            strategy_suffix=f"{fold_name}: train sampai {train_end.strftime('%d %b %Y')}",
+        )
+        train_summary = train_result.summary
+        test_summary = test_result.summary
+        test_trades = test_result.trades.copy()
+        test_equity = test_result.equity_curve.copy()
+        if not test_trades.empty:
+            test_trades.insert(0, "Fold", fold_name)
+            trade_frames.append(test_trades)
+        if not test_equity.empty:
+            test_equity["Fold"] = fold_name
+            equity_frames.append(test_equity)
+
+        rows.append(
+            {
+                "Fold": fold_name,
+                "Train mulai": OPTIMIZATION_START,
+                "Train akhir": train_end,
+                "Test mulai": test_start,
+                "Test akhir": test_end,
+                "Train equity akhir": train_summary["Equity akhir"],
+                "Train growth (%)": train_summary["Growth total"],
+                "Test equity akhir": test_summary["Equity akhir"],
+                "Test growth (%)": test_summary["Growth total"],
+                "Test max drawdown": test_summary["Max drawdown"],
+                "Test jumlah transaksi": test_summary["Jumlah transaksi"],
+                "Test total BUY": test_summary["Total BUY"],
+                "Test total SELL": test_summary["Total SELL"],
+                "Test win rate": test_summary["Win rate"],
+                "Test profit factor": test_summary["Profit factor"],
+                "Test avg net P/L": test_summary["Avg net P/L"],
+                "Overfitting flag": "YA" if train_summary["Growth total"] > 20 and test_summary["Growth total"] < 0 else "Tidak",
+                "Mode": best.get("Mode"),
+                "Fast MA": best.get("Fast MA"),
+                "Slow MA": best.get("Slow MA"),
+                "Momentum hari": best.get("Momentum hari"),
+                "Threshold entry (%)": best.get("Threshold entry (%)"),
+                "TP (USD)": best.get("TP (USD)"),
+                "SL (USD)": best.get("SL (USD)"),
+                "Lot": best.get("Lot"),
+                "Max BUY": best.get("Max BUY"),
+                "Max SELL": best.get("Max SELL"),
+                "Risk cap floating SL (%)": best.get("Risk cap floating SL (%)"),
+                "Profit protection aktif (USD)": best.get("Profit protection aktif (USD)"),
+                "Profit protection floor (USD)": best.get("Profit protection floor (USD)"),
+                "Profit protection trail (USD)": best.get("Profit protection trail (USD)"),
+                "Strategi": best.get("Strategi"),
+            }
+        )
+
+    leaderboard = pd.DataFrame(rows)
+    trades = pd.concat(trade_frames, ignore_index=True) if trade_frames else pd.DataFrame()
+    equity_curve = pd.concat(equity_frames).sort_index() if equity_frames else pd.DataFrame()
+    if leaderboard.empty:
+        summary = _result([], [], INITIAL_EQUITY, INITIAL_EQUITY * (1 + PHASE_GROWTH)).summary
+        summary.update({"Fase selesai": 0.0, "Fase total": 0.0, "Growth total": 0.0})
+        return MultiPhaseSimulationResult(summary, leaderboard, trades, equity_curve), leaderboard
+
+    test_growth = pd.to_numeric(leaderboard["Test growth (%)"], errors="coerce")
+    test_equity = pd.to_numeric(leaderboard["Test equity akhir"], errors="coerce")
+    test_drawdown = pd.to_numeric(leaderboard["Test max drawdown"], errors="coerce")
+    test_trades_count = pd.to_numeric(leaderboard["Test jumlah transaksi"], errors="coerce")
+    profitable_folds = float((test_growth > 0).sum())
+    overfit_flags = float((leaderboard["Overfitting flag"] == "YA").sum())
+    summary = {
+        "Modal awal": INITIAL_EQUITY,
+        "Balance akhir": float(test_equity.mean()),
+        "Equity akhir": float(test_equity.mean()),
+        "Target equity": INITIAL_EQUITY * (1 + PHASE_GROWTH),
+        "Target tercapai": bool((test_equity >= INITIAL_EQUITY * (1 + PHASE_GROWTH)).any()),
+        "Tanggal target": pd.NaT,
+        "Fase selesai": profitable_folds,
+        "Fase total": float(len(leaderboard)),
+        "Growth total": float(test_growth.mean()),
+        "Equity tertinggi": float(test_equity.max()),
+        "Tanggal equity tertinggi": pd.NaT,
+        "Equity terendah": float(test_equity.min()),
+        "Tanggal equity terendah": pd.NaT,
+        "Total net P/L": float((test_equity - INITIAL_EQUITY).sum()),
+        "Jumlah transaksi": float(test_trades_count.sum()),
+        "Win rate": float((test_growth > 0).mean() * 100),
+        "Max drawdown": float(test_drawdown.max()),
+        "Total BUY": float(pd.to_numeric(leaderboard["Test total BUY"], errors="coerce").sum()),
+        "Total SELL": float(pd.to_numeric(leaderboard["Test total SELL"], errors="coerce").sum()),
+        "Max open posisi": float(pd.to_numeric(equity_curve.get("Open total", pd.Series(dtype=float)), errors="coerce").max()) if not equity_curve.empty else 0.0,
+        "Profit factor": np.nan,
+        "Avg net P/L": float(pd.to_numeric(leaderboard["Test avg net P/L"], errors="coerce").mean()),
+        "Total swap": float(pd.to_numeric(trades.get("Swap", pd.Series(dtype=float)), errors="coerce").sum()) if not trades.empty else 0.0,
+        "Fold profitable": profitable_folds,
+        "Fold overfitting": overfit_flags,
+        "Worst fold growth (%)": float(test_growth.min()),
+        "Best fold growth (%)": float(test_growth.max()),
+    }
+    return MultiPhaseSimulationResult(summary, leaderboard, trades, equity_curve), leaderboard
+
+
 def run_optimized_strategy_v3(
     gold_ohlc: pd.DataFrame,
     optimizer_leaderboard: pd.DataFrame,
