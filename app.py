@@ -1234,9 +1234,17 @@ def _render_v10_walk_forward_result(result, leaderboard: pd.DataFrame) -> None:
         st.info("Belum ada hasil walk-forward. Bangun ulang simulasi setelah data cache market tersedia.")
         return
 
+    expected_folds = 10
+    actual_folds = len(leaderboard)
+    if actual_folds < expected_folds:
+        st.warning(
+            f"Hasil walk-forward baru berisi {actual_folds}/{expected_folds} fold. "
+            "Ini biasanya berarti data OHLC historis belum lengkap dari 1 Jan 2023 atau hasil simulasi masih perlu dibangun ulang."
+        )
+
     summary = result.summary
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Fold profitable", f"{summary.get('Fold profitable', 0):.0f}/{summary.get('Fase total', 0):.0f}")
+    c1.metric("Fold profitable", f"{summary.get('Fold profitable', 0):.0f}/{expected_folds}")
     c2.metric("Rata-rata test growth", f"{summary.get('Growth total', 0):+.1f}%")
     c3.metric("Worst fold growth", f"{summary.get('Worst fold growth (%)', 0):+.1f}%")
     c4.metric("Fold overfitting", f"{summary.get('Fold overfitting', 0):.0f}")
