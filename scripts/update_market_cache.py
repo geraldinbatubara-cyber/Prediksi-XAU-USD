@@ -13,8 +13,14 @@ from gold_forecast.data import GOLD_CACHE_PATH, MARKET_CACHE_PATH, refresh_marke
 
 def main() -> None:
     gold, market = refresh_market_cache()
-    print(f"Gold cache: {GOLD_CACHE_PATH} | rows={len(gold)} | latest={gold.index.max().date()}")
-    print(f"Market cache: {MARKET_CACHE_PATH} | rows={len(market)} | latest={market.index.max().date()}")
+    print(
+        f"Gold cache: {GOLD_CACHE_PATH} | rows={len(gold)} | "
+        f"range={gold.index.min().date()} to {gold.index.max().date()}"
+    )
+    print(
+        f"Market cache: {MARKET_CACHE_PATH} | rows={len(market)} | "
+        f"range={market.index.min().date()} to {market.index.max().date()}"
+    )
 
 
 if __name__ == "__main__":
