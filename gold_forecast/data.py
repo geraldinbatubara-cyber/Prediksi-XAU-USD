@@ -24,7 +24,7 @@ MARKET_SYMBOLS = {
 CACHE_DIR = Path("data/cache")
 GOLD_CACHE_PATH = CACHE_DIR / "gold_ohlc.csv"
 MARKET_CACHE_PATH = CACHE_DIR / "market_data.csv"
-REQUIRED_CACHE_START = pd.Timestamp("2023-01-01")
+REQUIRED_CACHE_START = pd.Timestamp("2025-01-01")
 
 
 def _read_cached_frame(path: Path, required_columns: list[str]) -> pd.DataFrame:
@@ -35,6 +35,7 @@ def _read_cached_frame(path: Path, required_columns: list[str]) -> pd.DataFrame:
     if missing:
         return pd.DataFrame()
     frame.index = pd.to_datetime(frame.index).tz_localize(None)
+    frame = frame.loc[frame.index >= REQUIRED_CACHE_START]
     return frame[required_columns].sort_index().dropna(how="all")
 
 
@@ -146,6 +147,8 @@ def refresh_market_cache(incremental_period: str = "14d", bootstrap_period: str 
 
     gold = gold[~gold.index.duplicated(keep="last")].dropna(subset=["Close"])
     market = market[~market.index.duplicated(keep="last")].ffill(limit=3).dropna(subset=["gold"])
+    gold = gold.loc[gold.index >= REQUIRED_CACHE_START]
+    market = market.loc[market.index >= REQUIRED_CACHE_START]
     _write_cached_frame(gold, GOLD_CACHE_PATH)
     _write_cached_frame(market, MARKET_CACHE_PATH)
     return gold, market
