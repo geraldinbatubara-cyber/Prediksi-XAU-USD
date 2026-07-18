@@ -141,6 +141,166 @@ def get_v1_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def _optimizer_v10_latest_prediction(gold_ohlc: pd.DataFrame, leaderboard: pd.DataFrame) -> dict[str, object]:
+    params = _optimizer_best_params(leaderboard)
+    if gold_ohlc.empty:
+        return {"params": params, "direction": "WAIT", "note": "Data OHLC belum tersedia."}
+
+    frame = gold_ohlc.copy()
+    latest_date = pd.Timestamp(frame.index.max())
+    latest = frame.loc[latest_date]
+    latest_close = float(latest["Close"])
+    threshold = float(params["Threshold entry (%)"])
+    lot = float(params.get("Lot", 0.01) or 0.01)
+    units = max(lot * 100, 1)
+
+    signals = strategy_optimizer_module._indicator_predictions(
+        frame,
+        str(params["Mode"]),
+        int(params["Fast MA"]),
+        int(params["Slow MA"]),
+        int(params["Momentum hari"]),
+        threshold,
+        test_start=latest_date,
+        test_end=latest_date,
+    )
+    if signals.empty:
+        prediction = latest_close
+        expected_change_pct = 0.0
+        direction = "WAIT"
+        note = "Candle terbaru belum memenuhi threshold entry Optimizer v10."
+    else:
+        prediction = float(signals.iloc[-1])
+        expected_change_pct = (prediction / latest_close - 1) * 100
+        if expected_change_pct >= threshold:
+            direction = "BUY"
+            note = "Sinyal BUY v10 lolos pada candle harian terbaru."
+        elif expected_change_pct <= -threshold:
+            direction = "SELL"
+            note = "Sinyal SELL v10 lolos pada candle harian terbaru."
+        else:
+            direction = "WAIT"
+            note = "Expected change belum melewati threshold Optimizer v10."
+
+    tp_points = float(params["TP (USD)"]) / units
+    sl_points = float(params["SL (USD)"]) / units
+    if direction == "BUY":
+        target_price = latest_close + tp_points
+        risk_price = latest_close - sl_points
+    elif direction == "SELL":
+        target_price = latest_close - tp_points
+        risk_price = latest_close + sl_points
+    else:
+        target_price = pd.NA
+        risk_price = pd.NA
+
+    return {
+        "params": params,
+        "latest_date": latest_date,
+        "latest_close": latest_close,
+        "prediction": prediction,
+        "expected_change_pct": expected_change_pct,
+        "direction": direction,
+        "target_price": target_price,
+        "risk_price": risk_price,
+        "note": note,
+    }
+
+
+def render_optimizer_v10_dashboard(
+    market: pd.DataFrame,
+    data_fetched_at: pd.Timestamp,
+    gold_ohlc: pd.DataFrame,
+    optimization_v10_leaderboard: pd.DataFrame,
+    history_years: int,
+) -> None:
+    gold = market["gold"]
+    latest_market = float(gold.iloc[-1])
+    previous_market = float(gold.iloc[-2])
+    market_last_date = pd.Timestamp(gold.index.max()).strftime("%d %b %Y")
+    fetched_label = data_fetched_at.strftime("%d %b %Y %H:%M:%S WIT")
+    prediction = _optimizer_v10_latest_prediction(gold_ohlc, optimization_v10_leaderboard)
+    params = prediction["params"]
+
+    st.info(f"Data pasar terakhir: **{market_last_date}** | Data diambil dashboard: **{fetched_label}**")
+    if optimization_v10_leaderboard.empty:
+        st.warning(
+            "Parameter precomputed Optimizer v10 belum tersedia. Dashboard memakai parameter fallback dan tidak "
+            "menghitung ulang optimizer berat saat halaman dibuka."
+        )
+
+    signal_direction = str(prediction["direction"])
+    signal_label = signal_direction if signal_direction in {"BUY", "SELL"} else "WAIT"
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Harga terakhir", f"${latest_market:,.2f}", f"{latest_market - previous_market:+,.2f}")
+    c2.metric("Sinyal Optimizer v10", signal_label, str(prediction["note"]))
+    c3.metric(
+        "Prediksi strategi",
+        f"${float(prediction['prediction']):,.2f}",
+        f"{float(prediction['expected_change_pct']):+.2f}%",
+    )
+    target_value = prediction["target_price"]
+    c4.metric("Target TP v10", "-" if pd.isna(target_value) else f"${float(target_value):,.2f}")
+
+    st.subheader("Prediksi Menurut Optimizer v10")
+    if signal_direction == "BUY":
+        st.success("Optimizer v10 membaca peluang **BUY** pada candle harian terbaru.")
+    elif signal_direction == "SELL":
+        st.error("Optimizer v10 membaca peluang **SELL** pada candle harian terbaru.")
+    else:
+        st.info("Optimizer v10 belum memberi sinyal entry. Posisi yang disarankan: **WAIT / TUNGGU**.")
+
+    detail = pd.DataFrame(
+        [
+            {"Parameter": "Tanggal candle", "Nilai": _format_date(prediction.get("latest_date")), "Keterangan": "Candle harian terbaru yang dievaluasi."},
+            {"Parameter": "Strategi", "Nilai": params["Strategi"], "Keterangan": "Kandidat terbaik dari Optimizer v10 atau fallback jika belum ada precomputed."},
+            {"Parameter": "Mode", "Nilai": params["Mode"], "Keterangan": "Jenis rule sinyal: Trend, Breakout, atau Pullback."},
+            {"Parameter": "MA cepat/lambat", "Nilai": f"{params['Fast MA']} / {params['Slow MA']}", "Keterangan": "Moving average harian yang dipakai strategi."},
+            {"Parameter": "Momentum hari", "Nilai": params["Momentum hari"], "Keterangan": "Jendela momentum harian."},
+            {"Parameter": "Threshold entry", "Nilai": f"{params['Threshold entry (%)']:.2f}%", "Keterangan": "Minimal expected change agar entry valid."},
+            {"Parameter": "TP / CL", "Nilai": f"USD {params['TP (USD)']:,.2f} / USD {params['SL (USD)']:,.2f}", "Keterangan": "Target profit dan batas rugi per posisi dari strategi."},
+            {"Parameter": "Lot backtest", "Nilai": f"{float(params.get('Lot', 0.01)):,.2f}", "Keterangan": "Lot dari kandidat v10. Paper live tetap memakai rule live yang sudah ditetapkan."},
+            {"Parameter": "Harga CL risiko", "Nilai": "-" if pd.isna(prediction["risk_price"]) else f"${float(prediction['risk_price']):,.2f}", "Keterangan": "Harga risiko jika sinyal BUY/SELL aktif."},
+        ]
+    )
+    st.dataframe(detail, use_container_width=True, hide_index=True)
+
+    cutoff = gold_ohlc.index.max() - pd.DateOffset(years=history_years)
+    chart = gold_ohlc.loc[gold_ohlc.index >= cutoff].copy()
+    close = chart["Close"].astype(float)
+    fast_ma = close.rolling(int(params["Fast MA"])).mean()
+    slow_ma = close.rolling(int(params["Slow MA"])).mean()
+    figure = go.Figure()
+    figure.add_trace(go.Scatter(x=chart.index, y=close, name="Close GC=F"))
+    figure.add_trace(go.Scatter(x=chart.index, y=fast_ma, name=f"MA cepat {params['Fast MA']}"))
+    figure.add_trace(go.Scatter(x=chart.index, y=slow_ma, name=f"MA lambat {params['Slow MA']}"))
+    if signal_direction in {"BUY", "SELL"}:
+        marker_color = "#16a34a" if signal_direction == "BUY" else "#dc2626"
+        figure.add_trace(
+            go.Scatter(
+                x=[prediction["latest_date"]],
+                y=[prediction["latest_close"]],
+                mode="markers+text",
+                name=f"Sinyal {signal_direction}",
+                marker=dict(size=12, color=marker_color),
+                text=[signal_direction],
+                textposition="top center",
+            )
+        )
+    figure.update_layout(
+        title="Harga, MA, dan sinyal Optimizer v10",
+        yaxis_title="USD per troy ounce",
+        hovermode="x unified",
+        height=480,
+    )
+    st.plotly_chart(figure, use_container_width=True)
+
+    st.caption(
+        "Catatan: Model 3 adalah prediksi berbasis strategi Optimizer v10. Ia menilai apakah candle harian terbaru "
+        "cukup kuat untuk BUY/SELL/WAIT, bukan model probabilistik harga seperti Model 1 dan Model 2."
+    )
+
+
 def render_dashboard(
     market: pd.DataFrame,
     data_fetched_at: pd.Timestamp,
@@ -2400,7 +2560,7 @@ with st.sidebar:
         history_years = st.slider("Riwayat grafik (tahun)", 1, 10, 3)
         model_choice = st.radio(
             "Model prediksi",
-            ["Model 2 - Lintas Pasar", "Model 1 - Harga Historis"],
+            ["Model 2 - Lintas Pasar", "Model 1 - Harga Historis", "Model 3 - Optimizer v10"],
         )
         direction_threshold = st.select_slider(
             "Threshold sinyal arah",
@@ -2413,21 +2573,40 @@ with st.sidebar:
 if page == "Dashboard":
     try:
         market, data_fetched_at = get_data()
-        model_1, model_2, direction_model = get_models(market)
     except Exception as exc:
         st.error(f"Data belum dapat diproses: {exc}")
         st.stop()
 
-    render_dashboard(
-        market,
-        data_fetched_at,
-        model_1,
-        model_2,
-        direction_model,
-        model_choice,
-        direction_threshold,
-        history_years,
-    )
+    if model_choice.startswith("Model 3"):
+        try:
+            gold_ohlc = get_gold_ohlc()
+        except Exception as exc:
+            st.error(f"Data OHLC belum dapat diproses: {exc}")
+            st.stop()
+        render_optimizer_v10_dashboard(
+            market,
+            data_fetched_at,
+            gold_ohlc,
+            get_v10_leaderboard_for_live(SIMULATION_CACHE_VERSION),
+            history_years,
+        )
+    else:
+        try:
+            model_1, model_2, direction_model = get_models(market)
+        except Exception as exc:
+            st.error(f"Model prediksi belum dapat diproses: {exc}")
+            st.stop()
+
+        render_dashboard(
+            market,
+            data_fetched_at,
+            model_1,
+            model_2,
+            direction_model,
+            model_choice,
+            direction_threshold,
+            history_years,
+        )
 
 elif page == "Simulasi":
     simulation_payload = load_precomputed_simulations(SIMULATION_CACHE_VERSION)
