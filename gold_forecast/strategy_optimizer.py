@@ -10,6 +10,7 @@ from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT, SimulationResult, 
 
 OPTIMIZATION_START = pd.Timestamp("2025-01-01")
 OPTIMIZATION_END = pd.Timestamp("2026-06-30")
+V10_WALK_FORWARD_START = pd.Timestamp("2023-01-01")
 REAL_DATA_TEST_START = pd.Timestamp("2026-07-01")
 REAL_DATA_TEST_END = pd.Timestamp("2026-07-16")
 INITIAL_EQUITY = 1000.0
@@ -694,6 +695,8 @@ def run_optimized_strategy(
     profit_protection_floor_usd: float | None = None,
     profit_protection_trail_usd: float | None = None,
     close_on_target_equity: bool = True,
+    test_start: pd.Timestamp = OPTIMIZATION_START,
+    test_end: pd.Timestamp = OPTIMIZATION_END,
 ) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     candidates: list[dict[str, object]] = []
     modes = ["Trend", "Breakout", "Pullback"]
@@ -712,7 +715,16 @@ def run_optimized_strategy(
                     continue
                 for momentum_days in momentum_days_options:
                     for threshold in thresholds:
-                        predictions = _indicator_predictions(gold_ohlc, mode, fast_window, slow_window, momentum_days, threshold)
+                        predictions = _indicator_predictions(
+                            gold_ohlc,
+                            mode,
+                            fast_window,
+                            slow_window,
+                            momentum_days,
+                            threshold,
+                            test_start=test_start,
+                            test_end=test_end,
+                        )
                         if predictions.empty:
                             continue
                         for take_profit in take_profits:
@@ -743,6 +755,8 @@ def run_optimized_strategy(
                                         profit_protection_floor_usd=profit_protection_floor_usd,
                                         profit_protection_trail_usd=profit_protection_trail_usd,
                                         close_on_target_equity=close_on_target_equity,
+                                        test_start=test_start,
+                                        test_end=test_end,
                                     )
                                     summary = result.summary
                                     if summary["Jumlah transaksi"] < 3:
@@ -798,6 +812,8 @@ def run_optimized_strategy(
             profit_protection_floor_usd=profit_protection_floor_usd,
             profit_protection_trail_usd=profit_protection_trail_usd,
             close_on_target_equity=close_on_target_equity,
+            test_start=test_start,
+            test_end=test_end,
         )
         return empty, pd.DataFrame()
 
@@ -843,6 +859,9 @@ def run_optimized_strategy_v7(
 
 def run_optimized_strategy_v8(
     gold_ohlc: pd.DataFrame,
+    *,
+    test_start: pd.Timestamp = OPTIMIZATION_START,
+    test_end: pd.Timestamp = OPTIMIZATION_END,
 ) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     return run_optimized_strategy(
         gold_ohlc,
@@ -852,6 +871,8 @@ def run_optimized_strategy_v8(
         profit_protection_floor_usd=35.0,
         profit_protection_trail_usd=15.0,
         close_on_target_equity=False,
+        test_start=test_start,
+        test_end=test_end,
     )
 
 
@@ -905,6 +926,9 @@ def run_optimized_strategy_v9(
 
 def run_optimized_strategy_v10(
     gold_ohlc: pd.DataFrame,
+    *,
+    optimization_start: pd.Timestamp = OPTIMIZATION_START,
+    optimization_end: pd.Timestamp = OPTIMIZATION_END,
 ) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     signal_configs = [
         (mode, fast_window, slow_window, momentum_days, threshold)
@@ -930,7 +954,11 @@ def run_optimized_strategy_v10(
         (100.0, 35.0, 0.02, 12, 12, 60.0, 125.0, 80.0, 40.0),
     ]
     candidates: list[dict[str, object]] = []
-    baseline_result, baseline_leaderboard = run_optimized_strategy_v8(gold_ohlc)
+    baseline_result, baseline_leaderboard = run_optimized_strategy_v8(
+        gold_ohlc,
+        test_start=optimization_start,
+        test_end=optimization_end,
+    )
     if not baseline_leaderboard.empty:
         baseline_row = baseline_leaderboard.iloc[0].to_dict()
         baseline_summary = baseline_result.summary
@@ -945,7 +973,16 @@ def run_optimized_strategy_v10(
         candidates.append(baseline_row)
 
     for mode, fast_window, slow_window, momentum_days, threshold in signal_configs:
-        predictions = _indicator_predictions(gold_ohlc, mode, fast_window, slow_window, momentum_days, threshold)
+        predictions = _indicator_predictions(
+            gold_ohlc,
+            mode,
+            fast_window,
+            slow_window,
+            momentum_days,
+            threshold,
+            test_start=optimization_start,
+            test_end=optimization_end,
+        )
         if predictions.empty:
             continue
         for (
@@ -981,6 +1018,8 @@ def run_optimized_strategy_v10(
                 profit_protection_floor_usd=protection_floor,
                 profit_protection_trail_usd=protection_trail,
                 close_on_target_equity=False,
+                test_start=optimization_start,
+                test_end=optimization_end,
             )
             summary = result.summary
             if summary["Jumlah transaksi"] < 3:
@@ -1218,11 +1257,16 @@ def run_optimized_strategy_v10_walk_forward(
     gold_ohlc: pd.DataFrame,
 ) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     folds = [
-        ("Fold 1", pd.Timestamp("2025-06-30"), pd.Timestamp("2025-07-01"), pd.Timestamp("2025-09-30")),
-        ("Fold 2", pd.Timestamp("2025-09-30"), pd.Timestamp("2025-10-01"), pd.Timestamp("2025-12-31")),
-        ("Fold 3", pd.Timestamp("2025-12-31"), pd.Timestamp("2026-01-01"), pd.Timestamp("2026-03-31")),
-        ("Fold 4", pd.Timestamp("2026-03-31"), pd.Timestamp("2026-04-01"), pd.Timestamp("2026-06-30")),
-        ("Fold 5", pd.Timestamp("2026-06-30"), REAL_DATA_TEST_START, REAL_DATA_TEST_END),
+        ("Fold 1", pd.Timestamp("2023-12-31"), pd.Timestamp("2024-01-01"), pd.Timestamp("2024-03-31")),
+        ("Fold 2", pd.Timestamp("2024-03-31"), pd.Timestamp("2024-04-01"), pd.Timestamp("2024-06-30")),
+        ("Fold 3", pd.Timestamp("2024-06-30"), pd.Timestamp("2024-07-01"), pd.Timestamp("2024-09-30")),
+        ("Fold 4", pd.Timestamp("2024-09-30"), pd.Timestamp("2024-10-01"), pd.Timestamp("2024-12-31")),
+        ("Fold 5", pd.Timestamp("2024-12-31"), pd.Timestamp("2025-01-01"), pd.Timestamp("2025-03-31")),
+        ("Fold 6", pd.Timestamp("2025-03-31"), pd.Timestamp("2025-04-01"), pd.Timestamp("2025-06-30")),
+        ("Fold 7", pd.Timestamp("2025-06-30"), pd.Timestamp("2025-07-01"), pd.Timestamp("2025-09-30")),
+        ("Fold 8", pd.Timestamp("2025-09-30"), pd.Timestamp("2025-10-01"), pd.Timestamp("2025-12-31")),
+        ("Fold 9", pd.Timestamp("2025-12-31"), pd.Timestamp("2026-01-01"), pd.Timestamp("2026-03-31")),
+        ("Fold 10", pd.Timestamp("2026-03-31"), pd.Timestamp("2026-04-01"), pd.Timestamp("2026-06-30")),
     ]
     rows: list[dict[str, object]] = []
     trade_frames: list[pd.DataFrame] = []
@@ -1232,7 +1276,11 @@ def run_optimized_strategy_v10_walk_forward(
         train_gold = gold_ohlc.loc[gold_ohlc.index <= train_end].copy()
         if train_gold.empty:
             continue
-        train_result, train_leaderboard = run_optimized_strategy_v10(train_gold)
+        train_result, train_leaderboard = run_optimized_strategy_v10(
+            train_gold,
+            optimization_start=V10_WALK_FORWARD_START,
+            optimization_end=train_end,
+        )
         if train_leaderboard.empty:
             continue
         best = train_leaderboard.iloc[0].to_dict()
@@ -1258,7 +1306,7 @@ def run_optimized_strategy_v10_walk_forward(
         rows.append(
             {
                 "Fold": fold_name,
-                "Train mulai": OPTIMIZATION_START,
+                "Train mulai": V10_WALK_FORWARD_START,
                 "Train akhir": train_end,
                 "Test mulai": test_start,
                 "Test akhir": test_end,
