@@ -47,7 +47,7 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-v1-v10-paper-live-2026-08-30"
+SIMULATION_CACHE_VERSION = "optimizer-v1-walk-forward-paper-live-2026-08-30"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -105,18 +105,13 @@ def get_simulations(simulation_version: str):
         "run_optimized_strategy_v10",
         strategy_optimizer_module.run_optimized_strategy,
     )
-    optimized_v10_real_runner = strategy_optimizer_module.run_optimized_strategy_v10_real_data
     optimized_v10_walk_forward_runner = strategy_optimizer_module.run_optimized_strategy_v10_walk_forward
-    optimized_v10_result, optimization_v10_leaderboard = optimized_v10_runner(gold_ohlc)
-    optimized_v10_real_result, optimization_v10_real_leaderboard = optimized_v10_real_runner(gold_ohlc)
+    _, optimization_v10_leaderboard = optimized_v10_runner(gold_ohlc)
     optimized_v10_walk_forward_result, optimization_v10_walk_forward_leaderboard = optimized_v10_walk_forward_runner(gold_ohlc)
     payload = (
         optimized_result,
         optimization_leaderboard,
-        optimized_v10_result,
         optimization_v10_leaderboard,
-        optimized_v10_real_result,
-        optimization_v10_real_leaderboard,
         optimized_v10_walk_forward_result,
         optimization_v10_walk_forward_leaderboard,
     )
@@ -131,9 +126,9 @@ def get_simulations(simulation_version: str):
 
 def get_v10_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
     cached = load_precomputed_simulations(simulation_version)
-    if cached is None or len(cached) < 4:
+    if cached is None or len(cached) < 3:
         return pd.DataFrame()
-    leaderboard = cached[3]
+    leaderboard = cached[2]
     if isinstance(leaderboard, pd.DataFrame):
         return leaderboard
     return pd.DataFrame()
@@ -1082,61 +1077,34 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
-    optimized_v10_result,
-    optimization_v10_leaderboard: pd.DataFrame,
-    optimized_v10_real_result,
-    optimization_v10_real_leaderboard: pd.DataFrame,
+    _optimization_v10_leaderboard: pd.DataFrame,
     optimized_v10_walk_forward_result,
     optimization_v10_walk_forward_leaderboard: pd.DataFrame,
     gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
     st.caption(
-        "Simulasi menampilkan eksperimen Optimizer yang sudah dipilih untuk dibandingkan. "
-        "Model lama serta eksperimen v6-v9 dihapus dari tab ini agar dashboard tetap ringan."
+        "Simulasi sekarang hanya menampilkan Strategi Terbaik Optimizer dan v10 Walk-Forward Test agar dashboard tetap ringan."
     )
     st.warning(
         "Asumsi utama: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
-        "Optimizer v10 memperluas pencarian dari v8 ke parameter sinyal, TP/SL, lot, batas posisi, risk cap, dan profit protection. "
-        "v10 Data Real menguji parameter terbaik v10 pada periode 1-16 Juli 2026 tanpa optimasi ulang. "
         "v10 Walk-Forward memakai dataset 1 Jan 2023-30 Jun 2026 dengan expanding train dan test per kuartal. "
+        "Parameter v10 tetap disimpan tersembunyi untuk Live Trading v10, tetapi tab Simulasi v10 biasa dan v10 Data Real tidak lagi ditampilkan. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
     (
         optimizer_tab,
-        optimizer_v10_tab,
-        optimizer_v10_real_tab,
         optimizer_v10_walk_forward_tab,
     ) = st.tabs(
         [
             "Strategi Terbaik Optimizer",
-            "Strategi Optimizer v10",
-            "v10 Data Real",
             "v10 Walk-Forward Test",
         ]
     )
     with optimizer_tab:
         _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
-    with optimizer_v10_tab:
-        st.info(
-            "v10 berangkat dari v8 tetapi memperluas eksplorasi parameter. Kandidat v8 tetap masuk sebagai baseline, "
-            "lalu optimizer menguji mode sinyal, MA, momentum, threshold, TP/SL, lot sampai 0.03, batas posisi, "
-            "risk cap, dan profit protection. Pemilihan kandidat v10 mengutamakan equity akhir tertinggi."
-        )
-        _render_multiphase_result("Strategi Optimizer v10", optimized_v10_result, optimization_v10_leaderboard, gold_ohlc)
-    with optimizer_v10_real_tab:
-        st.info(
-            "Tab ini adalah uji out-of-sample pendek. Parameter yang dipakai adalah kandidat terbaik dari Optimizer v10, "
-            "lalu diterapkan pada data real 1 Juli 2026 sampai 16 Juli 2026 tanpa optimasi ulang di periode tersebut."
-        )
-        _render_multiphase_result(
-            "Strategi Optimizer v10 - Data Real 1-16 Juli 2026",
-            optimized_v10_real_result,
-            optimization_v10_real_leaderboard,
-            gold_ohlc,
-        )
     with optimizer_v10_walk_forward_tab:
         _render_v10_walk_forward_result(optimized_v10_walk_forward_result, optimization_v10_walk_forward_leaderboard)
 
@@ -2469,9 +2437,9 @@ with simulation_tab:
     if simulation_payload is None:
         st.warning(
             "Hasil simulasi precomputed untuk versi terbaru belum tersedia. "
-            "Aplikasi sengaja tidak menghitung v1/v10, v10 Data Real, dan v10 Walk-Forward saat startup agar dashboard bisa dibuka lebih cepat."
+            "Aplikasi sengaja tidak menghitung v1 dan v10 Walk-Forward saat startup agar dashboard bisa dibuka lebih cepat."
         )
-        if st.button("Bangun ulang simulasi v1/v10/v10 Data Real/v10 Walk-Forward", use_container_width=True):
+        if st.button("Bangun ulang simulasi v1/v10 Walk-Forward", use_container_width=True):
             with st.spinner("Menghitung simulasi lengkap. Proses ini bisa memakan waktu di Streamlit Cloud."):
                 simulation_payload = get_simulations(SIMULATION_CACHE_VERSION)
             st.rerun()
