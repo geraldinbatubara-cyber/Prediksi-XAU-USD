@@ -47,7 +47,7 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-walk-forward-backfill-2023q1-2026q2"
+SIMULATION_CACHE_VERSION = "optimizer-v1-v10-paper-live-2026-08-30"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -100,51 +100,19 @@ def get_simulations(simulation_version: str):
 
     gold_ohlc = get_gold_ohlc()
     optimized_result, optimization_leaderboard = get_base_optimizer(gold_ohlc)
-    optimized_v6_runner = getattr(
-        strategy_optimizer_module,
-        "run_optimized_strategy_v6",
-        strategy_optimizer_module.run_optimized_strategy,
-    )
-    optimized_v7_runner = getattr(
-        strategy_optimizer_module,
-        "run_optimized_strategy_v7",
-        optimized_v6_runner,
-    )
-    optimized_v8_runner = getattr(
-        strategy_optimizer_module,
-        "run_optimized_strategy_v8",
-        optimized_v7_runner,
-    )
-    optimized_v9_runner = getattr(
-        strategy_optimizer_module,
-        "run_optimized_strategy_v9",
-        optimized_v8_runner,
-    )
     optimized_v10_runner = getattr(
         strategy_optimizer_module,
         "run_optimized_strategy_v10",
-        optimized_v9_runner,
+        strategy_optimizer_module.run_optimized_strategy,
     )
     optimized_v10_real_runner = strategy_optimizer_module.run_optimized_strategy_v10_real_data
     optimized_v10_walk_forward_runner = strategy_optimizer_module.run_optimized_strategy_v10_walk_forward
-    optimized_v6_result, optimization_v6_leaderboard = optimized_v6_runner(gold_ohlc)
-    optimized_v7_result, optimization_v7_leaderboard = optimized_v7_runner(gold_ohlc)
-    optimized_v8_result, optimization_v8_leaderboard = optimized_v8_runner(gold_ohlc)
-    optimized_v9_result, optimization_v9_leaderboard = optimized_v9_runner(gold_ohlc)
     optimized_v10_result, optimization_v10_leaderboard = optimized_v10_runner(gold_ohlc)
     optimized_v10_real_result, optimization_v10_real_leaderboard = optimized_v10_real_runner(gold_ohlc)
     optimized_v10_walk_forward_result, optimization_v10_walk_forward_leaderboard = optimized_v10_walk_forward_runner(gold_ohlc)
     payload = (
         optimized_result,
         optimization_leaderboard,
-        optimized_v6_result,
-        optimization_v6_leaderboard,
-        optimized_v7_result,
-        optimization_v7_leaderboard,
-        optimized_v8_result,
-        optimization_v8_leaderboard,
-        optimized_v9_result,
-        optimization_v9_leaderboard,
         optimized_v10_result,
         optimization_v10_leaderboard,
         optimized_v10_real_result,
@@ -163,9 +131,9 @@ def get_simulations(simulation_version: str):
 
 def get_v10_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
     cached = load_precomputed_simulations(simulation_version)
-    if cached is None or len(cached) < 12:
+    if cached is None or len(cached) < 4:
         return pd.DataFrame()
-    leaderboard = cached[11]
+    leaderboard = cached[3]
     if isinstance(leaderboard, pd.DataFrame):
         return leaderboard
     return pd.DataFrame()
@@ -1114,14 +1082,6 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
-    optimized_v6_result,
-    optimization_v6_leaderboard: pd.DataFrame,
-    optimized_v7_result,
-    optimization_v7_leaderboard: pd.DataFrame,
-    optimized_v8_result,
-    optimization_v8_leaderboard: pd.DataFrame,
-    optimized_v9_result,
-    optimization_v9_leaderboard: pd.DataFrame,
     optimized_v10_result,
     optimization_v10_leaderboard: pd.DataFrame,
     optimized_v10_real_result,
@@ -1133,14 +1093,10 @@ def render_simulation(
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
     st.caption(
         "Simulasi menampilkan eksperimen Optimizer yang sudah dipilih untuk dibandingkan. "
-        "Model 1 dan Model 2 lama dihapus dari tab ini karena performanya tidak memadai."
+        "Model lama serta eksperimen v6-v9 dihapus dari tab ini agar dashboard tetap ringan."
     )
     st.warning(
         "Asumsi utama: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
-        "Optimizer v6 memakai floating profit close USD 50. "
-        "Optimizer v7 memakai profit protection aktif setelah floating USD 50. "
-        "Optimizer v8 memakai rule v7 tetapi tanpa target equity close-all/fase berikutnya. "
-        "Optimizer v9 melakukan grid search profit protection di atas kerangka v8. "
         "Optimizer v10 memperluas pencarian dari v8 ke parameter sinyal, TP/SL, lot, batas posisi, risk cap, dan profit protection. "
         "v10 Data Real menguji parameter terbaik v10 pada periode 1-16 Juli 2026 tanpa optimasi ulang. "
         "v10 Walk-Forward memakai dataset 1 Jan 2023-30 Jun 2026 dengan expanding train dan test per kuartal. "
@@ -1150,20 +1106,12 @@ def render_simulation(
 
     (
         optimizer_tab,
-        optimizer_v6_tab,
-        optimizer_v7_tab,
-        optimizer_v8_tab,
-        optimizer_v9_tab,
         optimizer_v10_tab,
         optimizer_v10_real_tab,
         optimizer_v10_walk_forward_tab,
     ) = st.tabs(
         [
             "Strategi Terbaik Optimizer",
-            "Strategi Optimizer v6",
-            "Strategi Optimizer v7",
-            "Strategi Optimizer v8",
-            "Strategi Optimizer v9",
             "Strategi Optimizer v10",
             "v10 Data Real",
             "v10 Walk-Forward Test",
@@ -1171,32 +1119,6 @@ def render_simulation(
     )
     with optimizer_tab:
         _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
-    with optimizer_v6_tab:
-        st.info(
-            "v6 menguji ulang kandidat Strategi Terbaik Optimizer dengan target fase tetap +20%, "
-            "tetapi posisi profit ditutup saat floating profit mencapai USD 50. Rule lain tetap mengikuti "
-            "kerangka Optimizer."
-        )
-        _render_multiphase_result("Strategi Optimizer v6", optimized_v6_result, optimization_v6_leaderboard, gold_ohlc)
-    with optimizer_v7_tab:
-        st.info(
-            "v7 menguji Profit Protection: setelah floating profit posisi mencapai USD 50, sistem mencatat peak profit. "
-            "Posisi baru ditutup jika profit turun ke floor USD 35 atau mundur USD 15 dari peak, sehingga profit besar "
-            "tidak langsung dipotong tetapi juga tidak dibiarkan kembali ke TP kecil."
-        )
-        _render_multiphase_result("Strategi Optimizer v7", optimized_v7_result, optimization_v7_leaderboard, gold_ohlc)
-    with optimizer_v8_tab:
-        st.info(
-            "v8 memakai rule v7, tetapi target equity +20% tidak lagi memicu close-all dan tidak memulai fase baru. "
-            "Posisi hanya ditutup oleh SL, profit protection, atau akhir periode data."
-        )
-        _render_multiphase_result("Strategi Optimizer v8", optimized_v8_result, optimization_v8_leaderboard, gold_ohlc)
-    with optimizer_v9_tab:
-        st.info(
-            "v9 memakai kerangka v8, tetapi menguji beberapa kombinasi profit protection "
-            "activation/floor/trail dan memilih preset terbaik berdasarkan skor optimizer."
-        )
-        _render_multiphase_result("Strategi Optimizer v9", optimized_v9_result, optimization_v9_leaderboard, gold_ohlc)
     with optimizer_v10_tab:
         st.info(
             "v10 berangkat dari v8 tetapi memperluas eksplorasi parameter. Kandidat v8 tetap masuk sebagai baseline, "
@@ -1234,9 +1156,17 @@ def _render_v10_walk_forward_result(result, leaderboard: pd.DataFrame) -> None:
         st.info("Belum ada hasil walk-forward. Bangun ulang simulasi setelah data cache market tersedia.")
         return
 
+    expected_folds = 10
+    actual_folds = len(leaderboard)
+    if actual_folds < expected_folds:
+        st.warning(
+            f"Hasil walk-forward baru berisi {actual_folds}/{expected_folds} fold. "
+            "Ini biasanya berarti data OHLC historis belum lengkap dari 1 Jan 2023 atau hasil simulasi masih perlu dibangun ulang."
+        )
+
     summary = result.summary
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Fold profitable", f"{summary.get('Fold profitable', 0):.0f}/{summary.get('Fase total', 0):.0f}")
+    c1.metric("Fold profitable", f"{summary.get('Fold profitable', 0):.0f}/{expected_folds}")
     c2.metric("Rata-rata test growth", f"{summary.get('Growth total', 0):+.1f}%")
     c3.metric("Worst fold growth", f"{summary.get('Worst fold growth (%)', 0):+.1f}%")
     c4.metric("Fold overfitting", f"{summary.get('Fold overfitting', 0):.0f}")
@@ -2539,9 +2469,9 @@ with simulation_tab:
     if simulation_payload is None:
         st.warning(
             "Hasil simulasi precomputed untuk versi terbaru belum tersedia. "
-            "Aplikasi sengaja tidak menghitung v6-v10, v10 Data Real, dan v10 Walk-Forward saat startup agar dashboard bisa dibuka lebih cepat."
+            "Aplikasi sengaja tidak menghitung v1/v10, v10 Data Real, dan v10 Walk-Forward saat startup agar dashboard bisa dibuka lebih cepat."
         )
-        if st.button("Bangun ulang simulasi v1/v6/v7/v8/v9/v10/v10 Data Real/v10 Walk-Forward", use_container_width=True):
+        if st.button("Bangun ulang simulasi v1/v10/v10 Data Real/v10 Walk-Forward", use_container_width=True):
             with st.spinner("Menghitung simulasi lengkap. Proses ini bisa memakan waktu di Streamlit Cloud."):
                 simulation_payload = get_simulations(SIMULATION_CACHE_VERSION)
             st.rerun()
@@ -2555,6 +2485,7 @@ with simulation_tab:
 
 with live_trading_tab:
     live_v1_tab, live_v10_tab = st.tabs(["Optimizer v1", "Optimizer v10"])
+    st.info("Rencana evaluasi: paper live trading paralel Optimizer v1 dan Optimizer v10 berjalan sampai **30 Agustus 2026**.")
     with live_v1_tab:
         optimization_v1_live_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
         render_live_trading(
