@@ -2,6 +2,13 @@ name: XAU USD market cache
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/market-cache.yml"
+      - "gold_forecast/data.py"
+      - "scripts/update_market_cache.py"
   schedule:
     - cron: "30 21 * * 0-5"
 
