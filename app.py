@@ -47,7 +47,7 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-real-data-july-strict"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-walk-forward"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -126,12 +126,14 @@ def get_simulations(simulation_version: str):
         optimized_v9_runner,
     )
     optimized_v10_real_runner = strategy_optimizer_module.run_optimized_strategy_v10_real_data
+    optimized_v10_walk_forward_runner = strategy_optimizer_module.run_optimized_strategy_v10_walk_forward
     optimized_v6_result, optimization_v6_leaderboard = optimized_v6_runner(gold_ohlc)
     optimized_v7_result, optimization_v7_leaderboard = optimized_v7_runner(gold_ohlc)
     optimized_v8_result, optimization_v8_leaderboard = optimized_v8_runner(gold_ohlc)
     optimized_v9_result, optimization_v9_leaderboard = optimized_v9_runner(gold_ohlc)
     optimized_v10_result, optimization_v10_leaderboard = optimized_v10_runner(gold_ohlc)
     optimized_v10_real_result, optimization_v10_real_leaderboard = optimized_v10_real_runner(gold_ohlc)
+    optimized_v10_walk_forward_result, optimization_v10_walk_forward_leaderboard = optimized_v10_walk_forward_runner(gold_ohlc)
     payload = (
         optimized_result,
         optimization_leaderboard,
@@ -147,6 +149,8 @@ def get_simulations(simulation_version: str):
         optimization_v10_leaderboard,
         optimized_v10_real_result,
         optimization_v10_real_leaderboard,
+        optimized_v10_walk_forward_result,
+        optimization_v10_walk_forward_leaderboard,
     )
     try:
         PRECOMPUTED_SIMULATION_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1122,6 +1126,8 @@ def render_simulation(
     optimization_v10_leaderboard: pd.DataFrame,
     optimized_v10_real_result,
     optimization_v10_real_leaderboard: pd.DataFrame,
+    optimized_v10_walk_forward_result,
+    optimization_v10_walk_forward_leaderboard: pd.DataFrame,
     gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
@@ -1137,6 +1143,7 @@ def render_simulation(
         "Optimizer v9 melakukan grid search profit protection di atas kerangka v8. "
         "Optimizer v10 memperluas pencarian dari v8 ke parameter sinyal, TP/SL, lot, batas posisi, risk cap, dan profit protection. "
         "v10 Data Real menguji parameter terbaik v10 pada periode 1-16 Juli 2026 tanpa optimasi ulang. "
+        "v10 Walk-Forward mengoptimasi v10 di periode train, lalu menguji parameter terpilih pada periode berikutnya tanpa optimasi ulang. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
@@ -1149,6 +1156,7 @@ def render_simulation(
         optimizer_v9_tab,
         optimizer_v10_tab,
         optimizer_v10_real_tab,
+        optimizer_v10_walk_forward_tab,
     ) = st.tabs(
         [
             "Strategi Terbaik Optimizer",
@@ -1158,6 +1166,7 @@ def render_simulation(
             "Strategi Optimizer v9",
             "Strategi Optimizer v10",
             "v10 Data Real",
+            "v10 Walk-Forward Test",
         ]
     )
     with optimizer_tab:
@@ -1205,6 +1214,102 @@ def render_simulation(
             optimized_v10_real_result,
             optimization_v10_real_leaderboard,
             gold_ohlc,
+        )
+    with optimizer_v10_walk_forward_tab:
+        _render_v10_walk_forward_result(optimized_v10_walk_forward_result, optimization_v10_walk_forward_leaderboard)
+
+
+def _render_v10_walk_forward_result(result, leaderboard: pd.DataFrame) -> None:
+    st.subheader("Strategi Optimizer v10 - Walk-Forward Test")
+    st.caption(
+        "Setiap fold mengoptimasi parameter v10 hanya sampai akhir periode train, lalu parameter terbaik diuji "
+        "pada periode berikutnya tanpa optimasi ulang. Ini membantu mendeteksi overfitting."
+    )
+    st.warning(
+        "Interpretasi: jika train growth tinggi tetapi test growth negatif, fold tersebut diberi flag overfitting. "
+        "Strategi yang sehat seharusnya tetap masuk akal di beberapa fold out-of-sample, bukan hanya menang di periode optimasi."
+    )
+
+    if leaderboard.empty:
+        st.info("Belum ada hasil walk-forward. Bangun ulang simulasi setelah data cache market tersedia.")
+        return
+
+    summary = result.summary
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Fold profitable", f"{summary.get('Fold profitable', 0):.0f}/{summary.get('Fase total', 0):.0f}")
+    c2.metric("Rata-rata test growth", f"{summary.get('Growth total', 0):+.1f}%")
+    c3.metric("Worst fold growth", f"{summary.get('Worst fold growth (%)', 0):+.1f}%")
+    c4.metric("Fold overfitting", f"{summary.get('Fold overfitting', 0):.0f}")
+
+    st.markdown("**Ringkasan Walk-Forward per Fold**")
+    display = leaderboard.copy()
+    date_columns = ["Train mulai", "Train akhir", "Test mulai", "Test akhir"]
+    for column in date_columns:
+        if column in display.columns:
+            display[column] = pd.to_datetime(display[column], errors="coerce").dt.strftime("%d %b %Y")
+    format_columns = {
+        "Train equity akhir": "${:,.2f}",
+        "Train growth (%)": "{:+.1f}%",
+        "Test equity akhir": "${:,.2f}",
+        "Test growth (%)": "{:+.1f}%",
+        "Test max drawdown": "${:,.2f}",
+        "Test jumlah transaksi": "{:.0f}",
+        "Test total BUY": "{:.0f}",
+        "Test total SELL": "{:.0f}",
+        "Test win rate": "{:.1f}%",
+        "Test profit factor": "{:.2f}",
+        "Test avg net P/L": "${:+,.2f}",
+        "Threshold entry (%)": "{:.2f}%",
+        "TP (USD)": "${:,.2f}",
+        "SL (USD)": "${:,.2f}",
+        "Lot": "{:.2f}",
+        "Risk cap floating SL (%)": "{:.1f}%",
+        "Profit protection aktif (USD)": "${:,.2f}",
+        "Profit protection floor (USD)": "${:,.2f}",
+        "Profit protection trail (USD)": "${:,.2f}",
+    }
+    st.dataframe(
+        display.style.format(
+            {column: formatter for column, formatter in format_columns.items() if column in display.columns},
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    figure = go.Figure()
+    figure.add_trace(
+        go.Bar(
+            x=leaderboard["Fold"],
+            y=pd.to_numeric(leaderboard["Train growth (%)"], errors="coerce"),
+            name="Train growth",
+            marker_color="#64748b",
+        )
+    )
+    figure.add_trace(
+        go.Bar(
+            x=leaderboard["Fold"],
+            y=pd.to_numeric(leaderboard["Test growth (%)"], errors="coerce"),
+            name="Test growth",
+            marker_color="#f59e0b",
+        )
+    )
+    figure.add_hline(y=0, line_dash="dot", line_color="#94a3b8")
+    figure.update_layout(
+        title="Train vs Test Growth per Fold",
+        yaxis_title="Growth (%)",
+        barmode="group",
+        height=420,
+    )
+    st.plotly_chart(figure, use_container_width=True)
+
+    overfit_rows = leaderboard[leaderboard["Overfitting flag"].eq("YA")]
+    if overfit_rows.empty:
+        st.success("Tidak ada fold dengan flag overfitting sederhana: train tinggi dan test negatif.")
+    else:
+        st.error(
+            f"Ada {len(overfit_rows)} fold dengan indikasi overfitting. "
+            "Perhatikan parameter pada fold tersebut sebelum memakai v10 untuk real-money."
         )
 
 
@@ -2434,9 +2539,9 @@ with simulation_tab:
     if simulation_payload is None:
         st.warning(
             "Hasil simulasi precomputed untuk versi terbaru belum tersedia. "
-            "Aplikasi sengaja tidak menghitung v6-v10 dan v10 Data Real saat startup agar dashboard bisa dibuka lebih cepat."
+            "Aplikasi sengaja tidak menghitung v6-v10, v10 Data Real, dan v10 Walk-Forward saat startup agar dashboard bisa dibuka lebih cepat."
         )
-        if st.button("Bangun ulang simulasi v1/v6/v7/v8/v9/v10/v10 Data Real", use_container_width=True):
+        if st.button("Bangun ulang simulasi v1/v6/v7/v8/v9/v10/v10 Data Real/v10 Walk-Forward", use_container_width=True):
             with st.spinner("Menghitung simulasi lengkap. Proses ini bisa memakan waktu di Streamlit Cloud."):
                 simulation_payload = get_simulations(SIMULATION_CACHE_VERSION)
             st.rerun()
