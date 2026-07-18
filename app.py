@@ -47,7 +47,7 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-walk-forward"
+SIMULATION_CACHE_VERSION = "optimizer-multiphase-v10-walk-forward-2023q1-2026q2"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -1143,7 +1143,7 @@ def render_simulation(
         "Optimizer v9 melakukan grid search profit protection di atas kerangka v8. "
         "Optimizer v10 memperluas pencarian dari v8 ke parameter sinyal, TP/SL, lot, batas posisi, risk cap, dan profit protection. "
         "v10 Data Real menguji parameter terbaik v10 pada periode 1-16 Juli 2026 tanpa optimasi ulang. "
-        "v10 Walk-Forward mengoptimasi v10 di periode train, lalu menguji parameter terpilih pada periode berikutnya tanpa optimasi ulang. "
+        "v10 Walk-Forward memakai dataset 1 Jan 2023-30 Jun 2026 dengan expanding train dan test per kuartal. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
         "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
@@ -1222,8 +1222,8 @@ def render_simulation(
 def _render_v10_walk_forward_result(result, leaderboard: pd.DataFrame) -> None:
     st.subheader("Strategi Optimizer v10 - Walk-Forward Test")
     st.caption(
-        "Setiap fold mengoptimasi parameter v10 hanya sampai akhir periode train, lalu parameter terbaik diuji "
-        "pada periode berikutnya tanpa optimasi ulang. Ini membantu mendeteksi overfitting."
+        "Dataset walk-forward memakai 1 Jan 2023 sampai 30 Jun 2026. Setiap fold mengoptimasi parameter v10 "
+        "hanya sampai akhir periode train, lalu parameter terbaik diuji pada kuartal berikutnya tanpa optimasi ulang."
     )
     st.warning(
         "Interpretasi: jika train growth tinggi tetapi test growth negatif, fold tersebut diberi flag overfitting. "
