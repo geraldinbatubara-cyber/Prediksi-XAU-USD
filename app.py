@@ -20,7 +20,10 @@ from gold_forecast.broker_data import (
     load_broker_quote,
 )
 from gold_forecast.data import load_gold_data, load_market_data
-from gold_forecast.direction_model import train_direction_model
+from gold_forecast.dashboard_snapshot import (
+    DASHBOARD_SNAPSHOT_VERSION,
+    load_dashboard_snapshot,
+)
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
 from gold_forecast import live_trading as live_trading_module
 from gold_forecast.live_trading import (
@@ -34,8 +37,6 @@ from gold_forecast.live_trading import (
     load_live_ledger,
     run_live_trading_update,
 )
-from gold_forecast.model import train_and_forecast
-from gold_forecast.model_v2 import train_model_v2
 from gold_forecast.monitoring import (
     ACTUAL_HOURS,
     DATA_PATH,
@@ -72,13 +73,9 @@ def get_gold_ohlc() -> pd.DataFrame:
     return load_gold_data()
 
 
-@st.cache_data(ttl=3600)
-def get_models(market_data: pd.DataFrame):
-    return (
-        train_and_forecast(market_data["gold"]),
-        train_model_v2(market_data),
-        train_direction_model(market_data),
-    )
+@st.cache_resource(ttl=300)
+def get_dashboard_snapshot(snapshot_version: str):
+    return load_dashboard_snapshot()
 
 
 def load_precomputed_simulations(simulation_version: str):
@@ -129,6 +126,11 @@ def get_simulations(simulation_version: str):
 
 
 def get_v10_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
+    snapshot = get_dashboard_snapshot(DASHBOARD_SNAPSHOT_VERSION)
+    if snapshot is not None:
+        leaderboard = snapshot.get("v10_leaderboard")
+        if isinstance(leaderboard, pd.DataFrame) and not leaderboard.empty:
+            return leaderboard
     cached = load_precomputed_simulations(simulation_version)
     if cached is None or len(cached) < 4:
         return pd.DataFrame()
@@ -287,6 +289,7 @@ def render_dashboard(
     direction_threshold: float,
     gold_ohlc: pd.DataFrame,
     optimization_v10_leaderboard: pd.DataFrame,
+    snapshot_generated_at: str,
 ) -> None:
     gold = market["gold"]
     latest = float(gold.iloc[-1])
@@ -296,7 +299,14 @@ def render_dashboard(
     v10_prediction = _optimizer_v10_latest_prediction(gold_ohlc, optimization_v10_leaderboard)
     v10_params = v10_prediction["params"]
 
-    st.info(f"Data pasar terakhir: **{market_last_date}** | Data diambil dashboard: **{fetched_label}**")
+    generated_at = pd.Timestamp(snapshot_generated_at)
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.tz_localize("UTC")
+    snapshot_label = generated_at.tz_convert(WIT).strftime("%d %b %Y %H:%M:%S WIT")
+    st.info(
+        f"Data pasar terakhir: **{market_last_date}** | Data diambil dashboard: **{fetched_label}** | "
+        f"Snapshot model dibuat: **{snapshot_label}**"
+    )
 
     m1_tomorrow, m1_day_seven = model_1.forecast.iloc[0], model_1.forecast.iloc[-1]
     m2_tomorrow, m2_day_seven = model_2.forecast.iloc[0], model_2.forecast.iloc[-1]
@@ -2712,7 +2722,7 @@ with st.sidebar:
     if st.button("Refresh data sekarang", use_container_width=True):
         get_data.clear()
         get_gold_ohlc.clear()
-        get_models.clear()
+        get_dashboard_snapshot.clear()
         get_base_optimizer.clear()
         get_simulations.clear()
         st.rerun()
@@ -2734,10 +2744,22 @@ if page == "Dashboard":
     try:
         market, data_fetched_at = get_data()
         gold_ohlc = get_gold_ohlc()
-        model_1, model_2, direction_model = get_models(market)
+        dashboard_snapshot = get_dashboard_snapshot(DASHBOARD_SNAPSHOT_VERSION)
     except Exception as exc:
         st.error(f"Data belum dapat diproses: {exc}")
         st.stop()
+
+    if dashboard_snapshot is None:
+        st.warning(
+            "Snapshot model harian belum tersedia. GitHub Actions perlu menyelesaikan pembuatan snapshot satu kali. "
+            "Dashboard sengaja tidak melatih model saat halaman dibuka agar aplikasi tetap responsif."
+        )
+        st.stop()
+
+    model_1 = dashboard_snapshot["model_1"]
+    model_2 = dashboard_snapshot["model_2"]
+    direction_model = dashboard_snapshot["direction_model"]
+    v10_leaderboard = dashboard_snapshot.get("v10_leaderboard", pd.DataFrame())
 
     render_dashboard(
         market,
@@ -2747,7 +2769,8 @@ if page == "Dashboard":
         direction_model,
         direction_threshold,
         gold_ohlc,
-        get_v10_leaderboard_for_live(SIMULATION_CACHE_VERSION),
+        v10_leaderboard,
+        dashboard_snapshot["generated_at_utc"],
     )
 
 elif page == "Simulasi":
