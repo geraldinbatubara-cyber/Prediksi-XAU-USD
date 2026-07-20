@@ -16,6 +16,31 @@ streamlit run app.py
 Data MVP memakai kontrak berjangka emas COMEX (`GC=F`) dalam USD per troy ounce.
 Hasil model adalah estimasi statistik, bukan saran investasi.
 
+## Data Broker Read-only
+
+Halaman `Data Broker` disiapkan untuk mengaudit feed XAUUSD dari akun demo MT5.
+Integrasi ini hanya membaca bid, ask, spread, serta candle M1 dan tidak mengirim order.
+Data broker tidak menggantikan `GC=F` sebelum hasil audit sumber, timestamp, spread,
+dan contract size dinyatakan memadai.
+
+Pada komputer Windows yang sudah menjalankan terminal MT5 dan login ke akun demo:
+
+```powershell
+pip install MetaTrader5
+.venv\Scripts\python.exe scripts\mt5_data_bridge.py --symbol XAUUSD
+```
+
+Nama simbol harus mengikuti Market Watch broker dan dapat berbeda dari `XAUUSD`.
+Gunakan `--once` untuk mengambil satu snapshot. Output disimpan di
+`data/broker/xauusd_m1.csv` dan `data/broker/latest_quote.csv`; kedua file ini
+diabaikan Git. Streamlit Cloud dapat membaca URL CSV read-only melalui secrets:
+
+```toml
+[broker_data]
+bars_url = "https://storage.example/xauusd_m1.csv"
+quote_url = "https://storage.example/latest_quote.csv"
+```
+
 ## Metodologi
 
 Model regresi ridge memakai harga terkini, lag harga, return, moving average, dan
@@ -68,3 +93,4 @@ Keduanya diisi oleh GitHub Actions:
 - `14:59 UTC` = `23:59 WIT` untuk menyimpan estimasi.
 - `23:00 UTC` = `08:00 WIT` untuk mengisi aktual hari berikutnya.
 - `00:00-03:00 UTC` = `09:00-12:00 WIT` untuk mengisi aktual lanjutan.
+
