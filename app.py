@@ -265,36 +265,6 @@ def render_optimizer_v10_dashboard(
     )
     st.dataframe(detail, use_container_width=True, hide_index=True)
 
-    cutoff = gold_ohlc.index.max() - pd.DateOffset(years=history_years)
-    chart = gold_ohlc.loc[gold_ohlc.index >= cutoff].copy()
-    close = chart["Close"].astype(float)
-    fast_ma = close.rolling(int(params["Fast MA"])).mean()
-    slow_ma = close.rolling(int(params["Slow MA"])).mean()
-    figure = go.Figure()
-    figure.add_trace(go.Scatter(x=chart.index, y=close, name="Close GC=F"))
-    figure.add_trace(go.Scatter(x=chart.index, y=fast_ma, name=f"MA cepat {params['Fast MA']}"))
-    figure.add_trace(go.Scatter(x=chart.index, y=slow_ma, name=f"MA lambat {params['Slow MA']}"))
-    if signal_direction in {"BUY", "SELL"}:
-        marker_color = "#16a34a" if signal_direction == "BUY" else "#dc2626"
-        figure.add_trace(
-            go.Scatter(
-                x=[prediction["latest_date"]],
-                y=[prediction["latest_close"]],
-                mode="markers+text",
-                name=f"Sinyal {signal_direction}",
-                marker=dict(size=12, color=marker_color),
-                text=[signal_direction],
-                textposition="top center",
-            )
-        )
-    figure.update_layout(
-        title="Harga, MA, dan sinyal Optimizer v10",
-        yaxis_title="USD per troy ounce",
-        hovermode="x unified",
-        height=480,
-    )
-    st.plotly_chart(figure, use_container_width=True)
-
     st.caption(
         "Catatan: Model 3 adalah prediksi berbasis strategi Optimizer v10. Ia menilai apakah candle harian terbaru "
         "cukup kuat untuk BUY/SELL/WAIT, bukan model probabilistik harga seperti Model 1 dan Model 2."
@@ -307,108 +277,116 @@ def render_dashboard(
     model_1,
     model_2,
     direction_model,
-    model_choice: str,
     direction_threshold: float,
-    history_years: int,
+    gold_ohlc: pd.DataFrame,
+    optimization_v10_leaderboard: pd.DataFrame,
 ) -> None:
-    result = model_2 if model_choice.startswith("Model 2") else model_1
     gold = market["gold"]
     latest = float(gold.iloc[-1])
     previous = float(gold.iloc[-2])
-    tomorrow, day_seven = result.forecast.iloc[0], result.forecast.iloc[-1]
-    signal = build_signal(market, result.forecast)
     market_last_date = pd.Timestamp(gold.index.max()).strftime("%d %b %Y")
     fetched_label = data_fetched_at.strftime("%d %b %Y %H:%M:%S WIT")
+    v10_prediction = _optimizer_v10_latest_prediction(gold_ohlc, optimization_v10_leaderboard)
+    v10_params = v10_prediction["params"]
 
     st.info(f"Data pasar terakhir: **{market_last_date}** | Data diambil dashboard: **{fetched_label}**")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Harga terakhir", f"${latest:,.2f}", f"{latest - previous:+,.2f}")
-    col2.metric("Estimasi besok", f"${tomorrow['Estimasi']:,.2f}", f"{tomorrow['Estimasi'] - latest:+,.2f}")
-    col3.metric("Estimasi hari ke-7", f"${day_seven['Estimasi']:,.2f}", f"{day_seven['Estimasi'] - latest:+,.2f}")
-    col4.metric("Sinyal", signal.label, f"Confidence {signal.confidence:.0f}%")
+    m1_tomorrow, m1_day_seven = model_1.forecast.iloc[0], model_1.forecast.iloc[-1]
+    m2_tomorrow, m2_day_seven = model_2.forecast.iloc[0], model_2.forecast.iloc[-1]
+    signal_1 = build_signal(market, model_1.forecast)
+    signal_2 = build_signal(market, model_2.forecast)
 
-    st.subheader("Ringkasan Sinyal Harian")
-    signal_col, driver_col = st.columns([1, 2])
-    with signal_col:
-        if signal.label == "Bullish":
-            st.success(f"**{signal.label}** dengan confidence **{signal.confidence:.0f}%**")
-        elif signal.label == "Bearish":
-            st.error(f"**{signal.label}** dengan confidence **{signal.confidence:.0f}%**")
-        else:
-            st.info(f"**{signal.label}** dengan confidence **{signal.confidence:.0f}%**")
-        st.metric("Ekspektasi besok", f"{signal.expected_change_pct:+.2f}%", f"${signal.expected_change:+,.2f}")
-        for item in signal.rationale:
-            st.write(f"- {item}")
-
-    with driver_col:
-        st.write("Faktor lintas pasar 5 hari terakhir")
-        if signal.drivers.empty:
-            st.caption("Faktor lintas pasar belum tersedia dari sumber data.")
-        else:
-            st.dataframe(
-                signal.drivers.style.format({"Perubahan 5 hari": "{:+.2f}%"}),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    cutoff = gold.index.max() - pd.DateOffset(years=history_years)
-    chart_prices = gold.loc[gold.index >= cutoff]
-    figure = go.Figure()
-    figure.add_trace(go.Scatter(x=chart_prices.index, y=chart_prices, name="Historis"))
-    figure.add_trace(
-        go.Scatter(
-            x=result.forecast.index,
-            y=result.forecast["Batas atas"],
-            mode="lines",
-            line=dict(width=0),
-            showlegend=False,
+    st.subheader("Perbandingan Prediksi Antar Model")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("**Model 1 - Harga Historis**")
+        st.metric("Estimasi besok", f"${m1_tomorrow['Estimasi']:,.2f}", f"{m1_tomorrow['Estimasi'] - latest:+,.2f}")
+        st.metric("Estimasi hari ke-7", f"${m1_day_seven['Estimasi']:,.2f}", f"{m1_day_seven['Estimasi'] - latest:+,.2f}")
+        st.metric("Sinyal", signal_1.label, f"Confidence {signal_1.confidence:.0f}%")
+        st.caption("Regresi ridge berbasis riwayat harga emas.")
+    with col2:
+        st.markdown("**Model 2 - Lintas Pasar**")
+        st.metric("Estimasi besok", f"${m2_tomorrow['Estimasi']:,.2f}", f"{m2_tomorrow['Estimasi'] - latest:+,.2f}")
+        st.metric("Estimasi hari ke-7", f"${m2_day_seven['Estimasi']:,.2f}", f"{m2_day_seven['Estimasi'] - latest:+,.2f}")
+        st.metric("Sinyal", signal_2.label, f"Confidence {signal_2.confidence:.0f}%")
+        st.caption("Gradient boosting memakai emas dan faktor lintas pasar.")
+    with col3:
+        signal_direction = str(v10_prediction["direction"])
+        signal_label = signal_direction if signal_direction in {"BUY", "SELL"} else "WAIT"
+        target_value = v10_prediction["target_price"]
+        st.markdown("**Model 3 - Optimizer v10**")
+        st.metric("Sinyal strategi", signal_label, str(v10_prediction["note"]))
+        st.metric(
+            "Prediksi strategi",
+            f"${float(v10_prediction['prediction']):,.2f}",
+            f"{float(v10_prediction['expected_change_pct']):+.2f}%",
         )
-    )
-    figure.add_trace(
-        go.Scatter(
-            x=result.forecast.index,
-            y=result.forecast["Batas bawah"],
-            mode="lines",
-            fill="tonexty",
-            fillcolor="rgba(245,158,11,.18)",
-            line=dict(width=0),
-            name="Interval 95%",
-        )
-    )
-    figure.add_trace(
-        go.Scatter(
-            x=result.forecast.index,
-            y=result.forecast["Estimasi"],
-            name="Estimasi",
-            line=dict(color="#f59e0b", width=3),
-        )
-    )
-    figure.update_layout(
-        title="Harga historis dan estimasi",
-        yaxis_title="USD per troy ounce",
-        hovermode="x unified",
-        height=520,
-    )
-    st.plotly_chart(figure, use_container_width=True)
+        st.metric("Target TP", "-" if pd.isna(target_value) else f"${float(target_value):,.2f}")
+        st.caption("Prediksi berbasis rule Optimizer v10, bukan forecast probabilistik harga.")
 
-    st.subheader("Estimasi 7 Hari Bursa")
-    st.dataframe(result.forecast.style.format("${:,.2f}"), use_container_width=True)
+    if optimization_v10_leaderboard.empty:
+        st.warning(
+            "Parameter precomputed Optimizer v10 belum tersedia. Model 3 memakai parameter fallback dan tidak "
+            "menghitung ulang optimizer berat saat Dashboard dibuka."
+        )
 
-    st.subheader("Perbandingan Model untuk Besok")
+    st.subheader("Ringkasan Angka Pembanding")
     comparison = pd.DataFrame(
-        {
-            "Model 1": model_1.metrics,
-            "Model 2": model_2.horizon_metrics.loc[1].to_dict(),
-        }
-    ).T
+        [
+            {
+                "Model": "Model 1 - Harga Historis",
+                "Output utama": f"${m1_tomorrow['Estimasi']:,.2f}",
+                "Arah / Sinyal": signal_1.label,
+                "Perubahan vs terakhir": m1_tomorrow["Estimasi"] - latest,
+                "Confidence / Expected": f"{signal_1.confidence:.0f}%",
+                "MAE T+1": model_1.metrics.get("MAE", pd.NA),
+                "Akurasi arah T+1": model_1.metrics.get("Akurasi arah", pd.NA),
+            },
+            {
+                "Model": "Model 2 - Lintas Pasar",
+                "Output utama": f"${m2_tomorrow['Estimasi']:,.2f}",
+                "Arah / Sinyal": signal_2.label,
+                "Perubahan vs terakhir": m2_tomorrow["Estimasi"] - latest,
+                "Confidence / Expected": f"{signal_2.confidence:.0f}%",
+                "MAE T+1": model_2.horizon_metrics.loc[1, "MAE"],
+                "Akurasi arah T+1": model_2.horizon_metrics.loc[1, "Akurasi arah"],
+            },
+            {
+                "Model": "Model 3 - Optimizer v10",
+                "Output utama": f"${float(v10_prediction['prediction']):,.2f}",
+                "Arah / Sinyal": signal_label,
+                "Perubahan vs terakhir": float(v10_prediction["prediction"]) - latest,
+                "Confidence / Expected": f"{float(v10_prediction['expected_change_pct']):+.2f}%",
+                "MAE T+1": pd.NA,
+                "Akurasi arah T+1": pd.NA,
+            },
+        ]
+    )
     st.dataframe(
         comparison.style.format(
-            {"MAE": "${:,.2f}", "RMSE": "${:,.2f}", "MAPE": "{:.2f}%", "Akurasi arah": "{:.1f}%"}
+            {
+                "Perubahan vs terakhir": "${:+,.2f}",
+                "MAE T+1": "${:,.2f}",
+                "Akurasi arah T+1": "{:.1f}%",
+            },
+            na_rep="-",
         ),
         use_container_width=True,
+        hide_index=True,
     )
-    mae_improvement = (1 - comparison.loc["Model 2", "MAE"] / comparison.loc["Model 1", "MAE"]) * 100
+
+    st.subheader("Estimasi 7 Hari Bursa Model 1 dan Model 2")
+    forecast_comparison = pd.DataFrame(
+        {
+            "Model 1 - Estimasi": model_1.forecast["Estimasi"],
+            "Model 2 - Estimasi": model_2.forecast["Estimasi"],
+        }
+    )
+    st.dataframe(
+        forecast_comparison.style.format("${:,.2f}"),
+        use_container_width=True,
+    )
+    mae_improvement = (1 - model_2.horizon_metrics.loc[1, "MAE"] / model_1.metrics["MAE"]) * 100
     if mae_improvement > 0:
         st.success(f"Pada backtest T+1, MAE Model 2 lebih rendah {mae_improvement:.1f}% dibanding Model 1.")
     else:
@@ -461,21 +439,31 @@ def render_dashboard(
             use_container_width=True,
         )
 
-    st.subheader(f"Kualitas Backtest {model_choice.split(' - ')[0]}")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("MAE", f"${result.metrics['MAE']:,.2f}")
-    m2.metric("RMSE", f"${result.metrics['RMSE']:,.2f}")
-    m3.metric("MAPE", f"{result.metrics['MAPE']:.2f}%")
-    m4.metric("Akurasi arah", f"{result.metrics['Akurasi arah']:.1f}%")
+    with st.expander("Parameter Optimizer v10"):
+        v10_detail = pd.DataFrame(
+            [
+                {"Parameter": "Strategi", "Nilai": v10_params["Strategi"]},
+                {"Parameter": "Mode", "Nilai": v10_params["Mode"]},
+                {"Parameter": "MA cepat/lambat", "Nilai": f"{v10_params['Fast MA']} / {v10_params['Slow MA']}"},
+                {"Parameter": "Momentum hari", "Nilai": v10_params["Momentum hari"]},
+                {"Parameter": "Threshold entry", "Nilai": f"{v10_params['Threshold entry (%)']:.2f}%"},
+                {"Parameter": "TP / CL", "Nilai": f"USD {v10_params['TP (USD)']:,.2f} / USD {v10_params['SL (USD)']:,.2f}"},
+                {"Parameter": "Lot backtest", "Nilai": f"{float(v10_params.get('Lot', 0.01)):,.2f}"},
+                {
+                    "Parameter": "Harga CL risiko",
+                    "Nilai": "-" if pd.isna(v10_prediction["risk_price"]) else f"${float(v10_prediction['risk_price']):,.2f}",
+                },
+            ]
+        )
+        st.dataframe(v10_detail, use_container_width=True, hide_index=True)
 
-    if model_choice.startswith("Model 2"):
-        with st.expander("Metrik Model 2 per horizon"):
-            st.dataframe(
-                model_2.horizon_metrics.style.format(
-                    {"MAE": "${:,.2f}", "RMSE": "${:,.2f}", "MAPE": "{:.2f}%", "Akurasi arah": "{:.1f}%"}
-                ),
-                use_container_width=True,
-            )
+    with st.expander("Metrik Model 2 per horizon"):
+        st.dataframe(
+            model_2.horizon_metrics.style.format(
+                {"MAE": "${:,.2f}", "RMSE": "${:,.2f}", "MAPE": "{:.2f}%", "Akurasi arah": "{:.1f}%"}
+            ),
+            use_container_width=True,
+        )
 
     with st.expander("Metodologi dan risiko"):
         st.markdown(
@@ -487,8 +475,9 @@ def render_dashboard(
 
             Backtest memakai 20% data terbaru secara berurutan dan tidak mengacak waktu.
             Model arah berbasis confidence tidak memaksa sinyal setiap hari; hari yang
-            probabilitasnya rendah tetap dianggap netral. Interval berasal dari residual
-            backtest, bukan jaminan cakupan 95%. Dashboard ini bukan saran investasi.
+            probabilitasnya rendah tetap dianggap netral. **Model 3** adalah pembacaan
+            sinyal strategi Optimizer v10 pada candle harian terbaru, bukan model
+            probabilistik harga. Dashboard ini bukan saran investasi.
             """
         )
 
@@ -2055,7 +2044,7 @@ def render_live_trading(
             "Entry mengikuti sinyal Optimizer, boleh menambah posisi dari sinyal hari berbeda sampai batas "
             "maksimal 8 BUY dan 10 SELL. Re-entry guard USD 3 tidak dipakai untuk eksekusi live."
         )
-    st.info(f"Live Trading memakai **{title} secara penuh**. {strategy_note}")
+    st.info(f"Live Trading memakai **{title} secara penuh**.")
 
     status_text = "Aktif" if summary["Can trade"] else "Tidak membuka posisi baru"
     st.info(
@@ -2075,9 +2064,10 @@ def render_live_trading(
     p3.metric("Closed net P/L", f"${summary['Closed net P/L']:+,.2f}")
     p4.metric("Swap posisi terbuka", f"${summary['Open swap']:+,.2f}")
 
-    strategy_frame = _build_live_strategy_frame(params, optimization_leaderboard, title)
-    st.markdown("**Pola Strategi yang Dipakai**")
-    st.dataframe(strategy_frame, use_container_width=True, hide_index=True)
+    with st.expander("Dokumentasi Strategi Live Trading"):
+        st.write(strategy_note)
+        strategy_frame = _build_live_strategy_frame(params, optimization_leaderboard, title)
+        st.dataframe(strategy_frame, use_container_width=True, hide_index=True)
 
     st.markdown("**Sinyal Strategi Saat Ini**")
     if signal is None:
@@ -2557,11 +2547,6 @@ with st.sidebar:
         index=0,
     )
     if page == "Dashboard":
-        history_years = st.slider("Riwayat grafik (tahun)", 1, 10, 3)
-        model_choice = st.radio(
-            "Model prediksi",
-            ["Model 2 - Lintas Pasar", "Model 1 - Harga Historis", "Model 3 - Optimizer v10"],
-        )
         direction_threshold = st.select_slider(
             "Threshold sinyal arah",
             options=[0.50, 0.55, 0.60, 0.65, 0.70],
@@ -2573,40 +2558,22 @@ with st.sidebar:
 if page == "Dashboard":
     try:
         market, data_fetched_at = get_data()
+        gold_ohlc = get_gold_ohlc()
+        model_1, model_2, direction_model = get_models(market)
     except Exception as exc:
         st.error(f"Data belum dapat diproses: {exc}")
         st.stop()
 
-    if model_choice.startswith("Model 3"):
-        try:
-            gold_ohlc = get_gold_ohlc()
-        except Exception as exc:
-            st.error(f"Data OHLC belum dapat diproses: {exc}")
-            st.stop()
-        render_optimizer_v10_dashboard(
-            market,
-            data_fetched_at,
-            gold_ohlc,
-            get_v10_leaderboard_for_live(SIMULATION_CACHE_VERSION),
-            history_years,
-        )
-    else:
-        try:
-            model_1, model_2, direction_model = get_models(market)
-        except Exception as exc:
-            st.error(f"Model prediksi belum dapat diproses: {exc}")
-            st.stop()
-
-        render_dashboard(
-            market,
-            data_fetched_at,
-            model_1,
-            model_2,
-            direction_model,
-            model_choice,
-            direction_threshold,
-            history_years,
-        )
+    render_dashboard(
+        market,
+        data_fetched_at,
+        model_1,
+        model_2,
+        direction_model,
+        direction_threshold,
+        gold_ohlc,
+        get_v10_leaderboard_for_live(SIMULATION_CACHE_VERSION),
+    )
 
 elif page == "Simulasi":
     simulation_payload = load_precomputed_simulations(SIMULATION_CACHE_VERSION)
