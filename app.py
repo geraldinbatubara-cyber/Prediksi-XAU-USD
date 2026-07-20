@@ -315,13 +315,13 @@ def render_dashboard(
         signal_label = signal_direction if signal_direction in {"BUY", "SELL"} else "WAIT"
         target_value = v10_prediction["target_price"]
         st.markdown("**Model 3 - Optimizer v10**")
-        st.metric("Sinyal strategi", signal_label, str(v10_prediction["note"]))
         st.metric(
             "Prediksi strategi",
             f"${float(v10_prediction['prediction']):,.2f}",
             f"{float(v10_prediction['expected_change_pct']):+.2f}%",
         )
         st.metric("Target TP", "-" if pd.isna(target_value) else f"${float(target_value):,.2f}")
+        st.metric("Sinyal", signal_label, str(v10_prediction["note"]))
         st.caption("Prediksi berbasis rule Optimizer v10, bukan forecast probabilistik harga.")
 
     if optimization_v10_leaderboard.empty:
