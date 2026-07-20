@@ -12,6 +12,13 @@ try:
 except ImportError:  # pragma: no cover - handled in deployed UI
     st_autorefresh = None
 
+from gold_forecast.broker_data import (
+    BROKER_BARS_PATH,
+    BROKER_QUOTE_PATH,
+    audit_broker_feed,
+    load_broker_bars,
+    load_broker_quote,
+)
 from gold_forecast.data import load_gold_data, load_market_data
 from gold_forecast.direction_model import train_direction_model
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
@@ -2512,6 +2519,174 @@ def render_intraday_audit(gold_ohlc: pd.DataFrame) -> None:
             )
 
 
+def _broker_feed_sources():
+    try:
+        config = st.secrets.get("broker_data", {})
+    except Exception:
+        config = {}
+    bars_source = config.get("bars_url") if config else None
+    quote_source = config.get("quote_url") if config else None
+    return bars_source or BROKER_BARS_PATH, quote_source or BROKER_QUOTE_PATH
+
+
+def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
+    st.subheader("Data Broker XAUUSD - Read Only")
+    st.caption(
+        "Halaman ini memeriksa feed broker tanpa kemampuan mengirim order. Bid/ask tidak dibuat dari Yahoo atau "
+        "harga Close; value hanya tampil jika benar-benar tersedia dari feed broker."
+    )
+    st.warning(
+        "Feed broker masih tahap validasi. Jangan gunakan halaman ini sebagai dasar eksekusi uang riil sebelum "
+        "sinkronisasi harga, spread, contract size, dan waktu candle selesai diaudit."
+    )
+
+    uploaded_bars = st.file_uploader(
+        "Upload candle M1 MT5 untuk audit sementara (CSV)",
+        type=["csv"],
+        help="Kolom minimal: timestamp_utc, open, high, low, close.",
+    )
+    bars_source, quote_source = _broker_feed_sources()
+    bars = load_broker_bars(uploaded_bars if uploaded_bars is not None else bars_source)
+    quotes = load_broker_quote(quote_source)
+    audit = audit_broker_feed(bars, quotes, stale_after_minutes=5)
+
+    latest_quote = audit["latest_quote"]
+    latest_bar = audit["latest_bar"]
+    source_name = "-"
+    if latest_quote is not None:
+        source_name = str(latest_quote["source"])
+    elif latest_bar is not None:
+        source_name = str(latest_bar["source"])
+
+    status = "BELUM TERHUBUNG"
+    if audit["connected"]:
+        status = "STALE" if audit["stale"] else "AKTIF"
+    latest_wit = (
+        "-"
+        if pd.isna(audit["latest_timestamp"])
+        else pd.Timestamp(audit["latest_timestamp"]).tz_convert(WIT).strftime("%d %b %Y %H:%M:%S WIT")
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Status feed", status)
+    c2.metric("Sumber", source_name)
+    c3.metric("Update terakhir", latest_wit)
+    c4.metric(
+        "Usia data",
+        "-" if pd.isna(audit["age_minutes"]) else f"{audit['age_minutes']:.1f} menit",
+        "Batas stale 5 menit",
+    )
+
+    q1, q2, q3, q4 = st.columns(4)
+    q1.metric("Bid", "-" if latest_quote is None else f"${float(latest_quote['bid']):,.2f}")
+    q2.metric("Ask", "-" if latest_quote is None else f"${float(latest_quote['ask']):,.2f}")
+    q3.metric("Spread", "-" if latest_quote is None else f"${float(latest_quote['spread']):,.3f}")
+    q4.metric("Close M1 terakhir", "-" if latest_bar is None else f"${float(latest_bar['close']):,.2f}")
+
+    if not audit["connected"]:
+        st.info(
+            "Feed broker belum tersedia. Tab sudah siap menerima file dari bridge MT5 lokal atau URL CSV read-only "
+            "melalui Streamlit secrets."
+        )
+
+    quality = pd.DataFrame(
+        [
+            {
+                "Pemeriksaan": "Feed memiliki timestamp valid",
+                "Status": "Lolos" if audit["connected"] else "Menunggu",
+                "Detail": latest_wit,
+            },
+            {
+                "Pemeriksaan": "Usia data maksimal 5 menit",
+                "Status": "Lolos" if audit["connected"] and not audit["stale"] else "Menunggu",
+                "Detail": "-" if pd.isna(audit["age_minutes"]) else f"{audit['age_minutes']:.1f} menit",
+            },
+            {
+                "Pemeriksaan": "Ask tidak lebih rendah dari bid",
+                "Status": "Lolos" if audit["quote_rows"] > 0 and audit["invalid_quotes"] == 0 else "Menunggu",
+                "Detail": f"Quote tidak valid: {audit['invalid_quotes']}",
+            },
+            {
+                "Pemeriksaan": "Struktur OHLC valid",
+                "Status": "Lolos" if audit["bar_rows"] > 0 and audit["invalid_bars"] == 0 else "Menunggu",
+                "Detail": f"Baris {audit['bar_rows']} | Tidak valid {audit['invalid_bars']}",
+            },
+            {
+                "Pemeriksaan": "Celah data M1 lebih dari 5 menit",
+                "Status": "Audit" if audit["gaps_over_five_minutes"] > 0 else "Lolos",
+                "Detail": f"{audit['gaps_over_five_minutes']} celah; dapat mencakup libur/maintenance broker",
+            },
+        ]
+    )
+    st.markdown("**Audit Kualitas Feed**")
+    st.dataframe(quality, use_container_width=True, hide_index=True)
+
+    if latest_quote is not None and not gold_ohlc.empty:
+        broker_mid = float(latest_quote["mid"])
+        futures_close = float(gold_ohlc["Close"].iloc[-1])
+        comparison = pd.DataFrame(
+            [
+                {"Sumber": f"Broker {latest_quote['symbol']} mid", "Harga": broker_mid},
+                {"Sumber": "Yahoo COMEX GC=F close", "Harga": futures_close},
+            ]
+        )
+        st.markdown("**Perbandingan Broker vs Benchmark**")
+        st.dataframe(comparison.style.format({"Harga": "${:,.2f}"}), use_container_width=True, hide_index=True)
+        st.caption(
+            f"Selisih broker mid terhadap GC=F: ${broker_mid - futures_close:+,.2f}. "
+            "Ini bukan error otomatis karena XAUUSD OTC dan futures COMEX adalah instrumen berbeda."
+        )
+
+    if not bars.empty:
+        preview = bars.tail(100).copy()
+        preview["timestamp_wit"] = preview["timestamp_utc"].dt.tz_convert(WIT)
+        display_columns = [
+            "timestamp_wit",
+            "open",
+            "high",
+            "low",
+            "close",
+            "tick_volume",
+            "spread_points",
+            "symbol",
+            "source",
+        ]
+        st.markdown("**100 Candle M1 Terbaru**")
+        st.dataframe(
+            preview[display_columns].style.format(
+                {"open": "${:,.2f}", "high": "${:,.2f}", "low": "${:,.2f}", "close": "${:,.2f}"},
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with st.expander("Cara Menghubungkan MT5 Demo"):
+        st.markdown(
+            r"""
+            1. Pasang terminal MT5 Windows dan masuk ke akun demo broker.
+            2. Pastikan simbol emas tersedia di Market Watch; namanya dapat berupa `XAUUSD`, `GOLD`, atau simbol khusus broker.
+            3. Pasang modul lokal dengan `pip install MetaTrader5`.
+            4. Jalankan bridge dari root proyek:
+
+            ```powershell
+            .venv\Scripts\python.exe scripts\mt5_data_bridge.py --symbol XAUUSD
+            ```
+
+            Gunakan `--once` untuk satu snapshot. Bridge hanya membaca tick dan candle M1; tidak memiliki kode pengiriman order.
+            File lokal disimpan di `data/broker/` dan tidak masuk Git agar data akun tidak dipublikasikan.
+
+            Untuk Streamlit Cloud, tambahkan URL CSV read-only melalui secrets setelah storage eksternal disiapkan:
+
+            ```toml
+            [broker_data]
+            bars_url = "https://storage.example/xauusd_m1.csv"
+            quote_url = "https://storage.example/latest_quote.csv"
+            ```
+            """
+        )
+
+
 with st.sidebar:
     st.header("Pengaturan")
     auto_refresh = st.checkbox("Auto refresh dashboard", value=True)
@@ -2543,7 +2718,7 @@ with st.sidebar:
         st.rerun()
     page = st.radio(
         "Halaman",
-        ["Dashboard", "Simulasi", "Live Trading", "Audit Intraday"],
+        ["Dashboard", "Simulasi", "Live Trading", "Data Broker", "Audit Intraday"],
         index=0,
     )
     if page == "Dashboard":
@@ -2638,6 +2813,14 @@ elif page == "Live Trading":
                 "sehingga tidak menghitung ulang optimizer berat saat dashboard dibuka."
             ),
         )
+
+elif page == "Data Broker":
+    try:
+        gold_ohlc = get_gold_ohlc()
+    except Exception as exc:
+        st.error(f"Data benchmark GC=F belum dapat diproses: {exc}")
+        gold_ohlc = pd.DataFrame()
+    render_broker_data(gold_ohlc)
 
 else:
     try:
