@@ -70,6 +70,8 @@ SIMULATION_CACHE_VERSION = "optimizer-v1-v10-2025q1-2026q2"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 M1_BACKTEST_VERSION = "v1-full-history-v10-oos-2026-07-21"
 M1_BACKTEST_PATH = Path("data/precomputed/m1_backtests.pkl")
+MARTINGALE_BACKTEST_VERSION = "martingale-v1-daily-2025q1-2026q2"
+MARTINGALE_BACKTEST_PATH = Path("data/precomputed/martingale_v1.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -110,6 +112,20 @@ def load_precomputed_m1_backtests(backtest_version: str):
         return None
     try:
         with M1_BACKTEST_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_martingale(backtest_version: str):
+    if not MARTINGALE_BACKTEST_PATH.exists():
+        return None
+    try:
+        with MARTINGALE_BACKTEST_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -1272,6 +1288,157 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
             )
 
 
+def _render_martingale_tab(payload) -> None:
+    st.subheader("Martingale v1")
+    if payload is None:
+        st.warning("Hasil Martingale v1 belum tersedia pada artifact precomputed.")
+        return
+
+    result, leaderboard = payload
+    summary = result.summary
+    selected = leaderboard.iloc[0] if not leaderboard.empty else pd.Series(dtype=object)
+    risk_pass = bool(selected.get("Lolos batas risiko", False))
+    st.warning(
+        "Eksperimen memakai sinyal harian Optimizer v1 dua arah, equity awal USD 10.000, lot awal 0.10, "
+        "lot berikutnya berlipat dua, leverage 1:100, dan stop-out margin level 50%. Jika level averaging "
+        "dan BEP tersentuh pada candle yang sama, jalur adverse-first dipakai: risiko diperiksa sebelum close BEP."
+    )
+    if risk_pass:
+        st.success("Kandidat terpilih lolos batas internal: tanpa stop-out dan max drawdown tidak lebih dari 20%.")
+    else:
+        st.error(
+            "Tidak ada kandidat yang lolos batas risiko internal. Tab tetap menampilkan kombinasi dengan skor relatif "
+            "terbaik sebagai hasil eksperimen, bukan rekomendasi trading."
+        )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Equity akhir", f"${summary['Equity akhir']:,.2f}", f"{summary['Growth total']:+.2f}%")
+    c2.metric("Max drawdown", f"${summary['Max drawdown']:,.2f}")
+    c3.metric("Jumlah basket", f"{summary['Jumlah basket']:.0f}")
+    c4.metric("Biaya swap BUY", f"${abs(summary['Total swap']):,.2f}")
+    c5.metric("Margin minimum", f"{summary['Margin level minimum (%)']:.1f}%")
+
+    parameter_rows = [
+        {"Parameter": "Sumber sinyal", "Nilai": summary["Sumber sinyal"]},
+        {"Parameter": "Periode uji", "Nilai": summary["Periode uji"]},
+        {"Parameter": "Lot berjenjang", "Nilai": "0.10, 0.20, 0.40, dan seterusnya"},
+        {"Parameter": "Max posisi per basket", "Nilai": int(summary["Max posisi per basket"])},
+        {"Parameter": "Lot posisi maksimum", "Nilai": f"{summary['Lot posisi maksimum']:.2f}"},
+        {"Parameter": "Hard basket loss", "Nilai": f"{summary['Hard basket loss (%)']:.1f}% equity awal basket"},
+        {"Parameter": "Leverage / stop-out", "Nilai": f"1:{summary['Leverage']:.0f} / {summary['Stop-out margin level (%)']:.0f}%"},
+        {"Parameter": "Close normal", "Nilai": "Close seluruh basket saat harga kembali ke entry posisi awal"},
+        {"Parameter": "Asumsi candle", "Nilai": summary["Asumsi intrabar"]},
+    ]
+    st.dataframe(pd.DataFrame(parameter_rows), use_container_width=True, hide_index=True)
+
+    detail = pd.DataFrame(
+        [
+            {"Metrik": "Basket close di BEP", "Nilai": summary["Basket BEP"]},
+            {"Metrik": "Basket hard loss", "Nilai": summary["Basket hard loss"]},
+            {"Metrik": "Basket margin stop-out", "Nilai": summary["Stop-out basket"]},
+            {"Metrik": "Basket ditutup akhir data", "Nilai": summary["Basket akhir data"]},
+            {"Metrik": "Total posisi BUY", "Nilai": summary["Total BUY"]},
+            {"Metrik": "Total posisi SELL", "Nilai": summary["Total SELL"]},
+            {"Metrik": "Sinyal BUY v1 tersedia", "Nilai": summary["Sinyal BUY v1"]},
+            {"Metrik": "Sinyal SELL v1 tersedia", "Nilai": summary["Sinyal SELL v1"]},
+            {"Metrik": "Max posisi bersamaan", "Nilai": summary["Max open posisi"]},
+            {"Metrik": "Total lot maksimum basket", "Nilai": summary["Total lot maksimum"]},
+            {"Metrik": "Used margin maksimum", "Nilai": summary["Used margin maksimum"]},
+            {"Metrik": "Penambahan ditolak karena margin", "Nilai": summary["Penambahan ditolak margin"]},
+            {"Metrik": "Entry awal ditolak karena margin", "Nilai": summary["Entry awal ditolak margin"]},
+            {"Metrik": "Total net P/L", "Nilai": summary["Total net P/L"]},
+            {"Metrik": "Profit factor", "Nilai": summary["Profit factor"]},
+        ]
+    )
+    st.markdown("**Summary Risiko dan Transaksi**")
+    st.dataframe(detail, use_container_width=True, hide_index=True)
+    if summary["Sinyal SELL v1"] > 0 and summary["Total SELL"] == 0:
+        st.info(
+            "Mesin mendeteksi sinyal SELL v1, tetapi tidak ada SELL yang dapat dieksekusi. "
+            "Ketika regime SELL pertama muncul, equity yang tersisa sudah tidak cukup untuk margin posisi awal 0.10 lot."
+        )
+
+    equity_curve = result.equity_curve.copy()
+    if not equity_curve.empty:
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve["Equity"], name="Equity", line=dict(width=3)))
+        figure.add_trace(
+            go.Scatter(
+                x=equity_curve.index,
+                y=equity_curve["Balance"],
+                name="Balance",
+                line=dict(width=1.5, dash="dot"),
+            )
+        )
+        figure.add_hline(y=summary["Modal awal"], line_dash="dash", line_color="#f59e0b", annotation_text="Equity awal")
+        figure.update_layout(title="Equity Curve Martingale v1", yaxis_title="USD", height=430)
+        st.plotly_chart(figure, use_container_width=True)
+
+    basket_summary = summary.get("Basket summary", pd.DataFrame())
+    st.markdown("**Summary Setiap Basket**")
+    if isinstance(basket_summary, pd.DataFrame) and not basket_summary.empty:
+        st.dataframe(
+            basket_summary.style.format(
+                {
+                    "Anchor": "${:,.2f}",
+                    "Total lot": "{:.2f}",
+                    "Lot maksimum": "{:.2f}",
+                    "Gross P/L": "${:+,.2f}",
+                    "Swap": "${:+,.2f}",
+                    "Net P/L": "${:+,.2f}",
+                    "Balance akhir": "${:,.2f}",
+                },
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Tidak ada basket yang selesai selama periode pengujian.")
+
+    with st.expander("Perbandingan kandidat batas risiko"):
+        st.dataframe(
+            leaderboard.style.format(
+                {
+                    "Lot maksimum": "{:.2f}",
+                    "Hard basket loss (%)": "{:.1f}%",
+                    "Equity akhir": "${:,.2f}",
+                    "Growth total": "{:+.2f}%",
+                    "Max drawdown": "${:,.2f}",
+                    "Max drawdown (%)": "{:.2f}%",
+                    "Margin minimum (%)": "{:.1f}%",
+                    "Total swap": "${:+,.2f}",
+                    "Risk-adjusted score": "{:.3f}",
+                },
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with st.expander("Detail seluruh posisi Martingale"):
+        trades = result.trades.copy()
+        if trades.empty:
+            st.info("Tidak ada posisi yang ditutup.")
+        else:
+            st.dataframe(
+                trades.style.format(
+                    {
+                        "Lot": "{:.2f}",
+                        "Entry": "${:,.2f}",
+                        "Exit": "${:,.2f}",
+                        "Gross P/L": "${:+,.2f}",
+                        "Swap": "${:+,.2f}",
+                        "Net P/L": "${:+,.2f}",
+                        "Balance": "${:,.2f}",
+                    },
+                    na_rep="-",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -1284,19 +1451,21 @@ def render_simulation(
         "Simulasi menampilkan strategi harian serta eksperimen fixed-parameter pada candle M1."
     )
     st.warning(
-        "Asumsi utama: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
+        "Asumsi strategi utama: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
         "Simulasi memakai dataset 1 Jan 2025-30 Jun 2026. Data sebelum 1 Jan 2025 tidak dipakai agar proses tetap ringan. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
+        "Martingale v1 memakai equity awal USD 10.000 dan aturan margin tersendiri. "
         "Dua tab strategi harian memakai OHLC harian GC=F; tab M1 memiliki penjelasan dataset tersendiri. "
         "Jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v10_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab = st.tabs(
+    optimizer_tab, optimizer_v10_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab, martingale_tab = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v10",
             "v1 Intraday M1",
             "v10 Intraday M1",
+            "Martingale v1",
         ]
     )
     with optimizer_tab:
@@ -1308,6 +1477,8 @@ def render_simulation(
         _render_m1_backtest_tab(m1_payload, payload_offset=0, title="Optimizer v1 Intraday M1")
     with optimizer_v10_m1_tab:
         _render_m1_backtest_tab(m1_payload, payload_offset=2, title="Optimizer v10 Intraday M1")
+    with martingale_tab:
+        _render_martingale_tab(load_precomputed_martingale(MARTINGALE_BACKTEST_VERSION))
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:
