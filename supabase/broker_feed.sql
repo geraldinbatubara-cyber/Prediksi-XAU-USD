@@ -28,8 +28,33 @@ create table if not exists public.broker_m1_bars (
 create index if not exists broker_m1_bars_latest_idx
     on public.broker_m1_bars (symbol, timestamp_utc desc);
 
+create table if not exists public.broker_terminal_status (
+    symbol text primary key,
+    account_mode text not null,
+    broker_server text,
+    broker_company text,
+    terminal_connected boolean not null,
+    account_trade_allowed boolean not null,
+    terminal_trade_allowed boolean not null,
+    symbol_trade_mode text not null,
+    leverage integer,
+    contract_size double precision,
+    volume_min double precision,
+    volume_max double precision,
+    volume_step double precision,
+    stops_level_points integer,
+    spread_points integer,
+    spread_is_floating boolean,
+    swap_long double precision,
+    swap_short double precision,
+    currency text,
+    manual_execution_only boolean not null default true,
+    updated_at timestamptz not null default now()
+);
+
 alter table public.broker_latest_quote enable row level security;
 alter table public.broker_m1_bars enable row level security;
+alter table public.broker_terminal_status enable row level security;
 
 drop policy if exists "Public read latest broker quote" on public.broker_latest_quote;
 create policy "Public read latest broker quote"
@@ -43,7 +68,15 @@ create policy "Public read broker M1 bars"
     to anon, authenticated
     using (true);
 
+drop policy if exists "Public read broker terminal status" on public.broker_terminal_status;
+create policy "Public read broker terminal status"
+    on public.broker_terminal_status for select
+    to anon, authenticated
+    using (true);
+
 grant select on public.broker_latest_quote to anon, authenticated;
 grant select on public.broker_m1_bars to anon, authenticated;
+grant select on public.broker_terminal_status to anon, authenticated;
 grant select, insert, update on public.broker_latest_quote to service_role;
 grant select, insert, update on public.broker_m1_bars to service_role;
+grant select, insert, update on public.broker_terminal_status to service_role;

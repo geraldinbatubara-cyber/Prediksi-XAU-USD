@@ -70,6 +70,7 @@ def publish_broker_snapshot(
     service_role_key: str,
     bars: pd.DataFrame,
     quotes: pd.DataFrame,
+    terminal_status: dict[str, object] | None = None,
 ) -> None:
     if quotes.empty:
         raise ValueError("Quote broker kosong; tidak ada data yang dikirim ke Supabase.")
@@ -116,6 +117,17 @@ def publish_broker_snapshot(
             prefer="resolution=merge-duplicates,return=minimal",
         )
 
+    if terminal_status:
+        _request_json(
+            base_url,
+            service_role_key,
+            "broker_terminal_status",
+            method="POST",
+            query={"on_conflict": "symbol"},
+            payload=[{key: _clean_value(value) for key, value in terminal_status.items()}],
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
+
 
 def load_supabase_broker_feed(
     base_url: str,
@@ -147,3 +159,21 @@ def load_supabase_broker_feed(
     bars = load_broker_bars(pd.DataFrame(bar_rows or []))
     quotes = load_broker_quote(pd.DataFrame(quote_rows or []))
     return apply_broker_clock_offset(bars, quotes)
+
+
+def load_supabase_terminal_status(
+    base_url: str,
+    read_key: str,
+    symbol: str = "XAUUSD",
+) -> dict[str, object]:
+    rows = _request_json(
+        base_url,
+        read_key,
+        "broker_terminal_status",
+        query={
+            "select": "*",
+            "symbol": f"eq.{symbol}",
+            "limit": "1",
+        },
+    )
+    return dict(rows[0]) if isinstance(rows, list) and rows else {}

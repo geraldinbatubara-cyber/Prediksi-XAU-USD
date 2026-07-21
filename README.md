@@ -18,10 +18,11 @@ Hasil model adalah estimasi statistik, bukan saran investasi.
 
 ## Data Broker Read-only
 
-Halaman `Data Broker` disiapkan untuk mengaudit feed XAUUSD dari akun demo MT5.
+Halaman `Data Broker` disiapkan untuk mengaudit feed XAUUSD dari akun demo atau real MT5.
 Integrasi ini hanya membaca bid, ask, spread, serta candle M1 dan tidak mengirim order.
 Data broker tidak menggantikan `GC=F` sebelum hasil audit sumber, timestamp, spread,
-dan contract size dinyatakan memadai. Bridge tetap read-only terhadap MT5.
+dan contract size dinyatakan memadai. Bridge tetap read-only terhadap MT5 dan tidak
+mempublikasikan nomor akun, nama pemilik, balance, equity, atau password broker.
 
 Pada komputer Windows yang sudah menjalankan terminal MT5 dan login ke akun demo:
 
@@ -64,6 +65,26 @@ symbol = "XAUUSD"
 Jangan menyimpan `SUPABASE_SERVICE_ROLE_KEY` di source code, `.streamlit/secrets.toml`,
 Streamlit Cloud, atau GitHub. Dashboard hanya memerlukan publishable/anon key karena
 RLS pada tabel broker memberikan izin `select` dan menolak penulisan publik.
+
+### Launcher Windows Satu Klik
+
+Setelah feed Supabase berhasil diuji, jalankan setup berikut satu kali:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_gold_predictor.ps1
+```
+
+Setup meminta lokasi MT5, Project URL, dan secret key Supabase. Secret disimpan
+terenkripsi dengan DPAPI dan hanya dapat dibuka oleh user Windows yang sama pada
+komputer yang sama. Dua shortcut dibuat di Desktop:
+
+- `START Gold Predictor` membuka MT5 bila perlu, menjalankan bridge secara
+  tersembunyi, lalu membuka dashboard.
+- `STOP Gold Predictor` menghentikan bridge tanpa menutup MT5.
+
+Untuk proyek Supabase yang sudah ada, jalankan kembali isi
+`supabase/broker_feed.sql` agar tabel status terminal tersedia. Panel kesiapan
+akun real tetap bersifat read-only dan seluruh order dikonfirmasi manual di MT5.
 
 ## Metodologi
 

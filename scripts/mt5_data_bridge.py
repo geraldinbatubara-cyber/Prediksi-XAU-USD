@@ -25,7 +25,68 @@ def _load_mt5():
     return mt5
 
 
-def _write_snapshot(mt5, symbol: str, bars_count: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _enum_name(value: object, mapping: dict[int, str], default: str = "UNKNOWN") -> str:
+    try:
+        return mapping.get(int(value), default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _terminal_status(mt5, symbol: str, received_at_utc: pd.Timestamp) -> dict[str, object]:
+    account = mt5.account_info()
+    terminal = mt5.terminal_info()
+    specification = mt5.symbol_info(symbol)
+    if account is None or terminal is None or specification is None:
+        raise RuntimeError(f"Status akun/terminal/simbol tidak tersedia: {mt5.last_error()}")
+
+    account_mode = _enum_name(
+        account.trade_mode,
+        {
+            int(mt5.ACCOUNT_TRADE_MODE_DEMO): "DEMO",
+            int(mt5.ACCOUNT_TRADE_MODE_CONTEST): "CONTEST",
+            int(mt5.ACCOUNT_TRADE_MODE_REAL): "REAL",
+        },
+    )
+    symbol_trade_mode = _enum_name(
+        specification.trade_mode,
+        {
+            int(mt5.SYMBOL_TRADE_MODE_DISABLED): "DISABLED",
+            int(mt5.SYMBOL_TRADE_MODE_LONGONLY): "LONG_ONLY",
+            int(mt5.SYMBOL_TRADE_MODE_SHORTONLY): "SHORT_ONLY",
+            int(mt5.SYMBOL_TRADE_MODE_CLOSEONLY): "CLOSE_ONLY",
+            int(mt5.SYMBOL_TRADE_MODE_FULL): "FULL",
+        },
+    )
+    return {
+        "symbol": symbol,
+        "account_mode": account_mode,
+        "broker_server": str(account.server),
+        "broker_company": str(account.company),
+        "terminal_connected": bool(terminal.connected),
+        "account_trade_allowed": bool(account.trade_allowed),
+        "terminal_trade_allowed": bool(terminal.trade_allowed),
+        "symbol_trade_mode": symbol_trade_mode,
+        "leverage": int(account.leverage),
+        "contract_size": float(specification.trade_contract_size),
+        "volume_min": float(specification.volume_min),
+        "volume_max": float(specification.volume_max),
+        "volume_step": float(specification.volume_step),
+        "stops_level_points": int(specification.trade_stops_level),
+        "spread_points": int(specification.spread),
+        "spread_is_floating": bool(specification.spread_float),
+        "swap_long": float(specification.swap_long),
+        "swap_short": float(specification.swap_short),
+        "currency": str(account.currency),
+        "manual_execution_only": True,
+        "updated_at": received_at_utc,
+    }
+
+
+def _write_snapshot(
+    mt5,
+    symbol: str,
+    bars_count: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
     if not mt5.symbol_select(symbol, True):
         raise RuntimeError(f"Simbol {symbol} tidak tersedia di Market Watch MT5.")
 
@@ -41,12 +102,14 @@ def _write_snapshot(mt5, symbol: str, bars_count: int) -> tuple[pd.DataFrame, pd
     bars = pd.DataFrame(rates).rename(columns={"time": "timestamp_utc", "spread": "spread_points"})
     bars["timestamp_utc"] = pd.to_datetime(bars["timestamp_utc"], unit="s", utc=True)
     bars["symbol"] = symbol
-    bars["source"] = "MT5 Demo"
+    received_at_utc = pd.Timestamp.now(tz="UTC")
+    terminal_status = _terminal_status(mt5, symbol, received_at_utc)
+    source = f"MT5 {terminal_status['account_mode']}"
+    bars["source"] = source
     bars[
         ["timestamp_utc", "open", "high", "low", "close", "tick_volume", "spread_points", "symbol", "source"]
     ].to_csv(BROKER_BARS_PATH, index=False)
 
-    received_at_utc = pd.Timestamp.now(tz="UTC")
     quote = pd.DataFrame(
         [
             {
@@ -55,7 +118,7 @@ def _write_snapshot(mt5, symbol: str, bars_count: int) -> tuple[pd.DataFrame, pd
                 "bid": float(tick.bid),
                 "ask": float(tick.ask),
                 "symbol": symbol,
-                "source": "MT5 Demo",
+                "source": source,
             }
         ]
     )
@@ -64,7 +127,7 @@ def _write_snapshot(mt5, symbol: str, bars_count: int) -> tuple[pd.DataFrame, pd
         f"{quote.iloc[0]['timestamp_utc']} | {symbol} | bid={tick.bid:.5f} | "
         f"ask={tick.ask:.5f} | bars={len(bars)}"
     )
-    return bars, quote
+    return bars, quote, terminal_status
 
 
 def main() -> None:
@@ -93,12 +156,21 @@ def main() -> None:
     first_publish = True
     try:
         while True:
-            bars, quote = _write_snapshot(mt5, args.symbol, args.bars)
+            bars, quote, terminal_status = _write_snapshot(mt5, args.symbol, args.bars)
             if args.publish_supabase:
                 publish_bars = bars if first_publish else bars.tail(5)
                 try:
-                    publish_broker_snapshot(supabase_url, service_role_key, publish_bars, quote)
-                    print(f"Supabase updated | quote=1 | bars={len(publish_bars)}")
+                    publish_broker_snapshot(
+                        supabase_url,
+                        service_role_key,
+                        publish_bars,
+                        quote,
+                        terminal_status=terminal_status,
+                    )
+                    print(
+                        f"Supabase updated | quote=1 | bars={len(publish_bars)} | "
+                        f"account={terminal_status['account_mode']}"
+                    )
                 except Exception as exc:
                     print(f"WARNING Supabase: {exc}", file=sys.stderr)
                     if args.once:

@@ -49,7 +49,7 @@ from gold_forecast.monitoring import (
 )
 from gold_forecast.signals import build_signal
 from gold_forecast import strategy_optimizer as strategy_optimizer_module
-from gold_forecast.supabase_broker import load_supabase_broker_feed
+from gold_forecast.supabase_broker import load_supabase_broker_feed, load_supabase_terminal_status
 
 
 OPTIMIZATION_END = strategy_optimizer_module.OPTIMIZATION_END
@@ -2568,6 +2568,11 @@ def get_supabase_broker_feed(base_url: str, read_key: str, symbol: str) -> tuple
     return load_supabase_broker_feed(base_url, read_key, symbol=symbol)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def get_supabase_terminal_status(base_url: str, read_key: str, symbol: str) -> dict[str, object]:
+    return load_supabase_terminal_status(base_url, read_key, symbol=symbol)
+
+
 def _latest_broker_quote() -> tuple[pd.Series | None, str | None]:
     supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
     if supabase_url and supabase_read_key:
@@ -2579,6 +2584,106 @@ def _latest_broker_quote() -> tuple[pd.Series | None, str | None]:
             return (fallback.iloc[-1] if not fallback.empty else None), str(exc)
     quotes = load_broker_quote(BROKER_QUOTE_PATH)
     return (quotes.iloc[-1] if not quotes.empty else None), None
+
+
+def _render_real_trading_readiness(terminal_status: dict[str, object], audit: dict[str, object]) -> None:
+    st.markdown("**Kesiapan Trading MT5**")
+    if not terminal_status:
+        st.info(
+            "Status terminal belum tersedia. Jalankan pembaruan `supabase/broker_feed.sql`, lalu mulai ulang bridge."
+        )
+        return
+
+    updated_at = pd.to_datetime(terminal_status.get("updated_at"), errors="coerce", utc=True)
+    status_age = (
+        (pd.Timestamp.now(tz="UTC") - updated_at).total_seconds() / 60
+        if pd.notna(updated_at)
+        else float("nan")
+    )
+    status_fresh = pd.notna(status_age) and -1 <= status_age <= 5
+    account_mode = str(terminal_status.get("account_mode", "UNKNOWN")).upper()
+    terminal_connected = bool(terminal_status.get("terminal_connected", False))
+    account_trade_allowed = bool(terminal_status.get("account_trade_allowed", False))
+    symbol_trade_mode = str(terminal_status.get("symbol_trade_mode", "UNKNOWN")).upper()
+    manual_only = bool(terminal_status.get("manual_execution_only", True))
+    feed_ready = bool(audit.get("connected")) and not bool(audit.get("stale"))
+    operational_ready = all(
+        [status_fresh, terminal_connected, account_trade_allowed, symbol_trade_mode == "FULL", manual_only, feed_ready]
+    )
+
+    if account_mode == "REAL" and operational_ready:
+        readiness = "SIAP MANUAL"
+        st.error(
+            "Akun REAL terdeteksi. Gold Predictor hanya memberi data dan sinyal; seluruh order tetap dikonfirmasi "
+            "manual di MT5."
+        )
+    elif account_mode == "DEMO" and operational_ready:
+        readiness = "LATIHAN SIAP"
+        st.info("Akun DEMO aktif. Gunakan tahap ini untuk memvalidasi feed, sinyal, dan jurnal sebelum uang riil.")
+    else:
+        readiness = "BELUM SIAP"
+        st.warning("Satu atau lebih pemeriksaan terminal belum lolos. Jangan membuka posisi baru.")
+
+    broker_label = str(terminal_status.get("broker_company") or terminal_status.get("broker_server") or "-")
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("Mode akun", account_mode)
+    r2.metric("Broker", broker_label)
+    r3.metric("Leverage", f"1:{int(terminal_status.get('leverage') or 0)}")
+    r4.metric("Status", readiness)
+
+    terminal_api_allowed = bool(terminal_status.get("terminal_trade_allowed", False))
+    checks = pd.DataFrame(
+        [
+            {
+                "Pemeriksaan": "Status terminal terbaru",
+                "Nilai": "-" if pd.isna(status_age) else f"{status_age:.1f} menit",
+                "Status": "Lolos" if status_fresh else "Belum",
+            },
+            {
+                "Pemeriksaan": "Terminal MT5 terhubung",
+                "Nilai": "Terhubung" if terminal_connected else "Terputus",
+                "Status": "Lolos" if terminal_connected else "Belum",
+            },
+            {
+                "Pemeriksaan": "Akun mengizinkan trading manual",
+                "Nilai": "Diizinkan" if account_trade_allowed else "Diblokir",
+                "Status": "Lolos" if account_trade_allowed else "Belum",
+            },
+            {
+                "Pemeriksaan": "Mode trading simbol",
+                "Nilai": symbol_trade_mode,
+                "Status": "Lolos" if symbol_trade_mode == "FULL" else "Belum",
+            },
+            {
+                "Pemeriksaan": "Eksekusi Gold Predictor",
+                "Nilai": "Manual/read-only" if manual_only else "Otomatis",
+                "Status": "Lolos" if manual_only else "Diblokir",
+            },
+            {
+                "Pemeriksaan": "Izin API trading terminal",
+                "Nilai": "Aktif" if terminal_api_allowed else "Nonaktif",
+                "Status": "Perhatian" if terminal_api_allowed else "Aman",
+            },
+        ]
+    )
+    st.dataframe(checks, use_container_width=True, hide_index=True)
+
+    specifications = pd.DataFrame(
+        [
+            {"Parameter": "Server broker", "Nilai": terminal_status.get("broker_server", "-")},
+            {"Parameter": "Contract size", "Nilai": terminal_status.get("contract_size", "-")},
+            {"Parameter": "Lot minimum", "Nilai": terminal_status.get("volume_min", "-")},
+            {"Parameter": "Lot maksimum", "Nilai": terminal_status.get("volume_max", "-")},
+            {"Parameter": "Langkah lot", "Nilai": terminal_status.get("volume_step", "-")},
+            {"Parameter": "Stops level (points)", "Nilai": terminal_status.get("stops_level_points", "-")},
+            {"Parameter": "Spread (points)", "Nilai": terminal_status.get("spread_points", "-")},
+            {"Parameter": "Swap BUY", "Nilai": terminal_status.get("swap_long", "-")},
+            {"Parameter": "Swap SELL", "Nilai": terminal_status.get("swap_short", "-")},
+            {"Parameter": "Mata uang akun", "Nilai": terminal_status.get("currency", "-")},
+        ]
+    )
+    with st.expander("Spesifikasi XAUUSD dari broker"):
+        st.dataframe(specifications, use_container_width=True, hide_index=True)
 
 
 def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
@@ -2601,11 +2706,16 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
     bars = load_broker_bars(uploaded_bars if uploaded_bars is not None else bars_source)
     quotes = load_broker_quote(quote_source)
     supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
+    terminal_status: dict[str, object] = {}
     if uploaded_bars is None and supabase_url and supabase_read_key:
         try:
             bars, quotes = get_supabase_broker_feed(supabase_url, supabase_read_key, supabase_symbol)
         except Exception as exc:
             st.warning(f"Supabase broker belum dapat dibaca; memakai fallback lokal/CSV. Detail: {exc}")
+        try:
+            terminal_status = get_supabase_terminal_status(supabase_url, supabase_read_key, supabase_symbol)
+        except Exception as exc:
+            st.info(f"Status terminal belum dapat dibaca. Jalankan migrasi SQL terbaru. Detail: {exc}")
     bars, quotes = apply_broker_clock_offset(bars, quotes)
     audit = audit_broker_feed(bars, quotes, stale_after_minutes=5)
 
@@ -2689,6 +2799,7 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
     )
     st.markdown("**Audit Kualitas Feed**")
     st.dataframe(quality, use_container_width=True, hide_index=True)
+    _render_real_trading_readiness(terminal_status, audit)
 
     if latest_quote is not None and not gold_ohlc.empty:
         broker_mid = float(latest_quote["mid"])
@@ -2730,20 +2841,17 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
             hide_index=True,
         )
 
-    with st.expander("Cara Menghubungkan MT5 Demo"):
+    with st.expander("Cara Menjalankan Gold Predictor dari Windows"):
         st.markdown(
             r"""
-            1. Pasang terminal MT5 Windows dan masuk ke akun demo broker.
-            2. Pastikan simbol emas tersedia di Market Watch; namanya dapat berupa `XAUUSD`, `GOLD`, atau simbol khusus broker.
-            3. Pasang modul lokal dengan `pip install MetaTrader5`.
-            4. Jalankan bridge dari root proyek:
+            Setup satu kali dari root proyek:
 
             ```powershell
-            .venv\Scripts\python.exe scripts\mt5_data_bridge.py --symbol XAUUSD
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_gold_predictor.ps1
             ```
 
-            Gunakan `--once` untuk satu snapshot. Bridge hanya membaca tick dan candle M1; tidak memiliki kode pengiriman order.
-            File lokal disimpan di `data/broker/` dan tidak masuk Git agar data akun tidak dipublikasikan.
+            Setelah setup, gunakan shortcut `START Gold Predictor` dan `STOP Gold Predictor` di Desktop. START membuka
+            MT5, bridge, dan dashboard tanpa terminal. STOP hanya menghentikan bridge; MT5 tetap terbuka untuk trading manual.
 
             Untuk Streamlit Cloud melalui Supabase, tambahkan URL dan publishable/anon key read-only ke secrets:
 
@@ -2755,6 +2863,8 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
             ```
 
             `service_role` tidak boleh dimasukkan ke Streamlit atau GitHub; key tersebut hanya berada di laptop bridge.
+            Gold Predictor tidak memiliki kode pengiriman order dan tidak mempublikasikan nomor akun, nama pemilik,
+            balance, equity, atau password broker.
             """
         )
 
@@ -2786,6 +2896,7 @@ with st.sidebar:
         get_gold_ohlc.clear()
         get_dashboard_snapshot.clear()
         get_supabase_broker_feed.clear()
+        get_supabase_terminal_status.clear()
         get_base_optimizer.clear()
         get_simulations.clear()
         st.rerun()
@@ -2870,6 +2981,32 @@ elif page == "Live Trading":
     broker_quote, broker_feed_error = _latest_broker_quote()
     if broker_feed_error:
         st.warning(f"Feed Supabase gagal dibaca; mencoba quote lokal. Detail: {broker_feed_error}")
+
+    supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
+    live_terminal_status: dict[str, object] = {}
+    if supabase_url and supabase_read_key:
+        try:
+            live_terminal_status = get_supabase_terminal_status(
+                supabase_url,
+                supabase_read_key,
+                supabase_symbol,
+            )
+        except Exception:
+            pass
+    live_account_mode = str(live_terminal_status.get("account_mode", "BELUM TERVERIFIKASI")).upper()
+    live_broker = str(
+        live_terminal_status.get("broker_company") or live_terminal_status.get("broker_server") or "-"
+    )
+    if live_account_mode == "REAL":
+        st.error(
+            f"Akun MT5 **REAL** terdeteksi | Broker: **{live_broker}** | Gold Predictor tetap read-only. "
+            "Order uang riil dilakukan manual di MT5; ledger v1/v10 di bawah tetap paper trading."
+        )
+    else:
+        st.info(
+            f"Mode akun MT5: **{live_account_mode}** | Broker: **{live_broker}** | "
+            "Periksa panel lengkap di Data Broker sebelum entry manual."
+        )
 
     live_v1_tab, live_v10_tab = st.tabs(["Optimizer v1", "Optimizer v10"])
     st.info("Rencana evaluasi: paper live trading paralel Optimizer v1 dan Optimizer v10 berjalan sampai **30 Agustus 2026**.")
