@@ -68,7 +68,7 @@ _rsi = strategy_optimizer_module._rsi
 
 SIMULATION_CACHE_VERSION = "optimizer-v1-v10-2025q1-2026q2"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
-M1_BACKTEST_VERSION = "hybrid-v1-v10-intraday-m1-2026-07-21"
+M1_BACKTEST_VERSION = "v1-full-history-v10-oos-2026-07-21"
 M1_BACKTEST_PATH = Path("data/precomputed/m1_backtests.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -1320,14 +1320,26 @@ def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> N
     leaderboard = m1_payload[payload_offset + 1]
     summary = result.summary
     coverage = bool(summary.get("Cakupan lengkap", False))
-    st.warning(
-        f"Parameter dipilih hanya dari train **{summary.get('Periode train', '-')}**, lalu diuji tanpa optimasi ulang pada "
-        f"out-of-sample **{summary.get('Periode test', '-')}** ({summary.get('Jumlah candle', 0):,.0f} candle M1). "
-        + ("Cakupan data lengkap." if coverage else "Cakupan belum lengkap karena terminal MT5 saat pengambilan dibatasi 100.000 bar.")
-    )
+    monthly = summary.get("Pertumbuhan bulanan")
+    has_monthly = isinstance(monthly, pd.DataFrame) and not monthly.empty
+    if has_monthly:
+        st.warning(
+            f"Extended backtest memakai **{summary.get('Jumlah candle', 0):,.0f} candle M1 MT5** pada "
+            f"**{summary.get('Periode uji', '-')}**. Parameter dibekukan dari pemenang train April-Mei 2026 dan tidak "
+            "dioptimasi ulang pada histori penuh. "
+            + ("Seluruh 18 bulan tersedia." if coverage else "Ada bulan yang belum tersedia lengkap.")
+        )
+    else:
+        st.warning(
+            f"Parameter dipilih hanya dari train **{summary.get('Periode train', '-')}**, lalu diuji tanpa optimasi ulang pada "
+            f"out-of-sample **{summary.get('Periode test', '-')}** ({summary.get('Jumlah candle', 0):,.0f} candle M1). "
+            + ("Cakupan data lengkap." if coverage else "Cakupan belum lengkap karena histori terminal terbatas.")
+        )
     status = str(summary.get("Status kelayakan", "BELUM DINILAI"))
     if status.startswith("LAYAK"):
         st.success(f"Status hasil out-of-sample: **{status}**. Ini kandidat untuk paper test, belum persetujuan real-money.")
+    elif status.startswith("EXTENDED"):
+        st.info(f"Status validasi: **{status}**. Bulan ditandai menurut backward validation, calibration, dan out-of-sample.")
     else:
         st.error(f"Status hasil out-of-sample: **{status}**.")
     model_detail = (
@@ -1340,6 +1352,54 @@ def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> N
         "dimasukkan; swap BUY dihitung per hari menginap dan SELL nol. Latency serta kualitas fill riil belum dimodelkan. "
         "Summary memakai seluruh transaksi; tabel detail dibatasi pada 1.000 transaksi terakhir agar dashboard tetap ringan."
     )
+    if has_monthly:
+        st.markdown("**Pertumbuhan dan Kinerja per Bulan**")
+        st.caption(
+            "Growth bulanan memakai perubahan equity month-end dan membawa posisi/balance secara kontinu. "
+            "Net closed P/L hanya mencakup posisi yang ditutup pada bulan tersebut."
+        )
+        monthly_display = monthly.copy()
+        monthly_display["Bulan"] = pd.to_datetime(monthly_display["Bulan"]).dt.strftime("%b %Y")
+        st.dataframe(
+            monthly_display.style.format(
+                {
+                    "Equity awal": "${:,.2f}", "Equity akhir": "${:,.2f}",
+                    "Growth bulanan (%)": "{:+.2f}%", "Growth kumulatif (%)": "{:+.2f}%",
+                    "Total Profit": "${:+,.2f}", "Total Loss": "${:+,.2f}",
+                    "Net closed P/L": "${:+,.2f}", "Swap": "${:+,.2f}",
+                    "Transaksi": "{:.0f}", "BUY": "{:.0f}", "SELL": "{:.0f}",
+                    "Win rate (%)": "{:.1f}%", "Profit factor": "{:.2f}",
+                    "Max drawdown": "${:,.2f}", "Jumlah candle": "{:,.0f}",
+                    "Celah intraday >5 menit": "{:,.0f}",
+                },
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        chart_monthly = monthly.copy()
+        chart_monthly["Bulan"] = pd.to_datetime(chart_monthly["Bulan"])
+        figure = go.Figure()
+        figure.add_trace(
+            go.Bar(
+                x=chart_monthly["Bulan"], y=chart_monthly["Growth bulanan (%)"],
+                name="Growth bulanan", marker_color=["#16a34a" if value >= 0 else "#dc2626" for value in chart_monthly["Growth bulanan (%)"]],
+            )
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=chart_monthly["Bulan"], y=chart_monthly["Growth kumulatif (%)"],
+                name="Growth kumulatif", mode="lines+markers", yaxis="y2", line=dict(width=3, color="#2563eb"),
+            )
+        )
+        figure.update_layout(
+            title="Growth Bulanan dan Kumulatif v1 Intraday M1",
+            yaxis=dict(title="Growth bulanan (%)"),
+            yaxis2=dict(title="Growth kumulatif (%)", overlaying="y", side="right"),
+            height=430,
+            hovermode="x unified",
+        )
+        st.plotly_chart(figure, use_container_width=True)
     _render_multiphase_result(title, result, leaderboard)
 
 

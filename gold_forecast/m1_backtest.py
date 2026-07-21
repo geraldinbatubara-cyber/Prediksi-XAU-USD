@@ -14,6 +14,27 @@ CONTRACT_OUNCES_PER_LOT = 100.0
 BUY_SWAP_PER_001_LOT = 0.2
 TRAIN_END = pd.Timestamp("2026-05-31 23:59:59")
 TEST_START = pd.Timestamp("2026-06-01")
+V1_INTRADAY_FROZEN_PARAMS = {
+    "Strategi": "Daily v1 + Intraday confirmation | Frozen extended test",
+    "M1 Fast EMA": 30,
+    "M1 Slow EMA": 240,
+    "Momentum M1 bars": 30,
+    "Momentum threshold (%)": 0.01,
+    "ATR bars": 30,
+    "TP ATR": 2.5,
+    "SL ATR": 1.5,
+    "Trailing ATR": 0.0,
+    "Cooldown bars": 45,
+    "Max holding bars": 360,
+    "Max posisi": 1,
+    "Max transaksi per hari": 4,
+    "Daily loss cap (%)": 2.0,
+    "Lot minimum": 0.01,
+    "Lot maksimum": 0.01,
+    "Max spread points": 30,
+    "Slippage points per side": 2,
+    "Point size": 0.01,
+}
 
 
 @dataclass
@@ -107,6 +128,64 @@ def run_intraday_optimization(
             row["Status OOS"] = test_result.summary["Status kelayakan"]
         leaderboard_rows.append(row)
     return test_result, pd.DataFrame(leaderboard_rows)
+
+
+def run_fixed_v1_intraday_history(
+    gold_m1: pd.DataFrame,
+    gold_daily: pd.DataFrame,
+    *,
+    requested_start: pd.Timestamp,
+    requested_end: pd.Timestamp,
+) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
+    data = _prepare_m1(gold_m1, requested_start, requested_end)
+    if data.empty:
+        raise ValueError("Tidak ada candle M1 dalam periode extended backtest.")
+    params = V1_INTRADAY_FROZEN_PARAMS.copy()
+    daily_regime = _daily_regime(gold_daily, "v1")
+    mapped_regime = _map_daily_regime(data.index, daily_regime)
+    signals = _build_intraday_signals(data, mapped_regime, params, "v1")
+    result = _simulate_intraday(
+        data,
+        signals,
+        params,
+        "v1",
+        model_name="Optimizer v1 Intraday M1 - Extended History",
+        collect_details=True,
+    )
+    monthly = _monthly_performance(data, result)
+    result.summary.update(
+        {
+            "Periode uji": f"{data.index.min():%d %b %Y %H:%M} - {data.index.max():%d %b %Y %H:%M}",
+            "Periode diminta": f"{requested_start:%d %b %Y} - {requested_end:%d %b %Y}",
+            "Jumlah candle": float(len(data)),
+            "Cakupan lengkap": _all_requested_months_present(data, requested_start, requested_end),
+            "Timeframe": "Daily regime + M1 execution | Extended fixed-parameter test",
+            "Status kelayakan": "EXTENDED BACKTEST - BUKAN OOS PENUH",
+            "Pertumbuhan bulanan": monthly,
+            "Parameter dibekukan": True,
+            "Sumber parameter": "Pemenang train 6 Apr-31 Mei 2026; tidak dioptimasi ulang pada histori penuh",
+        }
+    )
+    leaderboard = pd.DataFrame(
+        [
+            {
+                **params,
+                "Periode aktual": result.summary["Periode uji"],
+                "Jumlah candle": result.summary["Jumlah candle"],
+                "Equity akhir": result.summary["Equity akhir"],
+                "Growth total": result.summary["Growth total"],
+                "Max drawdown": result.summary["Max drawdown"],
+                "Jumlah transaksi": result.summary["Jumlah transaksi"],
+                "Win rate": result.summary["Win rate"],
+                "Profit factor": result.summary["Profit factor"],
+                "Total BUY": result.summary["Total BUY"],
+                "Total SELL": result.summary["Total SELL"],
+                "Total swap": result.summary["Total swap"],
+                "Status validasi": result.summary["Status kelayakan"],
+            }
+        ]
+    )
+    return result, leaderboard
 
 
 def _prepare_m1(data: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
@@ -466,3 +545,88 @@ def _eligibility(summary) -> str:
             and summary["Max drawdown"] <= INITIAL_EQUITY * 0.20 and summary["Jumlah transaksi"] >= 8):
         return "LAYAK KANDIDAT PAPER TEST"
     return "BELUM LAYAK"
+
+
+def _monthly_performance(data: pd.DataFrame, result: MultiPhaseSimulationResult) -> pd.DataFrame:
+    curve = result.equity_curve.copy()
+    trades = result.trades.copy()
+    if curve.empty:
+        return pd.DataFrame()
+    curve_month = curve.index.to_period("M")
+    data_month = data.index.to_period("M")
+    if not trades.empty:
+        trades["Tanggal tutup"] = pd.to_datetime(trades["Tanggal tutup"], errors="coerce")
+        trade_month = trades["Tanggal tutup"].dt.to_period("M")
+    else:
+        trade_month = pd.Series(dtype="period[M]")
+
+    rows: list[dict[str, object]] = []
+    previous_equity = INITIAL_EQUITY
+    for period in pd.period_range(data.index.min().to_period("M"), data.index.max().to_period("M"), freq="M"):
+        month_curve = curve.loc[curve_month == period]
+        month_data = data.loc[data_month == period]
+        month_trades = trades.loc[trade_month == period] if not trades.empty else pd.DataFrame()
+        if month_curve.empty or month_data.empty:
+            rows.append(
+                {
+                    "Bulan": period.to_timestamp(),
+                    "Equity awal": previous_equity,
+                    "Equity akhir": np.nan,
+                    "Growth bulanan (%)": np.nan,
+                    "Growth kumulatif (%)": np.nan,
+                    "Jumlah candle": 0,
+                    "Status data": "Tidak tersedia",
+                    "Status validasi": _validation_segment(period),
+                }
+            )
+            continue
+
+        end_equity = float(month_curve["Equity"].iloc[-1])
+        monthly_growth = (end_equity / previous_equity - 1) * 100 if previous_equity else np.nan
+        net = pd.to_numeric(month_trades.get("Net P/L", pd.Series(dtype=float)), errors="coerce")
+        month_equity = pd.concat([pd.Series([previous_equity]), month_curve["Equity"].reset_index(drop=True)])
+        drawdown = float((month_equity.cummax() - month_equity).max())
+        gaps = month_data.index.to_series().diff()
+        intraday_gaps = int(((gaps > pd.Timedelta(minutes=5)) & (gaps < pd.Timedelta(hours=12))).sum())
+        gross_profit = float(net[net > 0].sum()) if not net.empty else 0.0
+        gross_loss = float(net[net < 0].sum()) if not net.empty else 0.0
+        profit_factor = np.nan if gross_loss == 0 else gross_profit / abs(gross_loss)
+        rows.append(
+            {
+                "Bulan": period.to_timestamp(),
+                "Equity awal": previous_equity,
+                "Equity akhir": end_equity,
+                "Growth bulanan (%)": monthly_growth,
+                "Growth kumulatif (%)": (end_equity / INITIAL_EQUITY - 1) * 100,
+                "Total Profit": gross_profit,
+                "Total Loss": gross_loss,
+                "Net closed P/L": float(net.sum()) if not net.empty else 0.0,
+                "Swap": float(pd.to_numeric(month_trades.get("Swap", pd.Series(dtype=float)), errors="coerce").sum()),
+                "Transaksi": float(len(month_trades)),
+                "BUY": float((month_trades.get("Arah", pd.Series(dtype=str)) == "BUY").sum()),
+                "SELL": float((month_trades.get("Arah", pd.Series(dtype=str)) == "SELL").sum()),
+                "Win rate (%)": float((net > 0).mean() * 100) if not net.empty else np.nan,
+                "Profit factor": profit_factor,
+                "Max drawdown": drawdown,
+                "Jumlah candle": int(len(month_data)),
+                "Celah intraday >5 menit": intraday_gaps,
+                "Status data": "Tersedia",
+                "Status validasi": _validation_segment(period),
+            }
+        )
+        previous_equity = end_equity
+    return pd.DataFrame(rows)
+
+
+def _validation_segment(period: pd.Period) -> str:
+    if period in {pd.Period("2026-04", freq="M"), pd.Period("2026-05", freq="M")}:
+        return "Calibration"
+    if period == pd.Period("2026-06", freq="M"):
+        return "Out-of-sample"
+    return "Backward validation"
+
+
+def _all_requested_months_present(data: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> bool:
+    available = set(data.index.to_period("M").unique())
+    requested = set(pd.period_range(start.to_period("M"), end.to_period("M"), freq="M"))
+    return requested.issubset(available)
