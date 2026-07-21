@@ -21,7 +21,7 @@ Hasil model adalah estimasi statistik, bukan saran investasi.
 Halaman `Data Broker` disiapkan untuk mengaudit feed XAUUSD dari akun demo MT5.
 Integrasi ini hanya membaca bid, ask, spread, serta candle M1 dan tidak mengirim order.
 Data broker tidak menggantikan `GC=F` sebelum hasil audit sumber, timestamp, spread,
-dan contract size dinyatakan memadai.
+dan contract size dinyatakan memadai. Bridge tetap read-only terhadap MT5.
 
 Pada komputer Windows yang sudah menjalankan terminal MT5 dan login ke akun demo:
 
@@ -40,6 +40,30 @@ diabaikan Git. Streamlit Cloud dapat membaca URL CSV read-only melalui secrets:
 bars_url = "https://storage.example/xauusd_m1.csv"
 quote_url = "https://storage.example/latest_quote.csv"
 ```
+
+### Feed MT5 ke Streamlit Cloud dengan Supabase
+
+1. Buat proyek Supabase Free dan jalankan isi `supabase/broker_feed.sql` pada SQL Editor.
+2. Pada terminal bridge, set secret hanya untuk sesi PowerShell saat ini:
+
+```powershell
+$env:SUPABASE_URL = "https://PROJECT.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY = "SERVICE_ROLE_SECRET"
+& ".\.venv\Scripts\python.exe" scripts\mt5_data_bridge.py --symbol XAUUSD --publish-supabase
+```
+
+3. Pada Streamlit Cloud Secrets, tambahkan key baca saja:
+
+```toml
+[supabase_broker]
+url = "https://PROJECT.supabase.co"
+publishable_key = "sb_publishable_..."
+symbol = "XAUUSD"
+```
+
+Jangan menyimpan `SUPABASE_SERVICE_ROLE_KEY` di source code, `.streamlit/secrets.toml`,
+Streamlit Cloud, atau GitHub. Dashboard hanya memerlukan publishable/anon key karena
+RLS pada tabel broker memberikan izin `select` dan menolak penulisan publik.
 
 ## Metodologi
 
@@ -93,4 +117,3 @@ Keduanya diisi oleh GitHub Actions:
 - `14:59 UTC` = `23:59 WIT` untuk menyimpan estimasi.
 - `23:00 UTC` = `08:00 WIT` untuk mengisi aktual hari berikutnya.
 - `00:00-03:00 UTC` = `09:00-12:00 WIT` untuk mengisi aktual lanjutan.
-
