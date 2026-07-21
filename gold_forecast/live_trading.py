@@ -561,6 +561,84 @@ def _close_hit_positions(ledger: pd.DataFrame, candle: pd.Series, now: pd.Timest
     return ledger
 
 
+def _broker_quote_state(quote: pd.Series | None, now: pd.Timestamp) -> dict[str, object]:
+    empty = {
+        "configured": False,
+        "fresh": False,
+        "bid": np.nan,
+        "ask": np.nan,
+        "mid": np.nan,
+        "timestamp": pd.NaT,
+        "age_minutes": np.nan,
+        "source": "GC=F harian",
+    }
+    if quote is None or len(quote) == 0:
+        return empty
+    try:
+        bid = float(quote["bid"])
+        ask = float(quote["ask"])
+        timestamp = pd.Timestamp(quote["timestamp_utc"])
+    except (KeyError, TypeError, ValueError):
+        return {**empty, "configured": True, "source": "Quote broker tidak valid"}
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+    now_utc = now.tz_convert("UTC")
+    age_minutes = max((now_utc - timestamp).total_seconds() / 60, 0.0)
+    valid = bid > 0 and ask >= bid
+    return {
+        "configured": True,
+        "fresh": valid and age_minutes <= 5,
+        "bid": bid,
+        "ask": ask,
+        "mid": (bid + ask) / 2,
+        "timestamp": timestamp,
+        "age_minutes": age_minutes,
+        "source": str(quote.get("source", "MT5 broker")),
+    }
+
+
+def _close_hit_positions_quote(
+    ledger: pd.DataFrame,
+    bid: float,
+    ask: float,
+    now: pd.Timestamp,
+) -> pd.DataFrame:
+    if ledger.empty:
+        return ledger
+    for index, row in ledger[ledger["status"].eq("OPEN")].iterrows():
+        entry_price = float(row["entry_price"])
+        lot = float(row["lot"])
+        units = lot * CONTRACT_OUNCES_PER_LOT
+        tp_points = float(row["tp_usd"]) / units
+        cl_points = float(row["cl_usd"]) / units
+        direction = str(row["arah"])
+
+        if direction == "BUY":
+            executable_price = bid
+            hit_tp = executable_price >= entry_price + tp_points
+            hit_cl = executable_price <= entry_price - cl_points
+        else:
+            executable_price = ask
+            hit_tp = executable_price <= entry_price - tp_points
+            hit_cl = executable_price >= entry_price + cl_points
+        if not hit_tp and not hit_cl:
+            continue
+
+        exit_reason = "CL tersentuh" if hit_cl else "TP tersentuh"
+        gross_pl = _unrealized(direction, entry_price, executable_price, lot)
+        swap = float(pd.to_numeric(row.get("swap", 0.0), errors="coerce") or 0.0)
+        ledger.loc[index, "status"] = "CLOSED"
+        ledger.loc[index, "exit_time_wit"] = now.strftime("%Y-%m-%d %H:%M:%S WIT")
+        ledger.loc[index, "exit_price"] = executable_price
+        ledger.loc[index, "exit_reason"] = exit_reason
+        ledger.loc[index, "gross_pl"] = gross_pl
+        ledger.loc[index, "net_pl"] = gross_pl + swap
+        ledger.loc[index, "last_update_wit"] = now.strftime("%Y-%m-%d %H:%M:%S WIT")
+    return ledger
+
+
 def _maybe_open_position(
     ledger: pd.DataFrame,
     signal: dict[str, object] | None,
@@ -568,6 +646,8 @@ def _maybe_open_position(
     now: pd.Timestamp,
     can_trade: bool,
     session_note: str,
+    broker_bid: float | None = None,
+    broker_ask: float | None = None,
 ) -> pd.DataFrame:
     if signal is None:
         return ledger
@@ -599,6 +679,12 @@ def _maybe_open_position(
     if pd.isna(next_id):
         next_id = 1
 
+    entry_price = float(signal["reference_price"])
+    if can_open and direction == "BUY" and broker_ask is not None:
+        entry_price = float(broker_ask)
+    elif can_open and direction == "SELL" and broker_bid is not None:
+        entry_price = float(broker_bid)
+
     new_row = {
         "position_id": next_id,
         "signal_date": signal_date,
@@ -613,7 +699,7 @@ def _maybe_open_position(
         "tp_usd": float(params["TP (USD)"]),
         "cl_usd": float(params["SL (USD)"]),
         "entry_time_wit": now.strftime("%Y-%m-%d %H:%M:%S WIT") if can_open else "",
-        "entry_price": float(signal["reference_price"]) if can_open else np.nan,
+        "entry_price": entry_price if can_open else np.nan,
         "last_swap_date": now.strftime("%Y-%m-%d") if can_open else "",
         "exit_time_wit": "",
         "exit_price": np.nan,
@@ -758,6 +844,7 @@ def run_live_trading_update(
     now: pd.Timestamp | None = None,
     path: Path = LIVE_TRADING_PATH,
     start_date: pd.Timestamp = LIVE_START_DATE,
+    broker_quote: pd.Series | None = None,
 ) -> dict[str, object]:
     now_wit = _now_wit(now)
     cutoff_date = now_wit.tz_localize(None).normalize()
@@ -770,19 +857,45 @@ def run_live_trading_update(
         can_trade = False
         session_note = f"Paper live trading strategi ini baru dimulai {start_date.strftime('%d %b %Y')}."
 
+    quote_state = _broker_quote_state(broker_quote, now_wit)
+    if quote_state["configured"] and not quote_state["fresh"]:
+        can_trade = False
+        age = quote_state["age_minutes"]
+        age_label = "tidak diketahui" if pd.isna(age) else f"{float(age):.1f} menit"
+        session_note = f"Quote broker stale/tidak valid (usia {age_label}); entry dan exit otomatis ditahan."
+
+    ledger = _apply_swap(ledger, now_wit)
     if not usable_gold.empty:
         latest_candle = usable_gold.iloc[-1]
-        latest_price = float(latest_candle["Close"])
-        ledger = _apply_swap(ledger, now_wit)
-        ledger = _close_hit_positions(ledger, latest_candle, now_wit)
+        if quote_state["fresh"]:
+            latest_price = float(quote_state["mid"])
+            ledger = _close_hit_positions_quote(
+                ledger,
+                float(quote_state["bid"]),
+                float(quote_state["ask"]),
+                now_wit,
+            )
+        else:
+            latest_price = float(quote_state["mid"]) if quote_state["configured"] else float(latest_candle["Close"])
+            if not quote_state["configured"]:
+                ledger = _close_hit_positions(ledger, latest_candle, now_wit)
     else:
-        latest_price = np.nan
+        latest_price = float(quote_state["mid"]) if quote_state["configured"] else np.nan
 
     waiting_state = _signal_waiting_state(usable_gold, params)
     signal = _current_optimizer_signal(usable_gold, params, now_wit, start_date)
     if signal is not None:
         signal["source"] = "Optimizer penuh"
-    ledger = _maybe_open_position(ledger, signal, params, now_wit, can_trade, session_note)
+    ledger = _maybe_open_position(
+        ledger,
+        signal,
+        params,
+        now_wit,
+        can_trade,
+        session_note,
+        broker_bid=float(quote_state["bid"]) if quote_state["fresh"] else None,
+        broker_ask=float(quote_state["ask"]) if quote_state["fresh"] else None,
+    )
     trigger_state = _optimizer_trigger_state(ledger, signal, params, can_trade, session_note)
     save_live_ledger(ledger, path)
 
@@ -795,7 +908,11 @@ def run_live_trading_update(
     else:
         floating_pl = 0.0
         for _, row in open_positions.iterrows():
-            floating_pl += _unrealized(str(row["arah"]), float(row["entry_price"]), latest_price, float(row["lot"]))
+            direction = str(row["arah"])
+            executable_price = latest_price
+            if quote_state["fresh"]:
+                executable_price = float(quote_state["bid"] if direction == "BUY" else quote_state["ask"])
+            floating_pl += _unrealized(direction, float(row["entry_price"]), executable_price, float(row["lot"]))
 
     closed_net = float(pd.to_numeric(closed_positions["net_pl"], errors="coerce").fillna(0.0).sum()) if not closed_positions.empty else 0.0
     open_swap = float(pd.to_numeric(open_positions["swap"], errors="coerce").fillna(0.0).sum()) if not open_positions.empty else 0.0
@@ -812,7 +929,12 @@ def run_live_trading_update(
         "Open BUY": open_buy,
         "Open SELL": open_sell,
         "Latest price": latest_price,
-        "Latest data date": usable_gold.index.max() if not usable_gold.empty else pd.NaT,
+        "Latest bid": quote_state["bid"],
+        "Latest ask": quote_state["ask"],
+        "Price source": quote_state["source"],
+        "Broker quote fresh": quote_state["fresh"],
+        "Broker quote age minutes": quote_state["age_minutes"],
+        "Latest data date": quote_state["timestamp"] if quote_state["configured"] else (usable_gold.index.max() if not usable_gold.empty else pd.NaT),
         "Can trade": can_trade,
         "Session note": session_note,
         "Now WIT": now_wit,
