@@ -290,12 +290,14 @@ def _simulate_phase(
     profit_protection_floor_usd: float | None = None,
     profit_protection_trail_usd: float | None = None,
     close_on_target_equity: bool = True,
+    accrue_swap_by_elapsed_days: bool = False,
 ) -> SimulationResult:
     cash_balance = initial_balance
     next_position_id = 1
     closed_rows: list[dict[str, object]] = []
     equity_rows: list[dict[str, object]] = []
     open_positions: list[DynamicPosition] = []
+    last_swap_dates: dict[int, pd.Timestamp] = {}
     last_cl_price: dict[str, float] = {}
     if signals.empty or gold_ohlc.empty:
         return _result(closed_rows, equity_rows, initial_balance, target_equity)
@@ -398,8 +400,19 @@ def _simulate_phase(
 
         for position in open_positions:
             daily_swap = _swap_cost(position)
-            position.swap_paid += daily_swap
-            cash_balance -= daily_swap
+            if accrue_swap_by_elapsed_days:
+                current_day = pd.Timestamp(current_date).normalize()
+                previous_day = last_swap_dates.get(
+                    position.position_id,
+                    pd.Timestamp(position.signal_date).normalize(),
+                )
+                elapsed_days = max(0, int((current_day - previous_day).days))
+                swap_cost = daily_swap * elapsed_days
+                last_swap_dates[position.position_id] = current_day
+            else:
+                swap_cost = daily_swap
+            position.swap_paid += swap_cost
+            cash_balance -= swap_cost
 
         if current_date in signal_dates:
             signal = signals.loc[current_date]
@@ -557,6 +570,7 @@ def _multiphase_result(
     profit_protection_floor_usd: float | None = None,
     profit_protection_trail_usd: float | None = None,
     close_on_target_equity: bool = True,
+    accrue_swap_by_elapsed_days: bool = False,
     test_start: pd.Timestamp = OPTIMIZATION_START,
     test_end: pd.Timestamp = OPTIMIZATION_END,
 ) -> MultiPhaseSimulationResult:
@@ -596,6 +610,7 @@ def _multiphase_result(
             profit_protection_floor_usd=profit_protection_floor_usd,
             profit_protection_trail_usd=profit_protection_trail_usd,
             close_on_target_equity=close_on_target_equity,
+            accrue_swap_by_elapsed_days=accrue_swap_by_elapsed_days,
         )
         phase_rows.append(_phase_row(phase, result, start_equity, target_equity))
         if not result.trades.empty:

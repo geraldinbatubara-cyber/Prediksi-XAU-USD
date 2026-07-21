@@ -68,6 +68,8 @@ _rsi = strategy_optimizer_module._rsi
 
 SIMULATION_CACHE_VERSION = "optimizer-v1-v10-2025q1-2026q2"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
+M1_BACKTEST_VERSION = "fixed-v1-v10-m1-2026-07-21"
+M1_BACKTEST_PATH = Path("data/precomputed/m1_backtests.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -99,6 +101,20 @@ def load_precomputed_simulations(simulation_version: str):
             return saved["payload"]
     except Exception:
         PRECOMPUTED_SIMULATION_PATH.unlink(missing_ok=True)
+    return None
+
+
+@st.cache_resource
+def load_precomputed_m1_backtests(backtest_version: str):
+    if not M1_BACKTEST_PATH.exists():
+        return None
+    try:
+        with M1_BACKTEST_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
     return None
 
 
@@ -1257,28 +1273,57 @@ def render_simulation(
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
     st.caption(
-        "Simulasi sekarang hanya menampilkan Strategi Terbaik Optimizer dan Strategi Optimizer v10 agar dashboard tetap ringan."
+        "Simulasi menampilkan strategi harian serta eksperimen fixed-parameter pada candle M1."
     )
     st.warning(
         "Asumsi utama: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
         "Simulasi memakai dataset 1 Jan 2025-30 Jun 2026. Data sebelum 1 Jan 2025 tidak dipakai agar proses tetap ringan. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
-        "Data memakai OHLC harian GC=F, sehingga jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
+        "Dua tab strategi harian memakai OHLC harian GC=F; tab M1 memiliki penjelasan dataset tersendiri. "
+        "Jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    (
-        optimizer_tab,
-        optimizer_v10_tab,
-    ) = st.tabs(
+    optimizer_tab, optimizer_v10_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v10",
+            "v1 M1",
+            "v10 M1",
         ]
     )
     with optimizer_tab:
         _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
     with optimizer_v10_tab:
         _render_multiphase_result("Strategi Optimizer v10", optimized_v10_result, optimization_v10_leaderboard, gold_ohlc)
+    m1_payload = load_precomputed_m1_backtests(M1_BACKTEST_VERSION)
+    with optimizer_v1_m1_tab:
+        _render_m1_backtest_tab(m1_payload, payload_offset=0, title="Optimizer v1 M1")
+    with optimizer_v10_m1_tab:
+        _render_m1_backtest_tab(m1_payload, payload_offset=2, title="Optimizer v10 M1")
+
+
+def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:
+    st.subheader(title)
+    if m1_payload is None:
+        st.warning("Hasil M1 precomputed belum tersedia. Jalankan scripts/build_m1_backtests.py dari laptop yang terhubung ke MT5.")
+        return
+
+    result = m1_payload[payload_offset]
+    leaderboard = m1_payload[payload_offset + 1]
+    summary = result.summary
+    coverage = bool(summary.get("Cakupan lengkap", False))
+    st.warning(
+        f"Backtest memakai **{summary.get('Jumlah candle', 0):,.0f} candle M1 MT5 Demo** pada periode aktual "
+        f"**{summary.get('Periode uji', '-')}**. Periode yang diminta: **{summary.get('Periode diminta', '-')}**. "
+        + ("Cakupan data lengkap." if coverage else "Cakupan belum lengkap karena terminal MT5 saat pengambilan dibatasi 100.000 bar.")
+    )
+    st.info(
+        "Ini adalah uji pemindahan parameter secara langsung, tanpa optimasi ulang: MA 10/50 berarti 10/50 candle menit, "
+        "dan momentum 10 berarti 10 candle menit. Swap BUY dihitung per hari menginap; SELL nol. "
+        "Spread, slippage, latency, dan kualitas fill belum dikurangkan, sehingga hasil riil dapat lebih buruk. "
+        "Summary memakai seluruh transaksi; tabel detail dibatasi pada 1.000 transaksi terakhir agar dashboard tetap ringan."
+    )
+    _render_multiphase_result(title, result, leaderboard)
 
 
 def _render_v10_walk_forward_result(result, leaderboard: pd.DataFrame) -> None:
