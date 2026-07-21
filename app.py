@@ -48,6 +48,7 @@ from gold_forecast.monitoring import (
 )
 from gold_forecast.signals import build_signal
 from gold_forecast import strategy_optimizer as strategy_optimizer_module
+from gold_forecast.supabase_broker import load_supabase_broker_feed
 
 
 OPTIMIZATION_END = strategy_optimizer_module.OPTIMIZATION_END
@@ -2023,6 +2024,7 @@ def render_live_trading(
     manual_path=LIVE_MANUAL_EXIT_PATH,
     key_prefix: str = "v1",
     strategy_note: str | None = None,
+    broker_quote: pd.Series | None = None,
 ) -> None:
     if optimization_leaderboard.empty:
         st.warning(
@@ -2036,6 +2038,7 @@ def render_live_trading(
         optimization_leaderboard,
         path=live_path,
         start_date=start_date,
+        broker_quote=broker_quote,
     )
     summary = live["summary"]
     params = live["params"]
@@ -2068,6 +2071,15 @@ def render_live_trading(
         f"Waktu dashboard: **{summary['Now WIT'].strftime('%d %b %Y %H:%M:%S WIT')}** | "
         f"Status sesi: **{status_text}** | {summary['Session note']}"
     )
+    if pd.notna(summary.get("Latest bid")) and pd.notna(summary.get("Latest ask")):
+        quote_status = "AKTIF" if summary.get("Broker quote fresh") else "STALE"
+        st.info(
+            f"Feed eksekusi: **{summary.get('Price source', 'MT5 broker')}** | Status: **{quote_status}** | "
+            f"Bid **${float(summary['Latest bid']):,.2f}** | Ask **${float(summary['Latest ask']):,.2f}** | "
+            f"Usia **{float(summary.get('Broker quote age minutes', 0.0)):.1f} menit**"
+        )
+    else:
+        st.warning("Feed bid/ask broker belum tersedia; paper trading masih memakai fallback GC=F harian.")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Equity live", f"${summary['Equity']:,.2f}", f"{summary['Equity'] - LIVE_INITIAL_EQUITY:+,.2f}")
@@ -2539,6 +2551,35 @@ def _broker_feed_sources():
     return bars_source or BROKER_BARS_PATH, quote_source or BROKER_QUOTE_PATH
 
 
+def _supabase_broker_config() -> tuple[str, str, str]:
+    try:
+        config = st.secrets.get("supabase_broker", {})
+    except Exception:
+        config = {}
+    if not config:
+        return "", "", "XAUUSD"
+    read_key = config.get("publishable_key") or config.get("anon_key") or ""
+    return str(config.get("url", "")).strip(), str(read_key).strip(), str(config.get("symbol", "XAUUSD")).strip()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_supabase_broker_feed(base_url: str, read_key: str, symbol: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return load_supabase_broker_feed(base_url, read_key, symbol=symbol)
+
+
+def _latest_broker_quote() -> tuple[pd.Series | None, str | None]:
+    supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
+    if supabase_url and supabase_read_key:
+        try:
+            _, quotes = get_supabase_broker_feed(supabase_url, supabase_read_key, supabase_symbol)
+            return (quotes.iloc[-1] if not quotes.empty else None), None
+        except Exception as exc:
+            fallback = load_broker_quote(BROKER_QUOTE_PATH)
+            return (fallback.iloc[-1] if not fallback.empty else None), str(exc)
+    quotes = load_broker_quote(BROKER_QUOTE_PATH)
+    return (quotes.iloc[-1] if not quotes.empty else None), None
+
+
 def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
     st.subheader("Data Broker XAUUSD - Read Only")
     st.caption(
@@ -2558,6 +2599,12 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
     bars_source, quote_source = _broker_feed_sources()
     bars = load_broker_bars(uploaded_bars if uploaded_bars is not None else bars_source)
     quotes = load_broker_quote(quote_source)
+    supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
+    if uploaded_bars is None and supabase_url and supabase_read_key:
+        try:
+            bars, quotes = get_supabase_broker_feed(supabase_url, supabase_read_key, supabase_symbol)
+        except Exception as exc:
+            st.warning(f"Supabase broker belum dapat dibaca; memakai fallback lokal/CSV. Detail: {exc}")
     audit = audit_broker_feed(bars, quotes, stale_after_minutes=5)
 
     latest_quote = audit["latest_quote"]
@@ -2595,7 +2642,7 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
 
     if not audit["connected"]:
         st.info(
-            "Feed broker belum tersedia. Tab sudah siap menerima file dari bridge MT5 lokal atau URL CSV read-only "
+            "Feed broker belum tersedia. Tab dapat membaca bridge MT5 lokal, Supabase read-only, atau URL CSV "
             "melalui Streamlit secrets."
         )
 
@@ -2686,13 +2733,16 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
             Gunakan `--once` untuk satu snapshot. Bridge hanya membaca tick dan candle M1; tidak memiliki kode pengiriman order.
             File lokal disimpan di `data/broker/` dan tidak masuk Git agar data akun tidak dipublikasikan.
 
-            Untuk Streamlit Cloud, tambahkan URL CSV read-only melalui secrets setelah storage eksternal disiapkan:
+            Untuk Streamlit Cloud melalui Supabase, tambahkan URL dan publishable/anon key read-only ke secrets:
 
             ```toml
-            [broker_data]
-            bars_url = "https://storage.example/xauusd_m1.csv"
-            quote_url = "https://storage.example/latest_quote.csv"
+            [supabase_broker]
+            url = "https://PROJECT.supabase.co"
+            publishable_key = "sb_publishable_..."
+            symbol = "XAUUSD"
             ```
+
+            `service_role` tidak boleh dimasukkan ke Streamlit atau GitHub; key tersebut hanya berada di laptop bridge.
             """
         )
 
@@ -2723,6 +2773,7 @@ with st.sidebar:
         get_data.clear()
         get_gold_ohlc.clear()
         get_dashboard_snapshot.clear()
+        get_supabase_broker_feed.clear()
         get_base_optimizer.clear()
         get_simulations.clear()
         st.rerun()
@@ -2804,6 +2855,10 @@ elif page == "Live Trading":
         st.error(f"Data OHLC belum dapat diproses: {exc}")
         st.stop()
 
+    broker_quote, broker_feed_error = _latest_broker_quote()
+    if broker_feed_error:
+        st.warning(f"Feed Supabase gagal dibaca; mencoba quote lokal. Detail: {broker_feed_error}")
+
     live_v1_tab, live_v10_tab = st.tabs(["Optimizer v1", "Optimizer v10"])
     st.info("Rencana evaluasi: paper live trading paralel Optimizer v1 dan Optimizer v10 berjalan sampai **30 Agustus 2026**.")
     with live_v1_tab:
@@ -2820,6 +2875,7 @@ elif page == "Live Trading":
                 "Ini adalah Live Trading lama yang sudah berjalan. Entry mengikuti sinyal Optimizer v1, "
                 "boleh menambah posisi dari sinyal hari berbeda sampai batas maksimal 8 BUY dan 10 SELL."
             ),
+            broker_quote=broker_quote,
         )
     with live_v10_tab:
         optimization_v10_live_leaderboard = get_v10_leaderboard_for_live(SIMULATION_CACHE_VERSION)
@@ -2835,6 +2891,7 @@ elif page == "Live Trading":
                 "Paper live v10 mulai 20 Juli 2026. Parameter diambil dari hasil Optimizer v10 precomputed, "
                 "sehingga tidak menghitung ulang optimizer berat saat dashboard dibuka."
             ),
+            broker_quote=broker_quote,
         )
 
 elif page == "Data Broker":
@@ -2853,4 +2910,3 @@ else:
         st.stop()
 
     render_intraday_audit(gold_ohlc)
-
