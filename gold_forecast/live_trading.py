@@ -577,7 +577,8 @@ def _broker_quote_state(quote: pd.Series | None, now: pd.Timestamp) -> dict[str,
     try:
         bid = float(quote["bid"])
         ask = float(quote["ask"])
-        timestamp = pd.Timestamp(quote["timestamp_utc"])
+        market_timestamp = pd.Timestamp(quote["timestamp_utc"])
+        timestamp = pd.Timestamp(quote.get("received_at_utc", market_timestamp))
     except (KeyError, TypeError, ValueError):
         return {**empty, "configured": True, "source": "Quote broker tidak valid"}
     if timestamp.tzinfo is None:
@@ -585,15 +586,17 @@ def _broker_quote_state(quote: pd.Series | None, now: pd.Timestamp) -> dict[str,
     else:
         timestamp = timestamp.tz_convert("UTC")
     now_utc = now.tz_convert("UTC")
-    age_minutes = max((now_utc - timestamp).total_seconds() / 60, 0.0)
+    age_minutes = (now_utc - timestamp).total_seconds() / 60
     valid = bid > 0 and ask >= bid
+    clock_valid = bool(quote.get("clock_valid", True))
     return {
         "configured": True,
-        "fresh": valid and age_minutes <= 5,
+        "fresh": valid and clock_valid and -1 <= age_minutes <= 5,
         "bid": bid,
         "ask": ask,
         "mid": (bid + ask) / 2,
         "timestamp": timestamp,
+        "market_timestamp": market_timestamp,
         "age_minutes": age_minutes,
         "source": str(quote.get("source", "MT5 broker")),
     }

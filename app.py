@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - handled in deployed UI
     st_autorefresh = None
 
 from gold_forecast.broker_data import (
+    apply_broker_clock_offset,
     BROKER_BARS_PATH,
     BROKER_QUOTE_PATH,
     audit_broker_feed,
@@ -2605,6 +2606,7 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
             bars, quotes = get_supabase_broker_feed(supabase_url, supabase_read_key, supabase_symbol)
         except Exception as exc:
             st.warning(f"Supabase broker belum dapat dibaca; memakai fallback lokal/CSV. Detail: {exc}")
+    bars, quotes = apply_broker_clock_offset(bars, quotes)
     audit = audit_broker_feed(bars, quotes, stale_after_minutes=5)
 
     latest_quote = audit["latest_quote"]
@@ -2618,16 +2620,21 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
     status = "BELUM TERHUBUNG"
     if audit["connected"]:
         status = "STALE" if audit["stale"] else "AKTIF"
-    latest_wit = (
+    latest_market_wit = (
         "-"
         if pd.isna(audit["latest_timestamp"])
         else pd.Timestamp(audit["latest_timestamp"]).tz_convert(WIT).strftime("%d %b %Y %H:%M:%S WIT")
+    )
+    latest_received_wit = (
+        latest_market_wit
+        if pd.isna(audit["latest_received_at"])
+        else pd.Timestamp(audit["latest_received_at"]).tz_convert(WIT).strftime("%d %b %Y %H:%M:%S WIT")
     )
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Status feed", status)
     c2.metric("Sumber", source_name)
-    c3.metric("Update terakhir", latest_wit)
+    c3.metric("Data diterima", latest_received_wit)
     c4.metric(
         "Usia data",
         "-" if pd.isna(audit["age_minutes"]) else f"{audit['age_minutes']:.1f} menit",
@@ -2651,7 +2658,12 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
             {
                 "Pemeriksaan": "Feed memiliki timestamp valid",
                 "Status": "Lolos" if audit["connected"] else "Menunggu",
-                "Detail": latest_wit,
+                "Detail": latest_market_wit,
+            },
+            {
+                "Pemeriksaan": "Sinkronisasi jam broker",
+                "Status": "Lolos" if audit["clock_valid"] else "Perlu perhatian",
+                "Detail": f"Offset terdeteksi {audit['clock_offset_hours']:+.0f} jam | diterima {latest_received_wit}",
             },
             {
                 "Pemeriksaan": "Usia data maksimal 5 menit",

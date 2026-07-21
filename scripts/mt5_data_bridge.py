@@ -46,10 +46,12 @@ def _write_snapshot(mt5, symbol: str, bars_count: int) -> tuple[pd.DataFrame, pd
         ["timestamp_utc", "open", "high", "low", "close", "tick_volume", "spread_points", "symbol", "source"]
     ].to_csv(BROKER_BARS_PATH, index=False)
 
+    received_at_utc = pd.Timestamp.now(tz="UTC")
     quote = pd.DataFrame(
         [
             {
                 "timestamp_utc": pd.to_datetime(tick.time_msc, unit="ms", utc=True),
+                "received_at_utc": received_at_utc,
                 "bid": float(tick.bid),
                 "ask": float(tick.ask),
                 "symbol": symbol,

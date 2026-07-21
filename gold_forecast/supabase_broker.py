@@ -7,7 +7,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from gold_forecast.broker_data import load_broker_bars, load_broker_quote
+from gold_forecast.broker_data import apply_broker_clock_offset, load_broker_bars, load_broker_quote
 
 
 def _request_json(
@@ -76,13 +76,16 @@ def publish_broker_snapshot(
 
     latest_quote = quotes.tail(1).copy()
     latest_quote["source"] = latest_quote["source"].astype(str) + " via Supabase"
+    if "received_at_utc" not in latest_quote.columns:
+        latest_quote["received_at_utc"] = pd.Timestamp.now(tz="UTC")
+    latest_quote["updated_at"] = latest_quote["received_at_utc"]
     _request_json(
         base_url,
         service_role_key,
         "broker_latest_quote",
         method="POST",
         query={"on_conflict": "symbol"},
-        payload=_records(latest_quote[["symbol", "timestamp_utc", "bid", "ask", "source"]]),
+        payload=_records(latest_quote[["symbol", "timestamp_utc", "bid", "ask", "source", "updated_at"]]),
         prefer="resolution=merge-duplicates,return=minimal",
     )
 
@@ -125,7 +128,7 @@ def load_supabase_broker_feed(
         read_key,
         "broker_latest_quote",
         query={
-            "select": "timestamp_utc,bid,ask,symbol,source",
+            "select": "timestamp_utc,bid,ask,symbol,source,updated_at",
             "symbol": f"eq.{symbol}",
             "limit": "1",
         },
@@ -143,4 +146,4 @@ def load_supabase_broker_feed(
     )
     bars = load_broker_bars(pd.DataFrame(bar_rows or []))
     quotes = load_broker_quote(pd.DataFrame(quote_rows or []))
-    return bars, quotes
+    return apply_broker_clock_offset(bars, quotes)
