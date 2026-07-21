@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $configDirectory = Join-Path $env:LOCALAPPDATA "GoldPredictor"
 $configPath = Join-Path $configDirectory "launcher.json"
-$dashboardUrl = "https://klmshreuteappzrrjyp3kuh.streamlit.app/"
+$dashboardUrl = "https://goldpredictor.streamlit.app/"
 
 $mt5Candidates = @(
     (Join-Path $env:ProgramFiles "MetaTrader 5\terminal64.exe"),

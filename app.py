@@ -49,7 +49,16 @@ from gold_forecast.monitoring import (
 )
 from gold_forecast.signals import build_signal
 from gold_forecast import strategy_optimizer as strategy_optimizer_module
-from gold_forecast.supabase_broker import load_supabase_broker_feed, load_supabase_terminal_status
+from gold_forecast.supabase_broker import load_supabase_broker_feed
+try:
+    from gold_forecast.supabase_broker import load_supabase_terminal_status
+except ImportError:  # pragma: no cover - compatibility during Streamlit rolling deploys
+    def load_supabase_terminal_status(
+        base_url: str,
+        read_key: str,
+        symbol: str = "XAUUSD",
+    ) -> dict[str, object]:
+        return {}
 
 
 OPTIMIZATION_END = strategy_optimizer_module.OPTIMIZATION_END

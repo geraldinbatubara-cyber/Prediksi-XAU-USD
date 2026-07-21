@@ -5,6 +5,7 @@ $configDirectory = Join-Path $env:LOCALAPPDATA "GoldPredictor"
 $configPath = Join-Path $configDirectory "launcher.json"
 $pidPath = Join-Path $configDirectory "bridge.pid"
 $logDirectory = Join-Path $configDirectory "logs"
+$dashboardUrl = "https://goldpredictor.streamlit.app/"
 
 function Show-LauncherMessage {
     param([string]$Message, [string]$Title = "Gold Predictor", [int]$Icon = 64)
@@ -17,6 +18,10 @@ try {
         throw "Konfigurasi belum tersedia. Jalankan scripts\setup_gold_predictor.ps1 satu kali."
     }
     $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    if ($config.dashboard_url -ne $dashboardUrl) {
+        $config.dashboard_url = $dashboardUrl
+        $config | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding UTF8
+    }
     $pythonPath = Join-Path $config.project_root ".venv\Scripts\python.exe"
     $bridgePath = Join-Path $config.project_root "scripts\mt5_data_bridge.py"
     if (-not (Test-Path -LiteralPath $pythonPath)) {
@@ -78,7 +83,7 @@ try {
         }
     }
 
-    Start-Process ([string]$config.dashboard_url) | Out-Null
+    Start-Process $dashboardUrl | Out-Null
     Show-LauncherMessage "MT5 dan bridge aktif. Dashboard dibuka di browser."
 } catch {
     Show-LauncherMessage $_.Exception.Message "Gold Predictor gagal dimulai" 16
