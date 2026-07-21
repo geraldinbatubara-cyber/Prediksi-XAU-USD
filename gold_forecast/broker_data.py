@@ -14,9 +14,11 @@ BAR_COLUMNS = ["timestamp_utc", "open", "high", "low", "close", "tick_volume", "
 QUOTE_COLUMNS = ["timestamp_utc", "bid", "ask", "mid", "spread", "symbol", "source"]
 
 
-def _read_csv(source: str | Path | IO[bytes] | IO[str] | None) -> pd.DataFrame:
+def _read_csv(source: str | Path | IO[bytes] | IO[str] | pd.DataFrame | None) -> pd.DataFrame:
     if source is None:
         return pd.DataFrame()
+    if isinstance(source, pd.DataFrame):
+        return source.copy()
     if isinstance(source, Path) and not source.exists():
         return pd.DataFrame()
     try:
@@ -34,7 +36,9 @@ def _timestamp_column(frame: pd.DataFrame) -> str | None:
     return None
 
 
-def load_broker_bars(source: str | Path | IO[bytes] | IO[str] | None = BROKER_BARS_PATH) -> pd.DataFrame:
+def load_broker_bars(
+    source: str | Path | IO[bytes] | IO[str] | pd.DataFrame | None = BROKER_BARS_PATH,
+) -> pd.DataFrame:
     frame = _read_csv(source)
     if frame.empty:
         return pd.DataFrame(columns=BAR_COLUMNS)
@@ -61,7 +65,9 @@ def load_broker_bars(source: str | Path | IO[bytes] | IO[str] | None = BROKER_BA
     return frame[BAR_COLUMNS].reset_index(drop=True)
 
 
-def load_broker_quote(source: str | Path | IO[bytes] | IO[str] | None = BROKER_QUOTE_PATH) -> pd.DataFrame:
+def load_broker_quote(
+    source: str | Path | IO[bytes] | IO[str] | pd.DataFrame | None = BROKER_QUOTE_PATH,
+) -> pd.DataFrame:
     frame = _read_csv(source)
     if frame.empty:
         return pd.DataFrame(columns=QUOTE_COLUMNS)
@@ -142,4 +148,3 @@ def audit_broker_feed(
         "invalid_bars": invalid_bars,
         "gaps_over_five_minutes": gaps_over_five,
     }
-
