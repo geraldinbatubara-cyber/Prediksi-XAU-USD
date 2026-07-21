@@ -13,29 +13,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gold_forecast.broker_data import apply_broker_clock_offset, load_broker_bars, load_broker_quote
-from gold_forecast.m1_backtest import run_fixed_m1_strategy
+from gold_forecast.data import load_gold_data
+from gold_forecast.m1_backtest import run_intraday_optimization
 
 
 OUTPUT_PATH = PROJECT_ROOT / "data" / "precomputed" / "m1_backtests.pkl"
-VERSION = "fixed-v1-v10-m1-2026-07-21"
+VERSION = "hybrid-v1-v10-intraday-m1-2026-07-21"
 REQUESTED_START = pd.Timestamp("2025-01-01")
 REQUESTED_END = pd.Timestamp("2026-06-30 23:59:59")
-
-V1_PARAMS = {
-    "Mode": "Trend", "Strategi": "Trend | MA 10/50 | Mom 10 | TP 25 SL 10 | Lot 0.01",
-    "Fast MA": 10, "Slow MA": 50, "Momentum hari": 10, "Threshold entry (%)": 0.15,
-    "TP (USD)": 25.0, "SL (USD)": 10.0, "Lot": 0.01, "Target fase (%)": 20.0,
-    "Close-all target equity": True,
-}
-V10_PARAMS = {
-    "Mode": "Trend",
-    "Strategi": "Trend | MA 20/50 | Mom 14 | TP 50 SL 18 | Lot 0.03 | Max 8/10 | Protection 60/40/20",
-    "Fast MA": 20, "Slow MA": 50, "Momentum hari": 14, "Threshold entry (%)": 0.10,
-    "TP (USD)": 50.0, "SL (USD)": 18.0, "Lot": 0.03, "Max BUY": 8, "Max SELL": 10,
-    "Risk cap floating SL (%)": 50.0, "Target fase (%)": 20.0,
-    "Profit protection aktif (USD)": 60.0, "Profit protection floor (USD)": 40.0,
-    "Profit protection trail (USD)": 20.0, "Close-all target equity": False,
-}
 
 
 def _load_mt5_m1() -> pd.DataFrame:
@@ -62,15 +47,24 @@ def _load_mt5_m1() -> pd.DataFrame:
     bars["source"] = "MT5 DEMO"
     quote = pd.DataFrame([{
         "timestamp_utc": pd.to_datetime(tick.time_msc, unit="ms", utc=True),
-        "received_at_utc": received_at, "bid": float(tick.bid), "ask": float(tick.ask),
-        "symbol": "XAUUSD", "source": "MT5 DEMO",
+        "received_at_utc": received_at,
+        "bid": float(tick.bid),
+        "ask": float(tick.ask),
+        "symbol": "XAUUSD",
+        "source": "MT5 DEMO",
     }])
     clean_bars = load_broker_bars(bars)
     clean_quote = load_broker_quote(quote)
     clean_bars, _ = apply_broker_clock_offset(clean_bars, clean_quote)
-    indexed = clean_bars.set_index("timestamp_utc")[["open", "high", "low", "close"]]
+    indexed = clean_bars.set_index("timestamp_utc")[["open", "high", "low", "close", "spread_points"]]
     indexed.index = indexed.index.tz_convert("UTC").tz_localize(None)
-    return indexed.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
+    return indexed.rename(columns={
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
+        "spread_points": "SpreadPoints",
+    })
 
 
 def _compact(result):
@@ -78,24 +72,36 @@ def _compact(result):
     compact_curve = curve
     if len(curve) > 5000:
         important = pd.concat([
-            curve.loc[[curve["Equity"].idxmin()]], curve.loc[[curve["Equity"].idxmax()]], curve.tail(1)
+            curve.loc[[curve["Equity"].idxmin()]],
+            curve.loc[[curve["Equity"].idxmax()]],
+            curve.tail(1),
         ])
-        compact_curve = pd.concat([curve.iloc[::60], important]).sort_index()
+        compact_curve = pd.concat([curve.iloc[::30], important]).sort_index()
         compact_curve = compact_curve.loc[~compact_curve.index.duplicated(keep="last")]
     return replace(result, trades=result.trades.tail(1000).copy(), equity_curve=compact_curve)
 
 
 def main() -> None:
     gold_m1 = _load_mt5_m1()
-    v1 = run_fixed_m1_strategy(gold_m1, V1_PARAMS, model_name="Optimizer v1 M1", requested_start=REQUESTED_START, requested_end=REQUESTED_END)
-    v10 = run_fixed_m1_strategy(gold_m1, V10_PARAMS, model_name="Optimizer v10 M1", requested_start=REQUESTED_START, requested_end=REQUESTED_END)
+    gold_daily = load_gold_data()
+    v1 = run_intraday_optimization(
+        gold_m1, gold_daily, variant="v1", requested_start=REQUESTED_START, requested_end=REQUESTED_END
+    )
+    v10 = run_intraday_optimization(
+        gold_m1, gold_daily, variant="v10", requested_start=REQUESTED_START, requested_end=REQUESTED_END
+    )
     payload = (_compact(v1[0]), v1[1], _compact(v10[0]), v10[1])
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT_PATH.open("wb") as file:
         pickle.dump({"version": VERSION, "payload": payload}, file, protocol=pickle.HIGHEST_PROTOCOL)
     print(f"Saved: {OUTPUT_PATH}")
-    for name, result in [("v1 M1", v1[0]), ("v10 M1", v10[0])]:
-        print(f"{name}: {result.summary['Periode uji']} | candles={result.summary['Jumlah candle']:.0f} | equity={result.summary['Equity akhir']:.2f} | trades={result.summary['Jumlah transaksi']:.0f}")
+    for name, result in [("v1 Intraday M1", v1[0]), ("v10 Intraday M1", v10[0])]:
+        summary = result.summary
+        print(
+            f"{name}: train={summary['Periode train']} | test={summary['Periode test']} | "
+            f"equity={summary['Equity akhir']:.2f} | trades={summary['Jumlah transaksi']:.0f} | "
+            f"status={summary['Status kelayakan']}"
+        )
 
 
 if __name__ == "__main__":

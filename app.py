@@ -68,7 +68,7 @@ _rsi = strategy_optimizer_module._rsi
 
 SIMULATION_CACHE_VERSION = "optimizer-v1-v10-2025q1-2026q2"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
-M1_BACKTEST_VERSION = "fixed-v1-v10-m1-2026-07-21"
+M1_BACKTEST_VERSION = "hybrid-v1-v10-intraday-m1-2026-07-21"
 M1_BACKTEST_PATH = Path("data/precomputed/m1_backtests.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -1058,10 +1058,16 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
     c3.metric("Jumlah transaksi", f"{summary['Jumlah transaksi']:.0f}")
     c4.metric("Max drawdown", f"${summary['Max drawdown']:,.2f}")
 
-    st.info(
-        "Target tiap fase: **+20% dari start equity fase tersebut**. "
-        "Saat target tercapai, semua posisi ditutup dan fase berikutnya dimulai dari equity close-all."
-    )
+    if "Intraday" in str(summary.get("Timeframe", "")) or "M1 execution" in str(summary.get("Timeframe", "")):
+        st.info(
+            "Simulasi intraday berjalan kontinu selama periode out-of-sample. Equity USD 1.200 hanya menjadi referensi; "
+            "tidak ada close-all multi-fase pada eksperimen ini."
+        )
+    else:
+        st.info(
+            "Target tiap fase: **+20% dari start equity fase tersebut**. "
+            "Saat target tercapai, semua posisi ditutup dan fase berikutnya dimulai dari equity close-all."
+        )
     if summary.get("Periode uji"):
         st.warning(
             f"Periode uji khusus: **{summary['Periode uji']}** | "
@@ -1081,6 +1087,8 @@ def _render_multiphase_result(title: str, result, leaderboard: pd.DataFrame, gol
                 "Equity close-all": "${:,.2f}",
                 "Equity terendah": "${:,.2f}",
                 "Equity tertinggi": "${:,.2f}",
+                "Total Profit": "${:+,.2f}",
+                "Total Loss": "${:+,.2f}",
                 "Total net P/L": "${:+,.2f}",
                 "Total swap": "${:+,.2f}",
                 "Jumlah transaksi": "{:.0f}",
@@ -1287,8 +1295,8 @@ def render_simulation(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v10",
-            "v1 M1",
-            "v10 M1",
+            "v1 Intraday M1",
+            "v10 Intraday M1",
         ]
     )
     with optimizer_tab:
@@ -1297,9 +1305,9 @@ def render_simulation(
         _render_multiphase_result("Strategi Optimizer v10", optimized_v10_result, optimization_v10_leaderboard, gold_ohlc)
     m1_payload = load_precomputed_m1_backtests(M1_BACKTEST_VERSION)
     with optimizer_v1_m1_tab:
-        _render_m1_backtest_tab(m1_payload, payload_offset=0, title="Optimizer v1 M1")
+        _render_m1_backtest_tab(m1_payload, payload_offset=0, title="Optimizer v1 Intraday M1")
     with optimizer_v10_m1_tab:
-        _render_m1_backtest_tab(m1_payload, payload_offset=2, title="Optimizer v10 M1")
+        _render_m1_backtest_tab(m1_payload, payload_offset=2, title="Optimizer v10 Intraday M1")
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:
@@ -1313,14 +1321,23 @@ def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> N
     summary = result.summary
     coverage = bool(summary.get("Cakupan lengkap", False))
     st.warning(
-        f"Backtest memakai **{summary.get('Jumlah candle', 0):,.0f} candle M1 MT5 Demo** pada periode aktual "
-        f"**{summary.get('Periode uji', '-')}**. Periode yang diminta: **{summary.get('Periode diminta', '-')}**. "
+        f"Parameter dipilih hanya dari train **{summary.get('Periode train', '-')}**, lalu diuji tanpa optimasi ulang pada "
+        f"out-of-sample **{summary.get('Periode test', '-')}** ({summary.get('Jumlah candle', 0):,.0f} candle M1). "
         + ("Cakupan data lengkap." if coverage else "Cakupan belum lengkap karena terminal MT5 saat pengambilan dibatasi 100.000 bar.")
     )
+    status = str(summary.get("Status kelayakan", "BELUM DINILAI"))
+    if status.startswith("LAYAK"):
+        st.success(f"Status hasil out-of-sample: **{status}**. Ini kandidat untuk paper test, belum persetujuan real-money.")
+    else:
+        st.error(f"Status hasil out-of-sample: **{status}**.")
+    model_detail = (
+        "v10 memakai regime daily, konfirmasi tren H1, breakout M1, ATR trailing, dan lot confidence 0.01-0.02."
+        if "v10" in title.lower()
+        else "v1 memakai regime daily, alignment EMA dan momentum M1, lot tetap 0.01, serta maksimal satu posisi."
+    )
     st.info(
-        "Ini adalah uji pemindahan parameter secara langsung, tanpa optimasi ulang: MA 10/50 berarti 10/50 candle menit, "
-        "dan momentum 10 berarti 10 candle menit. Swap BUY dihitung per hari menginap; SELL nol. "
-        "Spread, slippage, latency, dan kualitas fill belum dikurangkan, sehingga hasil riil dapat lebih buruk. "
+        f"{model_detail} TP/SL memakai ATR intraday. Spread historis MT5 dan slippage dua point per sisi sudah "
+        "dimasukkan; swap BUY dihitung per hari menginap dan SELL nol. Latency serta kualitas fill riil belum dimodelkan. "
         "Summary memakai seluruh transaksi; tabel detail dibatasi pada 1.000 transaksi terakhir agar dashboard tetap ringan."
     )
     _render_multiphase_result(title, result, leaderboard)
