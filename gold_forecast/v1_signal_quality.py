@@ -35,6 +35,8 @@ class SignalQualityConfig:
     max_stretch_atr: float | None = None
     spread_quantile: float | None = None
     wait_hours: int = 0
+    minimum_confirmations: int = 0
+    require_h1_primary: bool = False
 
 
 def run_v1_signal_quality_lab(
@@ -86,10 +88,14 @@ def run_v1_signal_quality_lab(
     development_table["Pre-score"] = development_table.apply(
         lambda row: _development_score(row, baseline_development.summary), axis=1
     )
+    adaptive = development_table[development_table["Kelompok"].eq("Adaptive v2")]
+    eligible = adaptive[adaptive["Development eligible"]]
+    selection_fallback = eligible.empty
+    finalist_pool = eligible if not eligible.empty else adaptive
     finalist_names = (
-        development_table[development_table["Kelompok"].eq("Kombinasi")]
+        finalist_pool
         .sort_values(
-            ["Kriteria awal lolos", "Pre-score", "Profit factor", "Max drawdown (%)"],
+            ["Pre-score", "Kuartal positif", "Profit factor", "Max drawdown (%)"],
             ascending=[False, False, False, True],
         )
         .head(3)["Kandidat"]
@@ -119,7 +125,10 @@ def run_v1_signal_quality_lab(
     monte_carlo_frames: dict[str, pd.DataFrame] = {}
     monthly_frames: dict[str, pd.DataFrame] = {}
 
-    for name in finalist_names:
+    reference_names = [
+        config.name for config in candidates if config.group == "Reference v1"
+    ]
+    for name in [*reference_names, *finalist_names]:
         config = config_by_name[name]
         selected, audit = _select_signals(
             raw_validation, features, best, config, spread_limit, VALIDATION_END
@@ -130,6 +139,8 @@ def run_v1_signal_quality_lab(
         validation_rows.append(
             _summary_row(config, result, len(raw_validation), len(selected), "Validation 2026H1")
         )
+        if name in reference_names:
+            continue
         monthly_frames[name] = _monthly_summary(result)
         mc_frame, mc_summary = _monte_carlo(result.trades)
         monte_carlo_frames[name] = mc_frame
@@ -166,7 +177,9 @@ def run_v1_signal_quality_lab(
     winner_name = str(ranked.iloc[0]["Kandidat"])
     winner_result = validation_results[winner_name]
     winner_config = config_by_name[winner_name]
-    winner_passed = bool(ranked.iloc[0]["Lulus seluruh kriteria"])
+    winner_passed = bool(
+        ranked.iloc[0]["Lulus seluruh kriteria"] and not selection_fallback
+    )
 
     return {
         "methodology": {
@@ -177,6 +190,13 @@ def run_v1_signal_quality_lab(
             "Yang diubah": "Filter dan timing entry saja; exit, TP/SL, lot, swap, dan fase tetap v1",
             "Spread P90 development": spread_limit,
             "Finalists": finalist_names,
+            "Reference": reference_names,
+            "Selection rule": (
+                "Retensi development 65-90%, minimal 3/4 kuartal positif, growth positif, "
+                "profit factor >= 1.25, dan drawdown <= 15%"
+            ),
+            "Validation status": "Secondary validation; 2026H1 sudah pernah diamati pada eksperimen sebelumnya",
+            "Selection fallback": selection_fallback,
         },
         "criteria": {
             "Growth minimum (%)": 0.0,
@@ -208,52 +228,74 @@ def run_v1_signal_quality_lab(
 
 def _candidate_configs() -> list[SignalQualityConfig]:
     return [
-        SignalQualityConfig("OF-Conviction-1.25x", "Satu faktor", conviction_multiplier=1.25),
-        SignalQualityConfig("OF-Conviction-1.50x", "Satu faktor", conviction_multiplier=1.50),
-        SignalQualityConfig("OF-M15-Trend", "Satu faktor", require_m15_trend=True),
-        SignalQualityConfig("OF-H1-Trend", "Satu faktor", require_h1_trend=True),
-        SignalQualityConfig("OF-H1-Momentum", "Satu faktor", require_h1_momentum=True),
-        SignalQualityConfig("OF-MaxStretch-1.0ATR", "Satu faktor", max_stretch_atr=1.0),
-        SignalQualityConfig("OF-Spread-P90", "Satu faktor", spread_quantile=0.90),
         SignalQualityConfig(
-            "SQ-A Trend Confirmation",
-            "Kombinasi",
+            "SQ-A v1 Strict Reference",
+            "Reference v1",
             conviction_multiplier=1.15,
             require_m15_trend=True,
             require_h1_trend=True,
         ),
         SignalQualityConfig(
-            "SQ-B Momentum Quality",
-            "Kombinasi",
-            conviction_multiplier=1.25,
-            require_h1_trend=True,
-            require_h1_momentum=True,
+            "AC-A 2of3 Immediate",
+            "Adaptive v2",
+            conviction_multiplier=1.05,
+            minimum_confirmations=2,
         ),
         SignalQualityConfig(
-            "SQ-C Patient Entry",
-            "Kombinasi",
-            conviction_multiplier=1.15,
-            require_m15_trend=True,
-            require_h1_trend=True,
-            wait_hours=12,
+            "AC-B 2of3 Wait-2h",
+            "Adaptive v2",
+            conviction_multiplier=1.05,
+            minimum_confirmations=2,
+            wait_hours=2,
         ),
         SignalQualityConfig(
-            "SQ-D Cost-Aware",
-            "Kombinasi",
-            conviction_multiplier=1.15,
-            require_h1_trend=True,
+            "AC-C 2of3 Wait-3h",
+            "Adaptive v2",
+            conviction_multiplier=1.05,
+            minimum_confirmations=2,
+            wait_hours=3,
+        ),
+        SignalQualityConfig(
+            "AC-D 2of3 Wait-4h",
+            "Adaptive v2",
+            conviction_multiplier=1.05,
+            minimum_confirmations=2,
+            wait_hours=4,
+        ),
+        SignalQualityConfig(
+            "AC-E H1 Anchor Wait-3h",
+            "Adaptive v2",
+            conviction_multiplier=1.05,
+            minimum_confirmations=2,
+            require_h1_primary=True,
+            wait_hours=3,
+        ),
+        SignalQualityConfig(
+            "AC-F H1 Anchor Wait-4h",
+            "Adaptive v2",
+            conviction_multiplier=1.05,
+            minimum_confirmations=2,
+            require_h1_primary=True,
+            wait_hours=4,
+        ),
+        SignalQualityConfig(
+            "AC-G 2of3 Cost-Aware Wait-4h",
+            "Adaptive v2",
+            conviction_multiplier=1.05,
+            minimum_confirmations=2,
             max_stretch_atr=1.5,
             spread_quantile=0.90,
+            wait_hours=4,
         ),
         SignalQualityConfig(
-            "SQ-E Selective Alignment",
-            "Kombinasi",
-            conviction_multiplier=1.25,
-            require_m15_trend=True,
-            require_h1_trend=True,
-            require_h1_momentum=True,
+            "AC-H H1 Cost-Aware Wait-4h",
+            "Adaptive v2",
+            conviction_multiplier=1.05,
+            minimum_confirmations=2,
+            require_h1_primary=True,
             max_stretch_atr=1.5,
-            wait_hours=12,
+            spread_quantile=0.90,
+            wait_hours=4,
         ),
     ]
 
@@ -364,23 +406,31 @@ def _quality_checks(
     m15_slow = float(row.get("m15_slow", np.nan))
     h1_fast = float(row.get("h1_fast", np.nan))
     h1_slow = float(row.get("h1_slow", np.nan))
+    m15_aligned = bool(
+        np.isfinite([price, m15_fast, m15_slow]).all()
+        and sign * (price - m15_fast) > 0
+        and sign * (m15_fast - m15_slow) > 0
+        and sign * float(row.get("m15_momentum", np.nan)) > 0
+    )
+    h1_aligned = bool(
+        np.isfinite([price, h1_fast, h1_slow]).all()
+        and sign * (price - h1_fast) > 0
+        and sign * (h1_fast - h1_slow) > 0
+    )
+    h1_momentum_aligned = bool(sign * float(row.get("h1_momentum", np.nan)) > 0)
     checks: dict[str, bool] = {}
     if config.require_m15_trend:
-        checks["M15 tidak searah"] = bool(
-            np.isfinite([price, m15_fast, m15_slow]).all()
-            and sign * (price - m15_fast) > 0
-            and sign * (m15_fast - m15_slow) > 0
-            and sign * float(row.get("m15_momentum", np.nan)) > 0
-        )
+        checks["M15 tidak searah"] = m15_aligned
     if config.require_h1_trend:
-        checks["H1 tidak searah"] = bool(
-            np.isfinite([price, h1_fast, h1_slow]).all()
-            and sign * (price - h1_fast) > 0
-            and sign * (h1_fast - h1_slow) > 0
-        )
+        checks["H1 tidak searah"] = h1_aligned
     if config.require_h1_momentum:
-        checks["Momentum H1 tidak searah"] = bool(
-            sign * float(row.get("h1_momentum", np.nan)) > 0
+        checks["Momentum H1 tidak searah"] = h1_momentum_aligned
+    if config.require_h1_primary:
+        checks["Jangkar tren H1 belum searah"] = h1_aligned
+    if config.minimum_confirmations:
+        confirmation_count = sum((m15_aligned, h1_aligned, h1_momentum_aligned))
+        checks[f"Konfirmasi kurang dari {config.minimum_confirmations}/3"] = bool(
+            confirmation_count >= config.minimum_confirmations
         )
     if config.max_stretch_atr is not None:
         checks["Harga terlalu jauh dari tren"] = bool(
@@ -401,11 +451,21 @@ def _summary_row(
     period: str,
 ) -> dict[str, object]:
     metrics = _metric_values(result)
+    positive_quarters = _positive_quarters(result)
+    retention = selected_count / raw_count * 100 if raw_count else 0.0
     initial_pass = bool(
         metrics["Growth (%)"] > 0
         and metrics["Max drawdown (%)"] <= MAX_DRAWDOWN_PCT
         and metrics["Profit factor"] >= PROFIT_FACTOR_TARGET
         and metrics["Transaksi"] >= MIN_TRADES
+    )
+    development_eligible = bool(
+        period == "Development 2025"
+        and 65 <= retention <= 90
+        and positive_quarters >= 3
+        and metrics["Growth (%)"] > 0
+        and metrics["Profit factor"] >= 1.25
+        and metrics["Max drawdown (%)"] <= 15
     )
     return {
         "Kandidat": config.name,
@@ -415,10 +475,22 @@ def _summary_row(
         "Sinyal awal": raw_count,
         "Entry lolos": selected_count,
         "Entry ditolak": raw_count - selected_count,
-        "Retensi entry (%)": selected_count / raw_count * 100 if raw_count else 0.0,
+        "Retensi entry (%)": retention,
+        "Kuartal positif": positive_quarters,
+        "Development eligible": development_eligible,
         "Kriteria awal lolos": initial_pass,
         "Konfigurasi": _config_label(config),
     }
+
+
+def _positive_quarters(result: MultiPhaseSimulationResult) -> int:
+    trades = result.trades
+    if trades.empty:
+        return 0
+    dates = pd.to_datetime(trades["Tanggal tutup"], errors="coerce")
+    net = pd.to_numeric(trades["Net P/L"], errors="coerce").fillna(0.0)
+    quarterly = net.groupby(dates.dt.to_period("Q")).sum()
+    return int((quarterly > 0).sum())
 
 
 def _config_label(config: SignalQualityConfig) -> str:
@@ -436,8 +508,11 @@ def _development_score(row: pd.Series, baseline: dict[str, object]) -> float:
     dd_score = 25 * max(0.0, 1 - float(row["Max drawdown (%)"]) / 20)
     pf_score = 30 * min(float(row["Profit factor"]) / PROFIT_FACTOR_TARGET, 1.0)
     growth_score = 25 * max(0.0, min(float(row["Growth (%)"]) / 50, 1.0))
-    sample_score = 20 * min(trade_ratio, 1.0)
-    return dd_score + pf_score + growth_score + sample_score
+    retention = float(row["Retensi entry (%)"])
+    retention_score = 10 * max(0.0, 1 - abs(retention - 75) / 25)
+    stability_score = 10 * min(float(row["Kuartal positif"]) / 4, 1.0)
+    sample_score = 10 * min(trade_ratio, 1.0)
+    return dd_score + pf_score + growth_score + sample_score + retention_score + stability_score
 
 
 def _decision_table(
@@ -447,7 +522,7 @@ def _decision_table(
     monthly: dict[str, pd.DataFrame],
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
-    for _, candidate in validation[validation["Kelompok"].eq("Kombinasi")].iterrows():
+    for _, candidate in validation[validation["Kelompok"].eq("Adaptive v2")].iterrows():
         name = str(candidate["Kandidat"])
         candidate_stress = stress[stress["Kandidat"].eq(name)]
         mc = monte_carlo[monte_carlo["Kandidat"].eq(name)].iloc[0]
