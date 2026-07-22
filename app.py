@@ -75,6 +75,8 @@ V1_ROBUSTNESS_VERSION = "optimizer-v1-robustness-oos-2026h1"
 V1_ROBUSTNESS_PATH = Path("data/precomputed/v1_robustness.pkl")
 V1_RISK_CONTROL_VERSION = "optimizer-v1-risk-control-lab-2025-2026h1-v1"
 V1_RISK_CONTROL_PATH = Path("data/precomputed/v1_risk_control.pkl")
+V1_SIGNAL_QUALITY_VERSION = "optimizer-v1-signal-quality-lab-2025-2026h1-v1"
+V1_SIGNAL_QUALITY_PATH = Path("data/precomputed/v1_signal_quality.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -157,6 +159,20 @@ def load_precomputed_v1_risk_control(backtest_version: str):
         return None
     try:
         with V1_RISK_CONTROL_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_signal_quality(backtest_version: str):
+    if not V1_SIGNAL_QUALITY_PATH.exists():
+        return None
+    try:
+        with V1_SIGNAL_QUALITY_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -2187,6 +2203,144 @@ def _render_v1_risk_control_tab(payload) -> None:
     )
 
 
+def _render_v1_signal_quality_tab(payload) -> None:
+    st.subheader("Optimizer v1 Signal Quality Lab")
+    if payload is None:
+        st.warning("Hasil Signal Quality Lab belum tersedia pada artefak precomputed.")
+        return
+
+    methodology = payload["methodology"]
+    criteria = payload["criteria"]
+    decision = payload["decision"]
+    validation = payload["validation"]
+    development = payload["development"]
+    winner_name = str(payload["winner_name"])
+    winner_status = str(payload["winner_status"])
+    winner_result = payload["winner_result"]
+    winner_decision = decision[decision["Kandidat"].eq(winner_name)].iloc[0]
+    winner_validation = validation[validation["Kandidat"].eq(winner_name)].iloc[0]
+
+    st.warning(
+        "**Eksperimen entry terpisah:** v1 baseline dan paper live tetap terkunci sampai 31 Agustus 2026. "
+        "Lab ini tidak menulis ledger dan tidak mengubah TP/SL, lot, swap, exit, maupun target fase v1."
+    )
+    if winner_status == "LULUS":
+        st.success(
+            f"Kandidat kualitas entry terbaik: **{winner_name}** | **LULUS kriteria historis**. "
+            "Tahap berikutnya tetap forward paper shadow, bukan langsung uang riil."
+        )
+    else:
+        st.error(
+            f"Kandidat kualitas entry terbaik relatif: **{winner_name}** | **BELUM LULUS**. "
+            "Perbaikan metrik tidak cukup untuk promosi jika ukuran sampel atau kriteria lain belum terpenuhi."
+        )
+    st.info(
+        f"Kandidat dipilih hanya pada **{methodology['Development']}** dan dibekukan sebelum diuji pada "
+        f"**{methodology['Validation']}**. {methodology['Yang diubah']}."
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Growth validation", f"{float(winner_validation['Growth (%)']):+.2f}%")
+    c2.metric("Max drawdown", f"{float(winner_validation['Max drawdown (%)']):.2f}%", "Batas 10%")
+    c3.metric("Profit factor", f"{float(winner_validation['Profit factor']):.3f}", "Target 1.30")
+    c4.metric("Entry lolos", f"{int(winner_validation['Entry lolos'])}/{int(winner_validation['Sinyal awal'])}")
+    c5.metric("Kriteria lolos", f"{int(winner_decision['Jumlah kriteria lolos'])}/6")
+
+    comparison = validation[
+        validation["Kandidat"].isin(["v1 Exact Baseline", winner_name])
+    ][
+        ["Kandidat", "Equity akhir", "Growth (%)", "Max drawdown (%)", "Profit factor", "Transaksi", "Retensi entry (%)"]
+    ].rename(columns={"Kandidat": "Strategi"})
+    st.markdown("**Baseline versus Filter Entry Terbaik Relatif**")
+    st.dataframe(
+        comparison.style.format(
+            {
+                "Equity akhir": "${:,.2f}",
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}",
+                "Transaksi": "{:.0f}",
+                "Retensi entry (%)": "{:.1f}%",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    criteria_rows = [
+        ("Growth OOS", "> 0%", f"{winner_validation['Growth (%)']:+.2f}%", "Growth positif"),
+        ("Max drawdown", "<= 10%", f"{winner_validation['Max drawdown (%)']:.2f}%", "Drawdown <= 10%"),
+        ("Profit factor", ">= 1.30", f"{winner_validation['Profit factor']:.3f}", "Profit factor >= 1.30"),
+        ("Monte Carlo rugi", "<= 10%", f"{winner_decision['Monte Carlo rugi (%)']:.2f}%", "Monte Carlo rugi <= 10%"),
+        ("Stress profitable", "9/9", "9/9" if winner_decision["Stress profitable 9/9"] else "< 9/9", "Stress profitable 9/9"),
+        ("Jumlah transaksi", f">= {criteria['Minimum transaksi']}", f"{winner_validation['Transaksi']:.0f}", "Transaksi >= 50"),
+    ]
+    st.markdown("**Audit Kriteria Kelulusan**")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {"Kriteria": label, "Target": target, "Hasil": result, "Status": "LOLOS" if winner_decision[key] else "BELUM"}
+                for label, target, result, key in criteria_rows
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Keputusan Tiga Finalis**")
+    st.dataframe(
+        decision.style.format({"Monte Carlo rugi (%)": "{:.2f}%", "Final score": "{:.2f}"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        f"{winner_name} memperbaiki kualitas per transaksi, tetapi hanya menghasilkan "
+        f"{winner_validation['Transaksi']:.0f} transaksi. Seluruh finalis masih di bawah minimum "
+        f"{criteria['Minimum transaksi']}, sehingga belum ada kandidat yang layak dipromosikan."
+    )
+
+    with st.expander("Seluruh kandidat pada development 2025"):
+        columns = [
+            "Kandidat", "Kelompok", "Growth (%)", "Max drawdown (%)", "Profit factor", "Transaksi",
+            "Entry lolos", "Entry ditolak", "Retensi entry (%)", "Kriteria awal lolos", "Pre-score", "Konfigurasi",
+        ]
+        st.dataframe(
+            development[columns].sort_values("Pre-score", ascending=False).style.format(
+                {
+                    "Growth (%)": "{:+.2f}%", "Max drawdown (%)": "{:.2f}%", "Profit factor": "{:.3f}",
+                    "Transaksi": "{:.0f}", "Entry lolos": "{:.0f}", "Entry ditolak": "{:.0f}",
+                    "Retensi entry (%)": "{:.1f}%", "Pre-score": "{:.2f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    curve = winner_result.equity_curve
+    if not curve.empty:
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=curve.index, y=curve["Equity"], name=winner_name))
+        figure.add_hline(y=1000, line_dash="dash", annotation_text="Modal awal")
+        figure.update_layout(title=f"Equity Validation - {winner_name}", yaxis_title="USD", height=400)
+        st.plotly_chart(figure, use_container_width=True)
+
+    st.markdown("**Audit Keputusan Entry Kandidat Terbaik**")
+    audit = payload["winner_entry_audit"]
+    st.dataframe(audit.tail(100), use_container_width=True, hide_index=True)
+    st.markdown("**Konfigurasi Kandidat Terbaik Relatif**")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {"Parameter": key, "Nilai": value if value is not None else "Tidak aktif"}
+                for key, value in payload["winner_config"].items()
+                if key not in {"name", "group"}
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -2210,6 +2364,7 @@ def render_simulation(
         exact_v1_tab,
         robustness_v1_tab,
         risk_control_v1_tab,
+        signal_quality_v1_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -2217,6 +2372,7 @@ def render_simulation(
             "Optimizer v1 Exact Broker-Aware OOS",
             "Optimizer v1 Robustness Test",
             "v1 Risk-Control Lab",
+            "v1 Signal Quality Lab",
         ]
     )
     with optimizer_tab:
@@ -2231,6 +2387,8 @@ def render_simulation(
         _render_v1_robustness_tab(load_precomputed_v1_robustness(V1_ROBUSTNESS_VERSION))
     with risk_control_v1_tab:
         _render_v1_risk_control_tab(load_precomputed_v1_risk_control(V1_RISK_CONTROL_VERSION))
+    with signal_quality_v1_tab:
+        _render_v1_signal_quality_tab(load_precomputed_v1_signal_quality(V1_SIGNAL_QUALITY_VERSION))
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:

@@ -7,7 +7,7 @@ Kode dan hasil historis tetap dapat ditelusuri melalui riwayat Git.
 
 - Baseline pengembangan: Optimizer v1.
 - Simulasi aktif: v1, v1 OOS, v1 Exact Broker-Aware OOS, v1 Robustness Test,
-  dan v1 Risk-Control Lab.
+  v1 Risk-Control Lab, dan v1 Signal Quality Lab.
 - Paper live aktif: v1 saja.
 - Posisi v10 lama tetap dipantau sampai TP/CL tanpa izin membuka posisi baru.
 
