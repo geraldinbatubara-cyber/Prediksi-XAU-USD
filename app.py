@@ -74,6 +74,8 @@ BROKER_AWARE_OOS_VERSION = "optimizer-v1-v10-broker-aware-train2025-oos2026h1"
 BROKER_AWARE_OOS_PATH = Path("data/precomputed/broker_aware_oos.pkl")
 EXACT_BROKER_OOS_VERSION = "optimizer-v1-v10-exact-broker-aware-oos-2026h1"
 EXACT_BROKER_OOS_PATH = Path("data/precomputed/exact_broker_oos.pkl")
+V1_ROBUSTNESS_VERSION = "optimizer-v1-robustness-oos-2026h1"
+V1_ROBUSTNESS_PATH = Path("data/precomputed/v1_robustness.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -142,6 +144,20 @@ def load_precomputed_exact_broker_oos(backtest_version: str):
         return None
     try:
         with EXACT_BROKER_OOS_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_robustness(backtest_version: str):
+    if not V1_ROBUSTNESS_PATH.exists():
+        return None
+    try:
+        with V1_ROBUSTNESS_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -1920,6 +1936,117 @@ def _render_exact_broker_oos_tab(payload, *, key: str, title: str) -> None:
         st.dataframe(result.trades, use_container_width=True, hide_index=True)
 
 
+def _render_v1_robustness_tab(payload) -> None:
+    st.subheader("Optimizer v1 Robustness Test")
+    if payload is None:
+        st.warning("Hasil robustness v1 belum tersedia pada artefak precomputed.")
+        return
+
+    summary = payload["summary"]
+    scenarios = payload["scenarios"]
+    monthly = payload["monthly"]
+    monte_carlo = payload["monte_carlo"]
+    basis_audit = payload["basis_audit"]
+    st.error(
+        f"Keputusan: **{summary['Status']}**. v1 tetap menjadi baseline paper trading, tetapi belum boleh digunakan "
+        "sebagai persetujuan trading uang riil."
+    )
+    st.info(
+        "Uji memakai sinyal dan rule v1 yang sama pada OOS 1 Jan-30 Jun 2026. Stress matrix menguji spread aktual, "
+        "1,5x, dan 2x serta slippage adverse 2, 4, dan 6 points per sisi. Ambang kelayakan: growth positif, "
+        f"profit factor minimal {summary['Target profit factor']:.2f}, dan max drawdown maksimal "
+        f"{summary['Batas max drawdown (%)']:.0f}%."
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Growth baseline", f"{summary['Growth baseline (%)']:+.2f}%")
+    c2.metric("Profit factor", f"{summary['Profit factor baseline']:.3f}", f"Target {summary['Target profit factor']:.2f}")
+    c3.metric("Max drawdown", f"{summary['Max drawdown baseline (%)']:.2f}%", f"Batas {summary['Batas max drawdown (%)']:.0f}%")
+    c4.metric("Skenario profitable", f"{summary['Skenario profitable']}/{summary['Total skenario']}")
+    c5.metric("Risiko MC rugi", f"{summary['Probabilitas equity akhir < modal awal (%)']:.1f}%")
+
+    st.markdown("**Stress Spread dan Slippage**")
+    st.dataframe(
+        scenarios.style.format(
+            {
+                "Spread multiplier": "{:.1f}x",
+                "Slippage points/sisi": "{:.0f}",
+                "Equity akhir": "${:,.2f}",
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}",
+                "Max drawdown (%)": "{:.2f}%",
+                "Transaksi": "{:.0f}",
+                "Win rate (%)": "{:.1f}%",
+                "Profit factor": "{:.3f}",
+                "Total spread": "${:,.2f}",
+                "Total slippage": "${:,.2f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        f"Semua {summary['Skenario profitable']:.0f} dari {summary['Total skenario']:.0f} skenario masih positif, "
+        f"tetapi hanya {summary['Skenario lulus minimum']:.0f} yang memenuhi seluruh ambang PF dan drawdown."
+    )
+
+    st.markdown("**Stabilitas Per Bulan**")
+    month_figure = go.Figure(
+        go.Bar(
+            x=monthly["Bulan"],
+            y=monthly["Net P/L"],
+            marker_color=["#16a34a" if value >= 0 else "#dc2626" for value in monthly["Net P/L"]],
+            text=[f"${value:+,.2f}" for value in monthly["Net P/L"]],
+            textposition="outside",
+        )
+    )
+    month_figure.update_layout(yaxis_title="Net P/L (USD)", height=360)
+    st.plotly_chart(month_figure, use_container_width=True)
+    st.dataframe(
+        monthly.style.format(
+            {
+                "Equity awal": "${:,.2f}",
+                "Net P/L": "${:+,.2f}",
+                "Growth bulan (%)": "{:+.2f}%",
+                "Equity akhir": "${:,.2f}",
+                "Transaksi": "{:.0f}",
+                "Win rate (%)": "{:.1f}%",
+                "Profit factor": "{:.3f}",
+                "Spread": "${:,.2f}",
+                "Slippage": "${:,.2f}",
+                "Swap": "${:+,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Monte Carlo Trade-Level Bootstrap**")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Equity P5", f"${summary['Monte Carlo equity P5']:,.2f}")
+    m2.metric("Equity median", f"${summary['Monte Carlo equity median']:,.2f}")
+    m3.metric("Equity P95", f"${summary['Monte Carlo equity P95']:,.2f}")
+    m4.metric("Drawdown P95", f"${summary['Monte Carlo drawdown P95']:,.2f}")
+    if not monte_carlo.empty:
+        mc_figure = go.Figure(go.Histogram(x=monte_carlo["Equity akhir"], nbinsx=35))
+        mc_figure.add_vline(x=1000, line_dash="dash", line_color="#dc2626", annotation_text="Modal awal")
+        mc_figure.update_layout(xaxis_title="Equity akhir (USD)", yaxis_title="Frekuensi sampel", height=360)
+        st.plotly_chart(mc_figure, use_container_width=True)
+    st.caption(
+        f"Bootstrap {summary['Monte Carlo runs']:,.0f} lintasan dengan seed tetap. Probabilitas equity akhir di bawah "
+        f"USD 1.000 adalah {summary['Probabilitas equity akhir < modal awal (%)']:.1f}%; estimasi ruin "
+        f"{summary['Probabilitas ruin (%)']:.1f}%. Ini mengukur risiko urutan/sampel transaksi, bukan prediksi kepastian."
+    )
+
+    st.markdown("**Audit Basis GC=F versus XAUUSD MT5**")
+    st.dataframe(basis_audit, use_container_width=True, hide_index=True)
+    st.warning(
+        "Sinyal berasal dari GC=F sedangkan eksekusi memakai XAUUSD MT5. Korelasi return yang tinggi tidak menghapus "
+        "risiko selisih level harga, jam penutupan, dan spesifikasi kontrak broker."
+    )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -1948,6 +2075,7 @@ def render_simulation(
         broker_v10_tab,
         exact_v1_tab,
         exact_v10_tab,
+        robustness_v1_tab,
     ) = st.tabs(
         [
             "Strategi Terbaik Optimizer",
@@ -1958,6 +2086,7 @@ def render_simulation(
             "v10 Intraday Adaptation Broker-Aware OOS",
             "Optimizer v1 Exact Broker-Aware OOS",
             "Optimizer v10 Exact Broker-Aware OOS",
+            "Optimizer v1 Robustness Test",
         ]
     )
     with optimizer_tab:
@@ -1979,6 +2108,8 @@ def render_simulation(
         _render_exact_broker_oos_tab(exact_payload, key="v1", title="Optimizer v1 Exact Broker-Aware OOS")
     with exact_v10_tab:
         _render_exact_broker_oos_tab(exact_payload, key="v10", title="Optimizer v10 Exact Broker-Aware OOS")
+    with robustness_v1_tab:
+        _render_v1_robustness_tab(load_precomputed_v1_robustness(V1_ROBUSTNESS_VERSION))
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:
@@ -3810,9 +3941,16 @@ elif page == "Live Trading":
             "Periksa panel lengkap di Data Broker sebelum entry manual."
         )
 
-    live_v1_tab, live_v10_tab = st.tabs(["Optimizer v1", "Optimizer v10"])
-    st.info("Rencana evaluasi: paper live trading paralel Optimizer v1 dan Optimizer v10 berjalan sampai **30 Agustus 2026**.")
+    live_v1_tab, live_v10_tab = st.tabs(["Optimizer v1 - Baseline Paper", "Optimizer v10 - Eksperimen"])
+    st.info(
+        "Evaluasi sampai **30 Agustus 2026** tetap mencatat dua ledger untuk pembelajaran. Optimizer v1 adalah baseline "
+        "paper trading; Optimizer v10 hanya eksperimen pembanding dan bukan sinyal utama."
+    )
     with live_v1_tab:
+        st.warning(
+            "Status v1: **KANDIDAT PAPER TRADING, BELUM LAYAK REAL-MONEY**. Exact OOS masih positif, tetapi robustness "
+            "belum memenuhi target profit factor 1,30 dan drawdown maksimum 10%."
+        )
         optimization_v1_live_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
         render_live_trading(
             gold_ohlc,
@@ -3829,6 +3967,10 @@ elif page == "Live Trading":
             broker_quote=broker_quote,
         )
     with live_v10_tab:
+        st.error(
+            "Status v10: **TIDAK LOLOS EXACT BROKER-AWARE OOS**. Ledger dipertahankan hanya sebagai eksperimen sampai "
+            "30 Agustus 2026. Jangan gunakan sinyal ini sebagai dasar utama entry uang riil."
+        )
         optimization_v10_live_leaderboard = get_v10_leaderboard_for_live(SIMULATION_CACHE_VERSION)
         render_live_trading(
             gold_ohlc,

@@ -97,6 +97,19 @@ T+7. Dashboard membandingkan Model 1 dan Model 2 pada horizon T+1 yang setara.
 
 ## Simulasi Trading
 
+Validasi terbaru membedakan tiga jenis pengujian. `Optimizer OOS` memakai OHLC
+harian, `Intraday Adaptation Broker-Aware OOS` adalah eksperimen strategi intraday
+turunan, sedangkan `Exact Broker-Aware OOS` mempertahankan sinyal dan aturan
+harian lalu memakai candle M1 MT5 hanya untuk harga serta urutan eksekusi.
+
+`Optimizer v1 Robustness Test` menguji Exact v1 pada sembilan kombinasi spread
+aktual/1.5x/2x dan slippage adverse 2/4/6 points per sisi. Tab tersebut juga
+menampilkan performa bulanan, bootstrap Monte Carlo 10.000 lintasan, serta audit
+basis harga `GC=F` versus `XAUUSD MT5`. Ambang kandidat real-money ditetapkan
+pada profit factor minimal 1.30, max drawdown maksimal 10%, dan pertumbuhan tetap
+positif setelah stress biaya. Hasil saat ini belum memenuhi ambang tersebut,
+sehingga v1 hanya digunakan untuk paper trading dan v10 hanya sebagai eksperimen.
+
 Tab `Simulasi` sekarang hanya menampilkan `Strategi Terbaik Optimizer` dan
 `Strategi Terbaik v.2`. Simulasi Model 1 dan Model 2 skenario lama dihapus dari
 tab ini karena hasilnya tidak memadai untuk pengembangan strategi.
