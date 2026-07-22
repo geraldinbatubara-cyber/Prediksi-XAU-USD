@@ -329,7 +329,36 @@ def _simulate(
                         direction=direction,
                         lot=lot,
                         entry_date=current_date,
-                        entry_price=trigger_price„Õm¢Gß≤⁄Óù∆≠y’d_equity = balance + _unrealized(positions, observed_price)
+                        entry_price=trigger_price,
+                    )
+                ]
+                projected_equity = balance + _unrealized(projected, trigger_price)
+                projected_margin = _used_margin(projected, trigger_price)
+                if _margin_level(projected_equity, projected_margin) < params.minimum_entry_margin_pct:
+                    rejected_additions += 1
+                    break
+                positions = projected
+                next_position_id += 1
+
+            maximum_open = max(maximum_open, len(positions))
+            maximum_total_lot = max(maximum_total_lot, sum(position.lot for position in positions))
+            adverse_equity = balance + _unrealized(positions, adverse_price)
+            risk_price = _price_for_equity(positions, balance, risk_floor)
+            stopout_price = _stopout_price(positions, balance)
+            if path_forced_reason is not None:
+                forced_price, forced_reason = path_forced_price, path_forced_reason
+            else:
+                forced_price, forced_reason = _first_forced_price(
+                    direction,
+                    adverse_price,
+                    risk_price,
+                    stopout_price,
+                )
+            if forced_reason is None and adverse_equity <= risk_floor:
+                forced_price, forced_reason = adverse_price, "Hard basket loss"
+
+            observed_price = forced_price if forced_reason else adverse_price
+            observed_equity = balance + _unrealized(positions, observed_price)
             observed_margin = _used_margin(positions, observed_price)
             minimum_margin = min(minimum_margin, _margin_level(observed_equity, observed_margin))
             maximum_used_margin = max(maximum_used_margin, observed_margin)
