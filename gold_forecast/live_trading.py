@@ -229,7 +229,12 @@ def _current_optimizer_signal(
     }
 
 
-def _signal_waiting_state(gold_ohlc: pd.DataFrame, params: dict[str, object]) -> dict[str, object]:
+def _signal_waiting_state(
+    gold_ohlc: pd.DataFrame,
+    params: dict[str, object],
+    live_price: float | None = None,
+    live_timestamp: pd.Timestamp | None = None,
+) -> dict[str, object]:
     if gold_ohlc.empty:
         return {
             "Status sinyal": "Data belum tersedia",
@@ -387,7 +392,7 @@ def _signal_waiting_state(gold_ohlc: pd.DataFrame, params: dict[str, object]) ->
         else:
             interpretation = "BUY dan SELL sama-sama belum lengkap. Strategi masih menunggu arah yang lebih tegas."
 
-    return {
+    state = {
         "Status sinyal": status,
         "Yang ditunggu": waiting,
         "Kondisi BUY": " | ".join(buy_conditions),
@@ -406,7 +411,31 @@ def _signal_waiting_state(gold_ohlc: pd.DataFrame, params: dict[str, object]) ->
         "RSI": latest_rsi,
         "High acuan": latest_previous_high,
         "Low acuan": latest_previous_low,
+        "Sumber harga": "GC=F harian (candle selesai)",
+        "Preview live": None,
     }
+    if live_price is not None and np.isfinite(live_price):
+        provisional = gold_ohlc.copy()
+        preview_timestamp = pd.Timestamp(live_timestamp) if live_timestamp is not None else latest_date
+        if preview_timestamp.tzinfo is not None:
+            preview_timestamp = preview_timestamp.tz_convert(WIT).tz_localize(None)
+        preview_date = preview_timestamp.normalize()
+        if preview_date in provisional.index:
+            provisional.loc[preview_date, "Close"] = float(live_price)
+            provisional.loc[preview_date, "High"] = max(
+                float(provisional.loc[preview_date, "High"]), float(live_price)
+            )
+            provisional.loc[preview_date, "Low"] = min(
+                float(provisional.loc[preview_date, "Low"]), float(live_price)
+            )
+        else:
+            provisional.loc[preview_date, ["Open", "High", "Low", "Close"]] = float(live_price)
+            provisional = provisional.sort_index()
+        preview = _signal_waiting_state(provisional, params)
+        preview["Sumber harga"] = "MT5 live mid (provisional)"
+        preview["Timestamp live"] = preview_timestamp
+        state["Preview live"] = preview
+    return state
 
 
 def _unrealized(direction: str, entry_price: float, current_price: float, lot: float) -> float:
@@ -886,7 +915,12 @@ def run_live_trading_update(
     else:
         latest_price = float(quote_state["mid"]) if quote_state["configured"] else np.nan
 
-    waiting_state = _signal_waiting_state(usable_gold, params)
+    waiting_state = _signal_waiting_state(
+        usable_gold,
+        params,
+        live_price=float(quote_state["mid"]) if quote_state["fresh"] else None,
+        live_timestamp=quote_state.get("market_timestamp") if quote_state["fresh"] else None,
+    )
     signal = _current_optimizer_signal(usable_gold, params, now_wit, start_date)
     if signal is not None:
         signal["source"] = "Optimizer penuh"
