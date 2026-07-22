@@ -73,6 +73,8 @@ EXACT_BROKER_OOS_VERSION = "optimizer-v1-only-exact-broker-aware-oos-2026h1"
 EXACT_BROKER_OOS_PATH = Path("data/precomputed/exact_broker_oos.pkl")
 V1_ROBUSTNESS_VERSION = "optimizer-v1-robustness-oos-2026h1"
 V1_ROBUSTNESS_PATH = Path("data/precomputed/v1_robustness.pkl")
+V1_RISK_CONTROL_VERSION = "optimizer-v1-risk-control-lab-2025-2026h1-v1"
+V1_RISK_CONTROL_PATH = Path("data/precomputed/v1_risk_control.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -141,6 +143,20 @@ def load_precomputed_v1_robustness(backtest_version: str):
         return None
     try:
         with V1_ROBUSTNESS_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_risk_control(backtest_version: str):
+    if not V1_RISK_CONTROL_PATH.exists():
+        return None
+    try:
+        with V1_RISK_CONTROL_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -2004,6 +2020,173 @@ def _render_v1_robustness_tab(payload) -> None:
     )
 
 
+def _render_v1_risk_control_tab(payload) -> None:
+    st.subheader("Optimizer v1 Risk-Control Lab")
+    if payload is None:
+        st.warning("Hasil Risk-Control Lab belum tersedia pada artefak precomputed.")
+        return
+
+    methodology = payload["methodology"]
+    criteria = payload["criteria"]
+    decision = payload["decision"]
+    validation = payload["validation"]
+    development = payload["development"]
+    stress = payload["stress"]
+    winner_name = str(payload["winner_name"])
+    winner_status = str(payload["winner_status"])
+    winner_result = payload["winner_result"]
+    winner_summary = winner_result.summary
+    winner_decision = decision[decision["Kandidat"].eq(winner_name)].iloc[0]
+    winner_validation = validation[validation["Kandidat"].eq(winner_name)].iloc[0]
+    baseline_validation = validation[validation["Kandidat"].eq("v1 Exact Baseline")].iloc[0]
+
+    st.warning(
+        "**Baseline terkunci:** Optimizer v1 Live Trading tidak diubah sampai 31 Agustus 2026. "
+        "Risk-Control Lab adalah eksperimen offline terpisah dan tidak menulis ke ledger baseline."
+    )
+    if winner_status == "LULUS":
+        st.success(
+            f"Kandidat terbaik: **{winner_name}** | Status: **LULUS kriteria historis**. "
+            "Kandidat masih memerlukan forward paper test sebelum dipertimbangkan untuk uang riil."
+        )
+    else:
+        st.error(
+            f"Kandidat terbaik relatif: **{winner_name}** | Status: **BELUM LULUS**. "
+            "Tidak ada strategi yang dipromosikan hanya karena skornya paling tinggi."
+        )
+    st.info(
+        f"Overlay dipilih hanya dari development **{methodology['Development']}**, lalu dibekukan dan diuji pada "
+        f"validation **{methodology['Validation']}**. Inti sinyal tetap **{methodology['Core strategy']}**."
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Growth validation", f"{float(winner_validation['Growth (%)']):+.2f}%")
+    c2.metric("Max drawdown", f"{float(winner_validation['Max drawdown (%)']):.2f}%", "Batas 10%")
+    c3.metric("Profit factor", f"{float(winner_validation['Profit factor']):.3f}", "Target 1.30")
+    c4.metric("Risiko MC rugi", f"{float(winner_decision['Monte Carlo rugi (%)']):.2f}%", "Batas 10%")
+    c5.metric("Kriteria lolos", f"{int(winner_decision['Jumlah kriteria lolos'])}/6")
+
+    comparison = pd.DataFrame(
+        [
+            {
+                "Strategi": "v1 Exact Baseline",
+                "Growth (%)": baseline_validation["Growth (%)"],
+                "Max drawdown (%)": baseline_validation["Max drawdown (%)"],
+                "Profit factor": baseline_validation["Profit factor"],
+                "Transaksi": baseline_validation["Transaksi"],
+                "Equity akhir": baseline_validation["Equity akhir"],
+            },
+            {
+                "Strategi": winner_name,
+                "Growth (%)": winner_validation["Growth (%)"],
+                "Max drawdown (%)": winner_validation["Max drawdown (%)"],
+                "Profit factor": winner_validation["Profit factor"],
+                "Transaksi": winner_validation["Transaksi"],
+                "Equity akhir": winner_validation["Equity akhir"],
+            },
+        ]
+    )
+    st.markdown("**Baseline versus Kandidat Terbaik Relatif**")
+    st.dataframe(
+        comparison.style.format(
+            {
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}",
+                "Transaksi": "{:.0f}",
+                "Equity akhir": "${:,.2f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    criteria_table = pd.DataFrame(
+        [
+            {"Kriteria": "Growth OOS", "Target": "> 0%", "Hasil": f"{winner_validation['Growth (%)']:+.2f}%", "Status": "LOLOS" if winner_decision["Growth positif"] else "BELUM"},
+            {"Kriteria": "Max drawdown", "Target": "<= 10%", "Hasil": f"{winner_validation['Max drawdown (%)']:.2f}%", "Status": "LOLOS" if winner_decision["Drawdown <= 10%"] else "BELUM"},
+            {"Kriteria": "Profit factor", "Target": ">= 1.30", "Hasil": f"{winner_validation['Profit factor']:.3f}", "Status": "LOLOS" if winner_decision["Profit factor >= 1.30"] else "BELUM"},
+            {"Kriteria": "Monte Carlo rugi", "Target": "<= 10%", "Hasil": f"{winner_decision['Monte Carlo rugi (%)']:.2f}%", "Status": "LOLOS" if winner_decision["Monte Carlo rugi <= 10%"] else "BELUM"},
+            {"Kriteria": "Stress profitable", "Target": "9/9", "Hasil": "9/9" if winner_decision["Stress profitable 9/9"] else "< 9/9", "Status": "LOLOS" if winner_decision["Stress profitable 9/9"] else "BELUM"},
+            {"Kriteria": "Jumlah transaksi", "Target": f">= {criteria['Minimum transaksi']}", "Hasil": f"{winner_validation['Transaksi']:.0f}", "Status": "LOLOS" if winner_decision["Transaksi >= 50"] else "BELUM"},
+        ]
+    )
+    st.markdown("**Audit Kriteria Kelulusan**")
+    st.dataframe(criteria_table, use_container_width=True, hide_index=True)
+
+    st.markdown("**Keputusan Tiga Finalis**")
+    st.dataframe(
+        decision.style.format(
+            {
+                "Monte Carlo rugi (%)": "{:.2f}%",
+                "Final score": "{:.2f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    with st.expander("Tahap 1 dan 2 - seluruh kandidat development"):
+        development_columns = [
+            "Kandidat", "Kelompok", "Growth (%)", "Max drawdown (%)", "Profit factor",
+            "Transaksi", "Max open posisi", "Entry diblokir", "Kriteria awal lolos", "Pre-score", "Konfigurasi",
+        ]
+        st.dataframe(
+            development[development_columns].sort_values("Pre-score", ascending=False).style.format(
+                {
+                    "Growth (%)": "{:+.2f}%",
+                    "Max drawdown (%)": "{:.2f}%",
+                    "Profit factor": "{:.3f}",
+                    "Transaksi": "{:.0f}",
+                    "Max open posisi": "{:.0f}",
+                    "Entry diblokir": "{:.0f}",
+                    "Pre-score": "{:.2f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    winner_stress = stress[stress["Kandidat"].eq(winner_name)]
+    st.markdown("**Stress Matrix Kandidat Terbaik Relatif**")
+    st.dataframe(
+        winner_stress.style.format(
+            {
+                "Spread multiplier": "{:.1f}x",
+                "Slippage points/sisi": "{:.0f}",
+                "Equity akhir": "${:,.2f}",
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}",
+                "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}",
+                "Transaksi": "{:.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    curve = winner_result.equity_curve
+    if not curve.empty:
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=curve.index, y=curve["Equity"], name="Equity Challenger"))
+        figure.add_hline(y=1000, line_dash="dash", annotation_text="Modal awal")
+        figure.update_layout(title=f"Equity Validation - {winner_name}", yaxis_title="USD", height=400)
+        st.plotly_chart(figure, use_container_width=True)
+
+    st.markdown("**Konfigurasi Kandidat Terbaik Relatif**")
+    config_rows = [
+        {"Parameter": key, "Nilai": value if value is not None else "Tidak aktif"}
+        for key, value in payload["winner_config"].items()
+        if key not in {"name", "group"}
+    ]
+    st.dataframe(pd.DataFrame(config_rows), use_container_width=True, hide_index=True)
+    st.caption(
+        f"Kandidat menutup validation pada equity USD {winner_summary['Equity akhir']:,.2f}. Penurunan drawdown "
+        "berhasil dicapai, tetapi profit factor, probabilitas Monte Carlo, dan jumlah transaksi belum memenuhi standar."
+    )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -2026,12 +2209,14 @@ def render_simulation(
         optimizer_v1_oos_tab,
         exact_v1_tab,
         robustness_v1_tab,
+        risk_control_v1_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
             "Optimizer v1 OOS",
             "Optimizer v1 Exact Broker-Aware OOS",
             "Optimizer v1 Robustness Test",
+            "v1 Risk-Control Lab",
         ]
     )
     with optimizer_tab:
@@ -2044,6 +2229,8 @@ def render_simulation(
         _render_exact_broker_oos_tab(exact_payload, key="v1", title="Optimizer v1 Exact Broker-Aware OOS")
     with robustness_v1_tab:
         _render_v1_robustness_tab(load_precomputed_v1_robustness(V1_ROBUSTNESS_VERSION))
+    with risk_control_v1_tab:
+        _render_v1_risk_control_tab(load_precomputed_v1_risk_control(V1_RISK_CONTROL_VERSION))
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:

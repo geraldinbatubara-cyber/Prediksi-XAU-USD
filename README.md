@@ -109,11 +109,17 @@ pada profit factor minimal 1.30, max drawdown maksimal 10%, dan pertumbuhan teta
 positif setelah stress biaya. Hasil saat ini belum memenuhi ambang tersebut,
 sehingga v1 hanya digunakan untuk paper trading.
 
-Tab `Simulasi` hanya memuat Optimizer v1, Optimizer v1 OOS, Optimizer v1 Exact
-Broker-Aware OOS, dan Optimizer v1 Robustness Test. Tab `Live Trading` hanya
-membuka posisi baru dengan Optimizer v1. Posisi v10 lama, bila masih ada, tetap
-dipantau sampai TP/CL tetapi v10 tidak dapat membuka posisi baru. Ringkasan
-eksperimen yang dikeluarkan dari deployment tersedia di
+Tab `Simulasi` memuat Optimizer v1, Optimizer v1 OOS, Optimizer v1 Exact
+Broker-Aware OOS, Optimizer v1 Robustness Test, dan `v1 Risk-Control Lab`.
+Laboratorium risk-control memilih overlay pada development 2025 lalu menguji tiga
+finalis pada validation Januari-Juni 2026. Seluruh perhitungan disimpan sebagai
+artefak precomputed agar tidak membebani startup Streamlit. Metodologi lengkap
+tersedia di [`docs/v1_risk_control_lab.md`](docs/v1_risk_control_lab.md).
+
+Tab `Live Trading` hanya membuka posisi baru dengan Optimizer v1 Baseline dan
+baseline dikunci tanpa perubahan sampai 31 Agustus 2026. Posisi v10 lama, bila
+masih ada, tetap dipantau sampai TP/CL tetapi v10 tidak dapat membuka posisi
+baru. Ringkasan eksperimen yang dikeluarkan dari deployment tersedia di
 [`docs/archived_experiments.md`](docs/archived_experiments.md).
 
 Asumsi dasar: equity awal USD 1.000, target tiap fase naik 20% dari start equity
