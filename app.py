@@ -74,6 +74,8 @@ MARTINGALE_V2_VERSION = "martingale-v2-adaptive-train2025-oos2026h1"
 MARTINGALE_V2_PATH = Path("data/precomputed/martingale_v2.pkl")
 MARTINGALE_V3_VERSION = "martingale-v3-v10-recovery-train2025-oos2026h1"
 MARTINGALE_V3_PATH = Path("data/precomputed/martingale_v3.pkl")
+OPTIMIZER_OOS_VERSION = "optimizer-v1-v10-train2025-oos2026h1"
+OPTIMIZER_OOS_PATH = Path("data/precomputed/optimizer_oos.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -142,6 +144,20 @@ def load_precomputed_martingale_v3(backtest_version: str):
         return None
     try:
         with MARTINGALE_V3_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_optimizer_oos(backtest_version: str):
+    if not OPTIMIZER_OOS_PATH.exists():
+        return None
+    try:
+        with OPTIMIZER_OOS_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -1629,6 +1645,112 @@ def _render_martingale_v2_tab(payload, *, version: str = "v2") -> None:
         )
 
 
+def _render_optimizer_oos_tab(payload, *, key: str, title: str) -> None:
+    st.subheader(title)
+    if payload is None or key not in payload:
+        st.warning("Hasil OOS belum tersedia pada artefak precomputed.")
+        return
+
+    train_result, leaderboard, oos_result = payload[key]
+    train = train_result.summary
+    oos = oos_result.summary
+    best = leaderboard.iloc[0] if not leaderboard.empty else pd.Series(dtype=object)
+    st.info(
+        "Parameter dipilih hanya dari **1 Jan-31 Des 2025**, kemudian dibekukan dan diuji tanpa optimasi ulang pada "
+        "**1 Jan-30 Jun 2026**. Equity awal train dan OOS masing-masing USD 1.000."
+    )
+    if key == "v10" and oos["Growth total"] > 500:
+        st.warning(
+            "Hasil v10 OOS sangat ekstrem. Profit protection disimulasikan dari OHLC harian, sehingga urutan pergerakan "
+            "harga di dalam candle, spread, slippage, dan kualitas fill broker belum diketahui. Hasil ini adalah bukti "
+            "historis awal, bukan proyeksi return live."
+        )
+    elif oos["Growth total"] > 0:
+        st.success("Strategi tetap menghasilkan pertumbuhan positif setelah parameter train dibekukan.")
+    else:
+        st.error("Strategi menghasilkan pertumbuhan negatif pada periode OOS.")
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Equity akhir OOS", f"${oos['Equity akhir']:,.2f}", f"{oos['Growth total']:+.2f}%")
+    c2.metric("Max drawdown OOS", f"${oos['Max drawdown']:,.2f}")
+    c3.metric("Transaksi OOS", f"{oos['Jumlah transaksi']:.0f}")
+    c4.metric("Profit factor OOS", "-" if pd.isna(oos['Profit factor']) else f"{oos['Profit factor']:.2f}")
+    c5.metric("Total swap OOS", f"${oos['Total swap']:+,.2f}")
+
+    comparison = pd.DataFrame(
+        [
+            {
+                "Segmen": "Train",
+                "Periode": "01 Jan 2025 - 31 Des 2025",
+                "Equity awal": train["Modal awal"],
+                "Equity akhir": train["Equity akhir"],
+                "Growth (%)": train["Growth total"],
+                "Max drawdown": train["Max drawdown"],
+                "Transaksi": train["Jumlah transaksi"],
+                "Win rate (%)": train["Win rate"],
+                "Profit factor": train["Profit factor"],
+                "Swap": train["Total swap"],
+            },
+            {
+                "Segmen": "Out-of-sample",
+                "Periode": "01 Jan 2026 - 30 Jun 2026",
+                "Equity awal": oos["Modal awal"],
+                "Equity akhir": oos["Equity akhir"],
+                "Growth (%)": oos["Growth total"],
+                "Max drawdown": oos["Max drawdown"],
+                "Transaksi": oos["Jumlah transaksi"],
+                "Win rate (%)": oos["Win rate"],
+                "Profit factor": oos["Profit factor"],
+                "Swap": oos["Total swap"],
+            },
+        ]
+    )
+    st.markdown("**Perbandingan Train dan OOS**")
+    st.dataframe(
+        comparison.style.format(
+            {
+                "Equity awal": "${:,.2f}",
+                "Equity akhir": "${:,.2f}",
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}",
+                "Transaksi": "{:.0f}",
+                "Win rate (%)": "{:.1f}%",
+                "Profit factor": "{:.2f}",
+                "Swap": "${:+,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    parameter_names = [
+        "Mode", "Fast MA", "Slow MA", "Momentum hari", "Threshold entry (%)", "TP (USD)", "SL (USD)",
+        "Lot", "Max BUY", "Max SELL", "Risk cap floating SL (%)", "Profit protection aktif (USD)",
+        "Profit protection floor (USD)", "Profit protection trail (USD)", "Close-all target equity",
+    ]
+    parameters = pd.DataFrame(
+        [{"Parameter": name, "Nilai train terpilih": best[name]} for name in parameter_names if name in best.index]
+    )
+    st.markdown("**Parameter yang Dibekukan dari Train 2025**")
+    st.dataframe(parameters, use_container_width=True, hide_index=True)
+
+    equity_curve = oos_result.equity_curve.copy()
+    if not equity_curve.empty:
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve["Equity"], name="Equity OOS", line=dict(width=3)))
+        figure.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve["Balance"], name="Balance OOS", line=dict(width=1.5, dash="dot")))
+        figure.add_hline(y=oos["Modal awal"], line_dash="dash", annotation_text="Equity awal OOS")
+        figure.update_layout(title=f"Equity Curve {title}", yaxis_title="USD", height=430)
+        st.plotly_chart(figure, use_container_width=True)
+
+    with st.expander("Transaksi OOS"):
+        if oos_result.trades.empty:
+            st.info("Tidak ada transaksi pada periode OOS.")
+        else:
+            st.dataframe(oos_result.trades, use_container_width=True, hide_index=True)
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -1649,10 +1771,12 @@ def render_simulation(
         "Jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v10_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab, martingale_v2_tab, martingale_v3_tab = st.tabs(
+    optimizer_tab, optimizer_v10_tab, optimizer_v1_oos_tab, optimizer_v10_oos_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab, martingale_v2_tab, martingale_v3_tab = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v10",
+            "Optimizer v1 OOS",
+            "Optimizer v10 OOS",
             "v1 Intraday M1",
             "v10 Intraday M1",
             "Martingale v2",
@@ -1663,6 +1787,11 @@ def render_simulation(
         _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
     with optimizer_v10_tab:
         _render_multiphase_result("Strategi Optimizer v10", optimized_v10_result, optimization_v10_leaderboard, gold_ohlc)
+    oos_payload = load_precomputed_optimizer_oos(OPTIMIZER_OOS_VERSION)
+    with optimizer_v1_oos_tab:
+        _render_optimizer_oos_tab(oos_payload, key="v1", title="Optimizer v1 OOS")
+    with optimizer_v10_oos_tab:
+        _render_optimizer_oos_tab(oos_payload, key="v10", title="Optimizer v10 OOS")
     m1_payload = load_precomputed_m1_backtests(M1_BACKTEST_VERSION)
     with optimizer_v1_m1_tab:
         _render_m1_backtest_tab(m1_payload, payload_offset=0, title="Optimizer v1 Intraday M1")
