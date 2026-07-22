@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import pickle
 from pathlib import Path
 
@@ -76,7 +77,7 @@ V1_ROBUSTNESS_PATH = Path("data/precomputed/v1_robustness.pkl")
 V1_RISK_CONTROL_VERSION = "optimizer-v1-risk-control-lab-2025-2026h1-v1"
 V1_RISK_CONTROL_PATH = Path("data/precomputed/v1_risk_control.pkl")
 V1_SIGNAL_QUALITY_VERSION = "optimizer-v1-signal-quality-lab-2025-2026h1-v1"
-V1_SIGNAL_QUALITY_PATH = Path("data/precomputed/v1_signal_quality.pkl")
+V1_SIGNAL_QUALITY_PATH = Path("data/precomputed/v1_signal_quality.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -172,8 +173,7 @@ def load_precomputed_v1_signal_quality(backtest_version: str):
     if not V1_SIGNAL_QUALITY_PATH.exists():
         return None
     try:
-        with V1_SIGNAL_QUALITY_PATH.open("rb") as file:
-            saved = pickle.load(file)
+        saved = pickle.loads(base64.b64decode(V1_SIGNAL_QUALITY_PATH.read_text(encoding="ascii")))
         if saved.get("version") == backtest_version:
             return saved["payload"]
     except Exception:
