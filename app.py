@@ -3403,7 +3403,15 @@ def render_live_trading(
         "dan kombinasi tanggal sinyal + arah belum pernah dicatat di ledger."
     )
 
-    st.markdown("**Sinyal yang Sedang Ditunggu**")
+    st.markdown("**Sinyal Resmi v1 - Candle Harian Selesai**")
+    official_date = waiting_state.get("Tanggal evaluasi")
+    official_close = waiting_state.get("Harga terakhir")
+    st.caption(
+        "Panel ini menjadi dasar keputusan Optimizer v1. "
+        f"Sumber: **{waiting_state.get('Sumber harga', 'GC=F harian')}** | "
+        f"Tanggal candle: **{'-' if pd.isna(official_date) else pd.Timestamp(official_date).strftime('%d %b %Y')}** | "
+        f"Close resmi: **{'-' if pd.isna(official_close) else f'${float(official_close):,.2f}'}**."
+    )
     st.write(waiting_state["Yang ditunggu"])
     w1, w2, w3, w4 = st.columns(4)
     w1.metric(
@@ -3435,6 +3443,61 @@ def render_live_trading(
         st.error(f"**Interpretasi:** {waiting_state['Interpretasi']}")
     else:
         st.info(f"**Kondisi Netral / Tunggu:** {waiting_state['Interpretasi']}")
+
+    live_preview = waiting_state.get("Preview live")
+    if live_preview is not None:
+        st.markdown("**Preview Kondisi Live MT5 - Provisional**")
+        st.warning(
+            "Preview ini memakai quote MT5 terbaru untuk menggambarkan kondisi hari berjalan. "
+            "Nilainya dapat berubah setiap pembaruan dan **tidak digunakan untuk membuka posisi v1** sebelum candle harian selesai."
+        )
+        preview_time = live_preview.get("Timestamp live")
+        source_comparison = pd.DataFrame(
+            [
+                {
+                    "Lapisan": "Sinyal resmi v1",
+                    "Sumber": waiting_state.get("Sumber harga", "GC=F harian"),
+                    "Waktu data": "-" if pd.isna(official_date) else pd.Timestamp(official_date).strftime("%d %b %Y"),
+                    "Harga": official_close,
+                    "Fungsi": "Dasar sinyal dan entry v1",
+                },
+                {
+                    "Lapisan": "Preview live",
+                    "Sumber": live_preview.get("Sumber harga", "MT5 live mid"),
+                    "Waktu data": "-" if pd.isna(preview_time) else pd.Timestamp(preview_time).strftime("%d %b %Y %H:%M:%S WIT"),
+                    "Harga": live_preview.get("Harga terakhir"),
+                    "Fungsi": "Observasi sementara, bukan trigger entry",
+                },
+            ]
+        )
+        st.dataframe(
+            source_comparison.style.format({"Harga": "${:,.2f}"}, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("Close sementara MT5", f"${float(live_preview['Harga terakhir']):,.2f}")
+        p2.metric("MA cepat provisional", f"${float(live_preview['MA cepat']):,.2f}")
+        p3.metric("MA lambat provisional", f"${float(live_preview['MA lambat']):,.2f}")
+        p4.metric("Momentum provisional", f"{float(live_preview['Momentum saat ini']):+.2f}%")
+        preview_buy, preview_sell = st.columns(2)
+        with preview_buy:
+            _render_signal_checklist(
+                "Preview BUY MT5",
+                live_preview["Checklist BUY"],
+                "Kondisi sementara berdasarkan quote MT5; tidak mengeksekusi posisi.",
+            )
+        with preview_sell:
+            _render_signal_checklist(
+                "Preview SELL MT5",
+                live_preview["Checklist SELL"],
+                "Kondisi sementara berdasarkan quote MT5; tidak mengeksekusi posisi.",
+            )
+    else:
+        st.info(
+            "Preview live belum tersedia karena quote MT5 tidak tersedia atau berstatus stale. "
+            "Sinyal resmi v1 tetap memakai candle harian terakhir."
+        )
 
     format_columns = {
         "lot": "{:.2f}",
