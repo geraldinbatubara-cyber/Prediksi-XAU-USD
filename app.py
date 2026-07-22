@@ -68,14 +68,10 @@ _rsi = strategy_optimizer_module._rsi
 
 SIMULATION_CACHE_VERSION = "optimizer-v1-v10-2025q1-2026q2"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
-M1_BACKTEST_VERSION = "v1-full-history-v10-oos-2026-07-21"
-M1_BACKTEST_PATH = Path("data/precomputed/m1_backtests.pkl")
-MARTINGALE_V2_VERSION = "martingale-v2-adaptive-train2025-oos2026h1"
-MARTINGALE_V2_PATH = Path("data/precomputed/martingale_v2.pkl")
-MARTINGALE_V3_VERSION = "martingale-v3-v10-recovery-train2025-oos2026h1"
-MARTINGALE_V3_PATH = Path("data/precomputed/martingale_v3.pkl")
 OPTIMIZER_OOS_VERSION = "optimizer-v1-v10-train2025-oos2026h1"
 OPTIMIZER_OOS_PATH = Path("data/precomputed/optimizer_oos.pkl")
+BROKER_AWARE_OOS_VERSION = "optimizer-v1-v10-broker-aware-train2025-oos2026h1"
+BROKER_AWARE_OOS_PATH = Path("data/precomputed/broker_aware_oos.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -111,53 +107,25 @@ def load_precomputed_simulations(simulation_version: str):
 
 
 @st.cache_resource
-def load_precomputed_m1_backtests(backtest_version: str):
-    if not M1_BACKTEST_PATH.exists():
-        return None
-    try:
-        with M1_BACKTEST_PATH.open("rb") as file:
-            saved = pickle.load(file)
-        if saved.get("version") == backtest_version:
-            return saved["payload"]
-    except Exception:
-        return None
-    return None
-
-
-@st.cache_resource
-def load_precomputed_martingale_v2(backtest_version: str):
-    if not MARTINGALE_V2_PATH.exists():
-        return None
-    try:
-        with MARTINGALE_V2_PATH.open("rb") as file:
-            saved = pickle.load(file)
-        if saved.get("version") == backtest_version:
-            return saved["payload"]
-    except Exception:
-        return None
-    return None
-
-
-@st.cache_resource
-def load_precomputed_martingale_v3(backtest_version: str):
-    if not MARTINGALE_V3_PATH.exists():
-        return None
-    try:
-        with MARTINGALE_V3_PATH.open("rb") as file:
-            saved = pickle.load(file)
-        if saved.get("version") == backtest_version:
-            return saved["payload"]
-    except Exception:
-        return None
-    return None
-
-
-@st.cache_resource
 def load_precomputed_optimizer_oos(backtest_version: str):
     if not OPTIMIZER_OOS_PATH.exists():
         return None
     try:
         with OPTIMIZER_OOS_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_broker_aware_oos(backtest_version: str):
+    if not BROKER_AWARE_OOS_PATH.exists():
+        return None
+    try:
+        with BROKER_AWARE_OOS_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -1751,6 +1719,91 @@ def _render_optimizer_oos_tab(payload, *, key: str, title: str) -> None:
             st.dataframe(oos_result.trades, use_container_width=True, hide_index=True)
 
 
+def _render_broker_aware_oos_tab(payload, *, key: str, title: str) -> None:
+    st.subheader(title)
+    if payload is None or key not in payload:
+        st.warning("Hasil broker-aware OOS belum tersedia pada artefak precomputed.")
+        return
+
+    result, leaderboard = payload[key]
+    summary = result.summary
+    best = leaderboard.iloc[0] if not leaderboard.empty else pd.Series(dtype=object)
+    st.info(
+        "Daily regime mengikuti parameter pemenang OOS dan parameter eksekusi M1 dipilih hanya dari train 2025. "
+        "Test 1 Jan-30 Jun 2026 memakai 170.383 candle M1 MT5, spread historis per menit, slippage adverse "
+        "2 points per sisi, swap, serta asumsi konservatif SL lebih dahulu jika TP dan SL tersentuh pada candle yang sama."
+    )
+    if summary["Status kelayakan"].startswith("LAYAK"):
+        st.success("Hasil memenuhi batas awal kandidat paper test, tetapi edge setelah biaya masih harus dipantau secara live.")
+    else:
+        st.error("Hasil belum layak: pertumbuhan atau profit factor OOS tidak melewati batas minimum.")
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Equity akhir OOS", f"${summary['Equity akhir']:,.2f}", f"{summary['Growth total']:+.2f}%")
+    c2.metric("Max drawdown", f"${summary['Max drawdown']:,.2f}")
+    c3.metric("Transaksi", f"{summary['Jumlah transaksi']:.0f}")
+    c4.metric("Profit factor", "-" if pd.isna(summary['Profit factor']) else f"{summary['Profit factor']:.3f}")
+    c5.metric("Win rate", f"{summary['Win rate']:.1f}%")
+
+    cost_rows = pd.DataFrame(
+        [
+            {"Komponen": "Spread historis", "Nilai": summary["Biaya spread estimasi"], "Keterangan": f"Rata-rata {summary['Spread rata-rata points']:.2f} points | P95 {summary['Spread p95 points']:.2f}"},
+            {"Komponen": "Slippage adverse", "Nilai": summary["Biaya slippage estimasi"], "Keterangan": "2 points pada entry dan 2 points pada exit"},
+            {"Komponen": "Swap", "Nilai": abs(summary["Total swap"]), "Keterangan": "BUY USD 0,20 per 0,01 lot per hari; SELL USD 0"},
+        ]
+    )
+    st.markdown("**Biaya Eksekusi yang Sudah Masuk dalam Net P/L**")
+    st.dataframe(cost_rows.style.format({"Nilai": "${:,.2f}"}), use_container_width=True, hide_index=True)
+
+    audit = pd.DataFrame(
+        [
+            {"Pemeriksaan": "Periode train", "Nilai": summary["Periode train"], "Status": "Lolos"},
+            {"Pemeriksaan": "Periode OOS", "Nilai": summary["Periode test"], "Status": "Lolos"},
+            {"Pemeriksaan": "Candle M1 train", "Nilai": f"{summary['Candle M1 train']:,.0f}", "Status": "Lolos"},
+            {"Pemeriksaan": "Candle M1 OOS", "Nilai": f"{summary['Candle M1 OOS']:,.0f}", "Status": "Lolos"},
+            {"Pemeriksaan": "Cakupan 18 bulan", "Nilai": "Lengkap" if summary["Cakupan lengkap"] else "Tidak lengkap", "Status": "Lolos" if summary["Cakupan lengkap"] else "Audit"},
+            {"Pemeriksaan": "Spread maksimum", "Nilai": f"{summary['Spread maksimum points']:,.0f} points", "Status": "Audit outlier"},
+        ]
+    )
+    st.markdown("**Audit Dataset Broker**")
+    st.dataframe(audit, use_container_width=True, hide_index=True)
+
+    comparison = pd.DataFrame(
+        [
+            {"Segmen": "Train 2025", "Equity akhir": best.get("Train equity akhir"), "Growth (%)": best.get("Train growth (%)"), "Max drawdown": best.get("Train max drawdown"), "Transaksi": best.get("Train transaksi"), "Profit factor": best.get("Train profit factor")},
+            {"Segmen": "OOS 2026 H1", "Equity akhir": summary["Equity akhir"], "Growth (%)": summary["Growth total"], "Max drawdown": summary["Max drawdown"], "Transaksi": summary["Jumlah transaksi"], "Profit factor": summary["Profit factor"]},
+        ]
+    )
+    st.markdown("**Perbandingan Broker-Aware Train dan OOS**")
+    st.dataframe(
+        comparison.style.format({"Equity akhir": "${:,.2f}", "Growth (%)": "{:+.2f}%", "Max drawdown": "${:,.2f}", "Transaksi": "{:.0f}", "Profit factor": "{:.3f}"}, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    parameter_columns = [
+        "M1 Fast EMA", "M1 Slow EMA", "Momentum M1 bars", "Momentum threshold (%)", "TP ATR", "SL ATR",
+        "Trailing ATR", "Cooldown bars", "Max holding bars", "Max posisi", "Max transaksi per hari",
+        "Daily loss cap (%)", "Lot minimum", "Lot maksimum", "Max spread points", "Slippage points per side",
+        "H1 Fast", "H1 Slow", "Breakout bars",
+    ]
+    parameters = pd.DataFrame([{"Parameter": column, "Nilai": best[column]} for column in parameter_columns if column in best.index])
+    st.markdown("**Parameter Eksekusi M1 yang Dibekukan dari Train 2025**")
+    st.dataframe(parameters, use_container_width=True, hide_index=True)
+
+    curve = result.equity_curve.copy()
+    if not curve.empty:
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=curve.index, y=curve["Equity"], name="Equity", line=dict(width=3)))
+        figure.add_trace(go.Scatter(x=curve.index, y=curve["Balance"], name="Balance", line=dict(width=1.5, dash="dot")))
+        figure.add_hline(y=summary["Modal awal"], line_dash="dash", annotation_text="Equity awal")
+        figure.update_layout(title=f"Equity Curve {title}", yaxis_title="USD", height=430)
+        st.plotly_chart(figure, use_container_width=True)
+
+    with st.expander("Transaksi broker-aware OOS"):
+        st.dataframe(result.trades, use_container_width=True, hide_index=True)
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -1766,21 +1819,18 @@ def render_simulation(
         "Asumsi strategi utama: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
         "Simulasi memakai dataset 1 Jan 2025-30 Jun 2026. Data sebelum 1 Jan 2025 tidak dipakai agar proses tetap ringan. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
-        "Eksperimen recovery memakai equity awal USD 10.000 dan aturan margin tersendiri. "
-        "Dua tab strategi harian memakai OHLC harian GC=F; tab M1 memiliki penjelasan dataset tersendiri. "
+        "Dua tab strategi harian memakai OHLC harian GC=F; tab broker-aware memakai candle M1 dan spread MT5. "
         "Jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v10_tab, optimizer_v1_oos_tab, optimizer_v10_oos_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab, martingale_v2_tab, martingale_v3_tab = st.tabs(
+    optimizer_tab, optimizer_v10_tab, optimizer_v1_oos_tab, optimizer_v10_oos_tab, broker_v1_tab, broker_v10_tab = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v10",
             "Optimizer v1 OOS",
             "Optimizer v10 OOS",
-            "v1 Intraday M1",
-            "v10 Intraday M1",
-            "Martingale v2",
-            "Martingale v3",
+            "Optimizer v1 Broker-Aware OOS",
+            "Optimizer v10 Broker-Aware OOS",
         ]
     )
     with optimizer_tab:
@@ -1792,15 +1842,11 @@ def render_simulation(
         _render_optimizer_oos_tab(oos_payload, key="v1", title="Optimizer v1 OOS")
     with optimizer_v10_oos_tab:
         _render_optimizer_oos_tab(oos_payload, key="v10", title="Optimizer v10 OOS")
-    m1_payload = load_precomputed_m1_backtests(M1_BACKTEST_VERSION)
-    with optimizer_v1_m1_tab:
-        _render_m1_backtest_tab(m1_payload, payload_offset=0, title="Optimizer v1 Intraday M1")
-    with optimizer_v10_m1_tab:
-        _render_m1_backtest_tab(m1_payload, payload_offset=2, title="Optimizer v10 Intraday M1")
-    with martingale_v2_tab:
-        _render_martingale_v2_tab(load_precomputed_martingale_v2(MARTINGALE_V2_VERSION))
-    with martingale_v3_tab:
-        _render_martingale_v2_tab(load_precomputed_martingale_v3(MARTINGALE_V3_VERSION), version="v3")
+    broker_payload = load_precomputed_broker_aware_oos(BROKER_AWARE_OOS_VERSION)
+    with broker_v1_tab:
+        _render_broker_aware_oos_tab(broker_payload, key="v1", title="Optimizer v1 Broker-Aware OOS")
+    with broker_v10_tab:
+        _render_broker_aware_oos_tab(broker_payload, key="v10", title="Optimizer v10 Broker-Aware OOS")
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:

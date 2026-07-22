@@ -60,6 +60,11 @@ def run_intraday_optimization(
     variant: str,
     requested_start: pd.Timestamp,
     requested_end: pd.Timestamp,
+    train_start: pd.Timestamp | None = None,
+    train_end: pd.Timestamp = TRAIN_END,
+    test_start: pd.Timestamp = TEST_START,
+    test_end: pd.Timestamp | None = None,
+    daily_params: dict[str, object] | None = None,
 ) -> tuple[MultiPhaseSimulationResult, pd.DataFrame]:
     if variant not in {"v1", "v10"}:
         raise ValueError("Variant intraday harus v1 atau v10.")
@@ -67,12 +72,14 @@ def run_intraday_optimization(
     if data.empty:
         raise ValueError("Tidak ada candle M1 dalam periode pengujian.")
 
-    train = data.loc[data.index <= TRAIN_END]
-    test = data.loc[data.index >= TEST_START]
+    train_start = requested_start if train_start is None else train_start
+    test_end = requested_end if test_end is None else test_end
+    train = data.loc[(data.index >= train_start) & (data.index <= train_end)]
+    test = data.loc[(data.index >= test_start) & (data.index <= test_end)]
     if train.empty or test.empty:
         raise ValueError("Dataset M1 belum cukup untuk pembagian train dan test kronologis.")
 
-    daily_regime = _daily_regime(gold_daily, variant)
+    daily_regime = _daily_regime(gold_daily, variant, daily_params)
     mapped_regime = _map_daily_regime(data.index, daily_regime)
     candidates: list[dict[str, object]] = []
     for params in _candidate_params(variant):
@@ -116,6 +123,10 @@ def run_intraday_optimization(
             "Cakupan lengkap": data.index.min() <= requested_start and data.index.max() >= requested_end,
             "Timeframe": "Daily regime + H1/M1 execution" if variant == "v10" else "Daily regime + M1 execution",
             "Status kelayakan": _eligibility(test_result.summary),
+            "Daily parameter": daily_params or {},
+            "Spread historis": True,
+            "Slippage points per side": float(best_params["Slippage points per side"]),
+            "Point size": float(best_params["Point size"]),
         }
     )
 
@@ -199,9 +210,18 @@ def _prepare_m1(data: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> p
     return clean.dropna(subset=list(required))
 
 
-def _daily_regime(daily: pd.DataFrame, variant: str) -> pd.Series:
+def _daily_regime(
+    daily: pd.DataFrame,
+    variant: str,
+    daily_params: dict[str, object] | None = None,
+) -> pd.Series:
     close = daily["Close"].astype(float)
-    if variant == "v1":
+    if daily_params:
+        fast_window = int(daily_params["Fast MA"])
+        slow_window = int(daily_params["Slow MA"])
+        momentum_days = int(daily_params["Momentum hari"])
+        threshold = float(daily_params["Threshold entry (%)"])
+    elif variant == "v1":
         fast_window, slow_window, momentum_days, threshold = 10, 50, 10, 0.15
     else:
         fast_window, slow_window, momentum_days, threshold = 20, 50, 14, 0.10
