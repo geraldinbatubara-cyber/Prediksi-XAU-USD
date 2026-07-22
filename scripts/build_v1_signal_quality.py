@@ -19,7 +19,7 @@ from gold_forecast.v1_signal_quality import run_v1_signal_quality_lab
 INPUT_DIR = PROJECT_ROOT / "data" / "intraday"
 OOS_SOURCE = PROJECT_ROOT / "data" / "precomputed" / "optimizer_oos.pkl"
 OUTPUT_PATH = PROJECT_ROOT / "data" / "precomputed" / "v1_signal_quality.pkl.b64"
-VERSION = "optimizer-v1-signal-quality-lab-2025-2026h1-v1"
+VERSION = "optimizer-v1-signal-quality-lab-2025-2026h1-v2"
 
 
 def main() -> None:

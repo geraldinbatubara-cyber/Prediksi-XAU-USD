@@ -76,7 +76,7 @@ V1_ROBUSTNESS_VERSION = "optimizer-v1-robustness-oos-2026h1"
 V1_ROBUSTNESS_PATH = Path("data/precomputed/v1_robustness.pkl")
 V1_RISK_CONTROL_VERSION = "optimizer-v1-risk-control-lab-2025-2026h1-v1"
 V1_RISK_CONTROL_PATH = Path("data/precomputed/v1_risk_control.pkl")
-V1_SIGNAL_QUALITY_VERSION = "optimizer-v1-signal-quality-lab-2025-2026h1-v1"
+V1_SIGNAL_QUALITY_VERSION = "optimizer-v1-signal-quality-lab-2025-2026h1-v2"
 V1_SIGNAL_QUALITY_PATH = Path("data/precomputed/v1_signal_quality.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -2204,7 +2204,7 @@ def _render_v1_risk_control_tab(payload) -> None:
 
 
 def _render_v1_signal_quality_tab(payload) -> None:
-    st.subheader("Optimizer v1 Signal Quality Lab")
+    st.subheader("Optimizer v1 Signal Quality Lab - Adaptive Confirmation v2")
     if payload is None:
         st.warning("Hasil Signal Quality Lab belum tersedia pada artefak precomputed.")
         return
@@ -2214,6 +2214,7 @@ def _render_v1_signal_quality_tab(payload) -> None:
     decision = payload["decision"]
     validation = payload["validation"]
     development = payload["development"]
+    stress = payload["stress"]
     winner_name = str(payload["winner_name"])
     winner_status = str(payload["winner_status"])
     winner_result = payload["winner_result"]
@@ -2236,8 +2237,10 @@ def _render_v1_signal_quality_tab(payload) -> None:
         )
     st.info(
         f"Kandidat dipilih hanya pada **{methodology['Development']}** dan dibekukan sebelum diuji pada "
-        f"**{methodology['Validation']}**. {methodology['Yang diubah']}."
+        f"**{methodology['Validation']}**. {methodology['Yang diubah']}. "
+        f"Gerbang development: {methodology['Selection rule']}."
     )
+    st.caption(methodology["Validation status"])
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Growth validation", f"{float(winner_validation['Growth (%)']):+.2f}%")
@@ -2246,12 +2249,11 @@ def _render_v1_signal_quality_tab(payload) -> None:
     c4.metric("Entry lolos", f"{int(winner_validation['Entry lolos'])}/{int(winner_validation['Sinyal awal'])}")
     c5.metric("Kriteria lolos", f"{int(winner_decision['Jumlah kriteria lolos'])}/6")
 
-    comparison = validation[
-        validation["Kandidat"].isin(["v1 Exact Baseline", winner_name])
-    ][
+    comparison_names = ["v1 Exact Baseline", "SQ-A v1 Strict Reference", winner_name]
+    comparison = validation[validation["Kandidat"].isin(comparison_names)][
         ["Kandidat", "Equity akhir", "Growth (%)", "Max drawdown (%)", "Profit factor", "Transaksi", "Retensi entry (%)"]
     ].rename(columns={"Kandidat": "Strategi"})
-    st.markdown("**Baseline versus Filter Entry Terbaik Relatif**")
+    st.markdown("**Baseline versus SQ-A Strict dan Adaptive v2**")
     st.dataframe(
         comparison.style.format(
             {
@@ -2294,27 +2296,46 @@ def _render_v1_signal_quality_tab(payload) -> None:
         hide_index=True,
     )
     st.caption(
-        f"{winner_name} memperbaiki kualitas per transaksi, tetapi hanya menghasilkan "
-        f"{winner_validation['Transaksi']:.0f} transaksi. Seluruh finalis masih di bawah minimum "
-        f"{criteria['Minimum transaksi']}, sehingga belum ada kandidat yang layak dipromosikan."
+        f"{winner_name} menghasilkan {winner_validation['Transaksi']:.0f} transaksi. "
+        "Target frekuensi tercapai, tetapi kualitas OOS memburuk; tidak ada kandidat Adaptive v2 yang dipromosikan."
     )
 
     with st.expander("Seluruh kandidat pada development 2025"):
         columns = [
             "Kandidat", "Kelompok", "Growth (%)", "Max drawdown (%)", "Profit factor", "Transaksi",
-            "Entry lolos", "Entry ditolak", "Retensi entry (%)", "Kriteria awal lolos", "Pre-score", "Konfigurasi",
+            "Entry lolos", "Entry ditolak", "Retensi entry (%)", "Kuartal positif",
+            "Development eligible", "Kriteria awal lolos", "Pre-score", "Konfigurasi",
         ]
         st.dataframe(
             development[columns].sort_values("Pre-score", ascending=False).style.format(
                 {
                     "Growth (%)": "{:+.2f}%", "Max drawdown (%)": "{:.2f}%", "Profit factor": "{:.3f}",
                     "Transaksi": "{:.0f}", "Entry lolos": "{:.0f}", "Entry ditolak": "{:.0f}",
-                    "Retensi entry (%)": "{:.1f}%", "Pre-score": "{:.2f}",
+                    "Retensi entry (%)": "{:.1f}%", "Kuartal positif": "{:.0f}", "Pre-score": "{:.2f}",
                 }
             ),
             use_container_width=True,
             hide_index=True,
         )
+
+    winner_stress = stress[stress["Kandidat"].eq(winner_name)]
+    st.markdown("**Stress Matrix Kandidat Adaptive Terbaik Relatif**")
+    st.dataframe(
+        winner_stress.style.format(
+            {
+                "Spread multiplier": "{:.1f}x",
+                "Slippage points/sisi": "{:.0f}",
+                "Equity akhir": "${:,.2f}",
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}",
+                "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}",
+                "Transaksi": "{:.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     curve = winner_result.equity_curve
     if not curve.empty:
