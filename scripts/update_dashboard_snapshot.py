@@ -11,14 +11,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from gold_forecast.dashboard_snapshot import (
     DASHBOARD_SNAPSHOT_PATH,
-    V10_PARAMS_PATH,
+    V1_PARAMS_PATH,
     build_dashboard_snapshot,
-    load_v10_params,
+    load_v1_params,
     save_dashboard_snapshot,
-    save_v10_params,
+    save_v1_params,
 )
 from gold_forecast.data import _download_market_data, load_market_data
-from gold_forecast.strategy_optimizer import run_optimized_strategy_v10
+from gold_forecast.strategy_optimizer import run_optimized_strategy
 
 
 def main() -> None:
@@ -27,21 +27,21 @@ def main() -> None:
     if len(market) < 650:
         print("Cache 2025+ belum cukup untuk training; mengambil riwayat 5 tahun hanya untuk snapshot model.")
         market = _download_market_data("5y")
-    v10_leaderboard = load_v10_params()
+    v1_leaderboard = load_v1_params()
 
-    if v10_leaderboard.empty:
-        print("Parameter v10 belum tersedia; menjalankan optimasi awal satu kali.")
+    if v1_leaderboard.empty:
+        print("Parameter v1 belum tersedia; menjalankan optimasi awal satu kali.")
         from gold_forecast.data import load_gold_data
 
-        _, v10_leaderboard = run_optimized_strategy_v10(load_gold_data())
-        save_v10_params(v10_leaderboard)
+        _, v1_leaderboard = run_optimized_strategy(load_gold_data())
+        save_v1_params(v1_leaderboard)
 
-    snapshot = build_dashboard_snapshot(market, v10_leaderboard)
+    snapshot = build_dashboard_snapshot(market, v1_leaderboard)
     save_dashboard_snapshot(snapshot)
     elapsed = time.perf_counter() - started_at
     print(
         f"Dashboard snapshot: {DASHBOARD_SNAPSHOT_PATH} | "
-        f"v10 params: {V10_PARAMS_PATH} | rows={len(market)} | elapsed={elapsed:.1f}s"
+        f"v1 params: {V1_PARAMS_PATH} | rows={len(market)} | elapsed={elapsed:.1f}s"
     )
 
 

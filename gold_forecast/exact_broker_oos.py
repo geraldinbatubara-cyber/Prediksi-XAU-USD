@@ -50,7 +50,7 @@ def run_exact_broker_oos(
 ) -> dict[str, tuple[MultiPhaseSimulationResult, pd.DataFrame, object]]:
     data = _prepare_m1(gold_m1)
     output = {}
-    for variant in ("v1", "v10"):
+    for variant in ("v1",):
         _, leaderboard, daily_oos = frozen_payload[variant]
         best = leaderboard.iloc[0].to_dict()
         signals = _entry_signals(data, signal_daily, best)

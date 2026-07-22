@@ -31,7 +31,6 @@ from gold_forecast.live_trading import (
     LIVE_INITIAL_EQUITY,
     LIVE_START_DATE,
     LIVE_MANUAL_EXIT_PATH,
-    LIVE_MANUAL_EXIT_V10_PATH,
     LIVE_TRADING_PATH,
     LIVE_TRADING_V10_PATH,
     LIVE_V10_START_DATE,
@@ -66,13 +65,11 @@ OPTIMIZATION_START = strategy_optimizer_module.OPTIMIZATION_START
 _rsi = strategy_optimizer_module._rsi
 
 
-SIMULATION_CACHE_VERSION = "optimizer-v1-v10-2025q1-2026q2"
+SIMULATION_CACHE_VERSION = "optimizer-v1-only-2025q1-2026q2"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
-OPTIMIZER_OOS_VERSION = "optimizer-v1-v10-train2025-oos2026h1"
+OPTIMIZER_OOS_VERSION = "optimizer-v1-only-train2025-oos2026h1"
 OPTIMIZER_OOS_PATH = Path("data/precomputed/optimizer_oos.pkl")
-BROKER_AWARE_OOS_VERSION = "optimizer-v1-v10-broker-aware-train2025-oos2026h1"
-BROKER_AWARE_OOS_PATH = Path("data/precomputed/broker_aware_oos.pkl")
-EXACT_BROKER_OOS_VERSION = "optimizer-v1-v10-exact-broker-aware-oos-2026h1"
+EXACT_BROKER_OOS_VERSION = "optimizer-v1-only-exact-broker-aware-oos-2026h1"
 EXACT_BROKER_OOS_PATH = Path("data/precomputed/exact_broker_oos.pkl")
 V1_ROBUSTNESS_VERSION = "optimizer-v1-robustness-oos-2026h1"
 V1_ROBUSTNESS_PATH = Path("data/precomputed/v1_robustness.pkl")
@@ -125,20 +122,6 @@ def load_precomputed_optimizer_oos(backtest_version: str):
 
 
 @st.cache_resource
-def load_precomputed_broker_aware_oos(backtest_version: str):
-    if not BROKER_AWARE_OOS_PATH.exists():
-        return None
-    try:
-        with BROKER_AWARE_OOS_PATH.open("rb") as file:
-            saved = pickle.load(file)
-        if saved.get("version") == backtest_version:
-            return saved["payload"]
-    except Exception:
-        return None
-    return None
-
-
-@st.cache_resource
 def load_precomputed_exact_broker_oos(backtest_version: str):
     if not EXACT_BROKER_OOS_PATH.exists():
         return None
@@ -179,18 +162,7 @@ def get_simulations(simulation_version: str):
 
     gold_ohlc = get_gold_ohlc()
     optimized_result, optimization_leaderboard = get_base_optimizer(gold_ohlc)
-    optimized_v10_runner = getattr(
-        strategy_optimizer_module,
-        "run_optimized_strategy_v10",
-        strategy_optimizer_module.run_optimized_strategy,
-    )
-    optimized_v10_result, optimization_v10_leaderboard = optimized_v10_runner(gold_ohlc)
-    payload = (
-        optimized_result,
-        optimization_leaderboard,
-        optimized_v10_result,
-        optimization_v10_leaderboard,
-    )
+    payload = (optimized_result, optimization_leaderboard)
     try:
         PRECOMPUTED_SIMULATION_PATH.parent.mkdir(parents=True, exist_ok=True)
         with PRECOMPUTED_SIMULATION_PATH.open("wb") as file:
@@ -198,21 +170,6 @@ def get_simulations(simulation_version: str):
     except Exception:
         pass
     return payload
-
-
-def get_v10_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
-    snapshot = get_dashboard_snapshot(DASHBOARD_SNAPSHOT_VERSION)
-    if snapshot is not None:
-        leaderboard = snapshot.get("v10_leaderboard")
-        if isinstance(leaderboard, pd.DataFrame) and not leaderboard.empty:
-            return leaderboard
-    cached = load_precomputed_simulations(simulation_version)
-    if cached is None or len(cached) < 4:
-        return pd.DataFrame()
-    leaderboard = cached[3]
-    if isinstance(leaderboard, pd.DataFrame):
-        return leaderboard
-    return pd.DataFrame()
 
 
 def get_v1_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
@@ -225,7 +182,7 @@ def get_v1_leaderboard_for_live(simulation_version: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _optimizer_v10_latest_prediction(gold_ohlc: pd.DataFrame, leaderboard: pd.DataFrame) -> dict[str, object]:
+def _optimizer_v1_latest_prediction(gold_ohlc: pd.DataFrame, leaderboard: pd.DataFrame) -> dict[str, object]:
     params = _optimizer_best_params(leaderboard)
     if gold_ohlc.empty:
         return {"params": params, "direction": "WAIT", "note": "Data OHLC belum tersedia."}
@@ -252,19 +209,19 @@ def _optimizer_v10_latest_prediction(gold_ohlc: pd.DataFrame, leaderboard: pd.Da
         prediction = latest_close
         expected_change_pct = 0.0
         direction = "WAIT"
-        note = "Candle terbaru belum memenuhi threshold entry Optimizer v10."
+        note = "Candle terbaru belum memenuhi threshold entry Optimizer v1."
     else:
         prediction = float(signals.iloc[-1])
         expected_change_pct = (prediction / latest_close - 1) * 100
         if expected_change_pct >= threshold:
             direction = "BUY"
-            note = "Sinyal BUY v10 lolos pada candle harian terbaru."
+            note = "Sinyal BUY v1 lolos pada candle harian terbaru."
         elif expected_change_pct <= -threshold:
             direction = "SELL"
-            note = "Sinyal SELL v10 lolos pada candle harian terbaru."
+            note = "Sinyal SELL v1 lolos pada candle harian terbaru."
         else:
             direction = "WAIT"
-            note = "Expected change belum melewati threshold Optimizer v10."
+            note = "Expected change belum melewati threshold Optimizer v1."
 
     tp_points = float(params["TP (USD)"]) / units
     sl_points = float(params["SL (USD)"]) / units
@@ -291,11 +248,11 @@ def _optimizer_v10_latest_prediction(gold_ohlc: pd.DataFrame, leaderboard: pd.Da
     }
 
 
-def render_optimizer_v10_dashboard(
+def render_optimizer_v1_dashboard(
     market: pd.DataFrame,
     data_fetched_at: pd.Timestamp,
     gold_ohlc: pd.DataFrame,
-    optimization_v10_leaderboard: pd.DataFrame,
+    optimization_v1_leaderboard: pd.DataFrame,
     history_years: int,
 ) -> None:
     gold = market["gold"]
@@ -303,13 +260,13 @@ def render_optimizer_v10_dashboard(
     previous_market = float(gold.iloc[-2])
     market_last_date = pd.Timestamp(gold.index.max()).strftime("%d %b %Y")
     fetched_label = data_fetched_at.strftime("%d %b %Y %H:%M:%S WIT")
-    prediction = _optimizer_v10_latest_prediction(gold_ohlc, optimization_v10_leaderboard)
+    prediction = _optimizer_v1_latest_prediction(gold_ohlc, optimization_v1_leaderboard)
     params = prediction["params"]
 
     st.info(f"Data pasar terakhir: **{market_last_date}** | Data diambil dashboard: **{fetched_label}**")
-    if optimization_v10_leaderboard.empty:
+    if optimization_v1_leaderboard.empty:
         st.warning(
-            "Parameter precomputed Optimizer v10 belum tersedia. Dashboard memakai parameter fallback dan tidak "
+            "Parameter precomputed Optimizer v1 belum tersedia. Dashboard memakai parameter fallback dan tidak "
             "menghitung ulang optimizer berat saat halaman dibuka."
         )
 
@@ -317,40 +274,40 @@ def render_optimizer_v10_dashboard(
     signal_label = signal_direction if signal_direction in {"BUY", "SELL"} else "WAIT"
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Harga terakhir", f"${latest_market:,.2f}", f"{latest_market - previous_market:+,.2f}")
-    c2.metric("Sinyal Optimizer v10", signal_label, str(prediction["note"]))
+    c2.metric("Sinyal Optimizer v1", signal_label, str(prediction["note"]))
     c3.metric(
         "Prediksi strategi",
         f"${float(prediction['prediction']):,.2f}",
         f"{float(prediction['expected_change_pct']):+.2f}%",
     )
     target_value = prediction["target_price"]
-    c4.metric("Target TP v10", "-" if pd.isna(target_value) else f"${float(target_value):,.2f}")
+    c4.metric("Target TP v1", "-" if pd.isna(target_value) else f"${float(target_value):,.2f}")
 
-    st.subheader("Prediksi Menurut Optimizer v10")
+    st.subheader("Prediksi Menurut Optimizer v1")
     if signal_direction == "BUY":
-        st.success("Optimizer v10 membaca peluang **BUY** pada candle harian terbaru.")
+        st.success("Optimizer v1 membaca peluang **BUY** pada candle harian terbaru.")
     elif signal_direction == "SELL":
-        st.error("Optimizer v10 membaca peluang **SELL** pada candle harian terbaru.")
+        st.error("Optimizer v1 membaca peluang **SELL** pada candle harian terbaru.")
     else:
-        st.info("Optimizer v10 belum memberi sinyal entry. Posisi yang disarankan: **WAIT / TUNGGU**.")
+        st.info("Optimizer v1 belum memberi sinyal entry. Posisi yang disarankan: **WAIT / TUNGGU**.")
 
     detail = pd.DataFrame(
         [
             {"Parameter": "Tanggal candle", "Nilai": _format_date(prediction.get("latest_date")), "Keterangan": "Candle harian terbaru yang dievaluasi."},
-            {"Parameter": "Strategi", "Nilai": params["Strategi"], "Keterangan": "Kandidat terbaik dari Optimizer v10 atau fallback jika belum ada precomputed."},
+            {"Parameter": "Strategi", "Nilai": params["Strategi"], "Keterangan": "Kandidat baseline Optimizer v1 atau fallback jika belum ada precomputed."},
             {"Parameter": "Mode", "Nilai": params["Mode"], "Keterangan": "Jenis rule sinyal: Trend, Breakout, atau Pullback."},
             {"Parameter": "MA cepat/lambat", "Nilai": f"{params['Fast MA']} / {params['Slow MA']}", "Keterangan": "Moving average harian yang dipakai strategi."},
             {"Parameter": "Momentum hari", "Nilai": params["Momentum hari"], "Keterangan": "Jendela momentum harian."},
             {"Parameter": "Threshold entry", "Nilai": f"{params['Threshold entry (%)']:.2f}%", "Keterangan": "Minimal expected change agar entry valid."},
             {"Parameter": "TP / CL", "Nilai": f"USD {params['TP (USD)']:,.2f} / USD {params['SL (USD)']:,.2f}", "Keterangan": "Target profit dan batas rugi per posisi dari strategi."},
-            {"Parameter": "Lot backtest", "Nilai": f"{float(params.get('Lot', 0.01)):,.2f}", "Keterangan": "Lot dari kandidat v10. Paper live tetap memakai rule live yang sudah ditetapkan."},
+            {"Parameter": "Lot backtest", "Nilai": f"{float(params.get('Lot', 0.01)):,.2f}", "Keterangan": "Lot dari kandidat v1. Paper live tetap memakai rule live yang sudah ditetapkan."},
             {"Parameter": "Harga CL risiko", "Nilai": "-" if pd.isna(prediction["risk_price"]) else f"${float(prediction['risk_price']):,.2f}", "Keterangan": "Harga risiko jika sinyal BUY/SELL aktif."},
         ]
     )
     st.dataframe(detail, use_container_width=True, hide_index=True)
 
     st.caption(
-        "Catatan: Model 3 adalah prediksi berbasis strategi Optimizer v10. Ia menilai apakah candle harian terbaru "
+        "Catatan: Model 3 adalah prediksi berbasis strategi Optimizer v1. Ia menilai apakah candle harian terbaru "
         "cukup kuat untuk BUY/SELL/WAIT, bukan model probabilistik harga seperti Model 1 dan Model 2."
     )
 
@@ -363,7 +320,7 @@ def render_dashboard(
     direction_model,
     direction_threshold: float,
     gold_ohlc: pd.DataFrame,
-    optimization_v10_leaderboard: pd.DataFrame,
+    optimization_v1_leaderboard: pd.DataFrame,
     snapshot_generated_at: str,
 ) -> None:
     gold = market["gold"]
@@ -371,8 +328,8 @@ def render_dashboard(
     previous = float(gold.iloc[-2])
     market_last_date = pd.Timestamp(gold.index.max()).strftime("%d %b %Y")
     fetched_label = data_fetched_at.strftime("%d %b %Y %H:%M:%S WIT")
-    v10_prediction = _optimizer_v10_latest_prediction(gold_ohlc, optimization_v10_leaderboard)
-    v10_params = v10_prediction["params"]
+    v1_prediction = _optimizer_v1_latest_prediction(gold_ohlc, optimization_v1_leaderboard)
+    v1_params = v1_prediction["params"]
 
     generated_at = pd.Timestamp(snapshot_generated_at)
     if generated_at.tzinfo is None:
@@ -403,22 +360,22 @@ def render_dashboard(
         st.metric("Sinyal", signal_2.label, f"Confidence {signal_2.confidence:.0f}%")
         st.caption("Gradient boosting memakai emas dan faktor lintas pasar.")
     with col3:
-        signal_direction = str(v10_prediction["direction"])
+        signal_direction = str(v1_prediction["direction"])
         signal_label = signal_direction if signal_direction in {"BUY", "SELL"} else "WAIT"
-        target_value = v10_prediction["target_price"]
-        st.markdown("**Model 3 - Optimizer v10**")
+        target_value = v1_prediction["target_price"]
+        st.markdown("**Model 3 - Optimizer v1 Baseline**")
         st.metric(
             "Prediksi strategi",
-            f"${float(v10_prediction['prediction']):,.2f}",
-            f"{float(v10_prediction['expected_change_pct']):+.2f}%",
+            f"${float(v1_prediction['prediction']):,.2f}",
+            f"{float(v1_prediction['expected_change_pct']):+.2f}%",
         )
         st.metric("Target TP", "-" if pd.isna(target_value) else f"${float(target_value):,.2f}")
-        st.metric("Sinyal", signal_label, str(v10_prediction["note"]))
-        st.caption("Prediksi berbasis rule Optimizer v10, bukan forecast probabilistik harga.")
+        st.metric("Sinyal", signal_label, str(v1_prediction["note"]))
+        st.caption("Prediksi berbasis rule baseline Optimizer v1, bukan forecast probabilistik harga.")
 
-    if optimization_v10_leaderboard.empty:
+    if optimization_v1_leaderboard.empty:
         st.warning(
-            "Parameter precomputed Optimizer v10 belum tersedia. Model 3 memakai parameter fallback dan tidak "
+            "Parameter precomputed Optimizer v1 belum tersedia. Model 3 memakai parameter fallback dan tidak "
             "menghitung ulang optimizer berat saat Dashboard dibuka."
         )
 
@@ -444,11 +401,11 @@ def render_dashboard(
                 "Akurasi arah T+1": model_2.horizon_metrics.loc[1, "Akurasi arah"],
             },
             {
-                "Model": "Model 3 - Optimizer v10",
-                "Output utama": f"${float(v10_prediction['prediction']):,.2f}",
+                "Model": "Model 3 - Optimizer v1 Baseline",
+                "Output utama": f"${float(v1_prediction['prediction']):,.2f}",
                 "Arah / Sinyal": signal_label,
-                "Perubahan vs terakhir": float(v10_prediction["prediction"]) - latest,
-                "Confidence / Expected": f"{float(v10_prediction['expected_change_pct']):+.2f}%",
+                "Perubahan vs terakhir": float(v1_prediction["prediction"]) - latest,
+                "Confidence / Expected": f"{float(v1_prediction['expected_change_pct']):+.2f}%",
                 "MAE T+1": pd.NA,
                 "Akurasi arah T+1": pd.NA,
             },
@@ -531,23 +488,23 @@ def render_dashboard(
             use_container_width=True,
         )
 
-    with st.expander("Parameter Optimizer v10"):
-        v10_detail = pd.DataFrame(
+    with st.expander("Parameter Optimizer v1"):
+        v1_detail = pd.DataFrame(
             [
-                {"Parameter": "Strategi", "Nilai": v10_params["Strategi"]},
-                {"Parameter": "Mode", "Nilai": v10_params["Mode"]},
-                {"Parameter": "MA cepat/lambat", "Nilai": f"{v10_params['Fast MA']} / {v10_params['Slow MA']}"},
-                {"Parameter": "Momentum hari", "Nilai": v10_params["Momentum hari"]},
-                {"Parameter": "Threshold entry", "Nilai": f"{v10_params['Threshold entry (%)']:.2f}%"},
-                {"Parameter": "TP / CL", "Nilai": f"USD {v10_params['TP (USD)']:,.2f} / USD {v10_params['SL (USD)']:,.2f}"},
-                {"Parameter": "Lot backtest", "Nilai": f"{float(v10_params.get('Lot', 0.01)):,.2f}"},
+                {"Parameter": "Strategi", "Nilai": v1_params["Strategi"]},
+                {"Parameter": "Mode", "Nilai": v1_params["Mode"]},
+                {"Parameter": "MA cepat/lambat", "Nilai": f"{v1_params['Fast MA']} / {v1_params['Slow MA']}"},
+                {"Parameter": "Momentum hari", "Nilai": v1_params["Momentum hari"]},
+                {"Parameter": "Threshold entry", "Nilai": f"{v1_params['Threshold entry (%)']:.2f}%"},
+                {"Parameter": "TP / CL", "Nilai": f"USD {v1_params['TP (USD)']:,.2f} / USD {v1_params['SL (USD)']:,.2f}"},
+                {"Parameter": "Lot backtest", "Nilai": f"{float(v1_params.get('Lot', 0.01)):,.2f}"},
                 {
                     "Parameter": "Harga CL risiko",
-                    "Nilai": "-" if pd.isna(v10_prediction["risk_price"]) else f"${float(v10_prediction['risk_price']):,.2f}",
+                    "Nilai": "-" if pd.isna(v1_prediction["risk_price"]) else f"${float(v1_prediction['risk_price']):,.2f}",
                 },
             ]
         )
-        st.dataframe(v10_detail, use_container_width=True, hide_index=True)
+        st.dataframe(v1_detail, use_container_width=True, hide_index=True)
 
     with st.expander("Metrik Model 2 per horizon"):
         st.dataframe(
@@ -568,7 +525,7 @@ def render_dashboard(
             Backtest memakai 20% data terbaru secara berurutan dan tidak mengacak waktu.
             Model arah berbasis confidence tidak memaksa sinyal setiap hari; hari yang
             probabilitasnya rendah tetap dianggap netral. **Model 3** adalah pembacaan
-            sinyal strategi Optimizer v10 pada candle harian terbaru, bukan model
+            sinyal strategi Optimizer v1 pada candle harian terbaru, bukan model
             probabilistik harga. Dashboard ini bukan saran investasi.
             """
         )
@@ -2050,8 +2007,6 @@ def _render_v1_robustness_tab(payload) -> None:
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
-    optimized_v10_result,
-    optimization_v10_leaderboard: pd.DataFrame,
     gold_ohlc: pd.DataFrame,
 ) -> None:
     st.subheader("Simulasi Trading XAU/USD Multi-Fase")
@@ -2062,52 +2017,31 @@ def render_simulation(
         "Asumsi strategi utama: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
         "Simulasi memakai dataset 1 Jan 2025-30 Jun 2026. Data sebelum 1 Jan 2025 tidak dipakai agar proses tetap ringan. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
-        "Dua tab strategi harian memakai OHLC harian GC=F; tab broker-aware memakai candle M1 dan spread MT5. "
+        "Strategi dan OOS memakai OHLC harian GC=F; Exact memakai candle M1 dan spread MT5 untuk eksekusi. "
         "Jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
     (
         optimizer_tab,
-        optimizer_v10_tab,
         optimizer_v1_oos_tab,
-        optimizer_v10_oos_tab,
-        broker_v1_tab,
-        broker_v10_tab,
         exact_v1_tab,
-        exact_v10_tab,
         robustness_v1_tab,
     ) = st.tabs(
         [
-            "Strategi Terbaik Optimizer",
-            "Strategi Optimizer v10",
+            "Optimizer v1",
             "Optimizer v1 OOS",
-            "Optimizer v10 OOS",
-            "v1 Intraday Adaptation Broker-Aware OOS",
-            "v10 Intraday Adaptation Broker-Aware OOS",
             "Optimizer v1 Exact Broker-Aware OOS",
-            "Optimizer v10 Exact Broker-Aware OOS",
             "Optimizer v1 Robustness Test",
         ]
     )
     with optimizer_tab:
-        _render_multiphase_result("Strategi Terbaik Optimizer", optimized_result, optimization_leaderboard, gold_ohlc)
-    with optimizer_v10_tab:
-        _render_multiphase_result("Strategi Optimizer v10", optimized_v10_result, optimization_v10_leaderboard, gold_ohlc)
+        _render_multiphase_result("Optimizer v1", optimized_result, optimization_leaderboard, gold_ohlc)
     oos_payload = load_precomputed_optimizer_oos(OPTIMIZER_OOS_VERSION)
     with optimizer_v1_oos_tab:
         _render_optimizer_oos_tab(oos_payload, key="v1", title="Optimizer v1 OOS")
-    with optimizer_v10_oos_tab:
-        _render_optimizer_oos_tab(oos_payload, key="v10", title="Optimizer v10 OOS")
-    broker_payload = load_precomputed_broker_aware_oos(BROKER_AWARE_OOS_VERSION)
-    with broker_v1_tab:
-        _render_broker_aware_oos_tab(broker_payload, key="v1", title="v1 Intraday Adaptation Broker-Aware OOS")
-    with broker_v10_tab:
-        _render_broker_aware_oos_tab(broker_payload, key="v10", title="v10 Intraday Adaptation Broker-Aware OOS")
     exact_payload = load_precomputed_exact_broker_oos(EXACT_BROKER_OOS_VERSION)
     with exact_v1_tab:
         _render_exact_broker_oos_tab(exact_payload, key="v1", title="Optimizer v1 Exact Broker-Aware OOS")
-    with exact_v10_tab:
-        _render_exact_broker_oos_tab(exact_payload, key="v10", title="Optimizer v10 Exact Broker-Aware OOS")
     with robustness_v1_tab:
         _render_v1_robustness_tab(load_precomputed_v1_robustness(V1_ROBUSTNESS_VERSION))
 
@@ -3866,7 +3800,9 @@ if page == "Dashboard":
     model_1 = dashboard_snapshot["model_1"]
     model_2 = dashboard_snapshot["model_2"]
     direction_model = dashboard_snapshot["direction_model"]
-    v10_leaderboard = dashboard_snapshot.get("v10_leaderboard", pd.DataFrame())
+    v1_leaderboard = dashboard_snapshot.get("v1_leaderboard")
+    if not isinstance(v1_leaderboard, pd.DataFrame) or v1_leaderboard.empty:
+        v1_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
 
     render_dashboard(
         market,
@@ -3876,7 +3812,7 @@ if page == "Dashboard":
         direction_model,
         direction_threshold,
         gold_ohlc,
-        v10_leaderboard,
+        v1_leaderboard,
         dashboard_snapshot["generated_at_utc"],
     )
 
@@ -3885,9 +3821,9 @@ elif page == "Simulasi":
     if simulation_payload is None:
         st.warning(
             "Hasil simulasi precomputed untuk versi terbaru belum tersedia. "
-            "Aplikasi sengaja tidak menghitung v1 dan v10 saat startup agar dashboard bisa dibuka lebih cepat."
+            "Aplikasi sengaja tidak menghitung optimizer saat startup agar dashboard bisa dibuka lebih cepat."
         )
-        if st.button("Bangun ulang simulasi v1/v10", use_container_width=True):
+        if st.button("Bangun ulang simulasi v1", use_container_width=True):
             with st.spinner("Menghitung simulasi lengkap. Proses ini bisa memakan waktu di Streamlit Cloud."):
                 simulation_payload = get_simulations(SIMULATION_CACHE_VERSION)
             st.rerun()
@@ -3933,7 +3869,7 @@ elif page == "Live Trading":
     if live_account_mode == "REAL":
         st.error(
             f"Akun MT5 **REAL** terdeteksi | Broker: **{live_broker}** | Gold Predictor tetap read-only. "
-            "Order uang riil dilakukan manual di MT5; ledger v1/v10 di bawah tetap paper trading."
+            "Order uang riil dilakukan manual di MT5; ledger v1 di bawah tetap paper trading."
         )
     else:
         st.info(
@@ -3941,51 +3877,46 @@ elif page == "Live Trading":
             "Periksa panel lengkap di Data Broker sebelum entry manual."
         )
 
-    live_v1_tab, live_v10_tab = st.tabs(["Optimizer v1 - Baseline Paper", "Optimizer v10 - Eksperimen"])
     st.info(
-        "Evaluasi sampai **30 Agustus 2026** tetap mencatat dua ledger untuk pembelajaran. Optimizer v1 adalah baseline "
-        "paper trading; Optimizer v10 hanya eksperimen pembanding dan bukan sinyal utama."
+        "Optimizer v1 adalah satu-satunya baseline paper trading aktif. Strategi v10 telah diarsipkan dan tidak dapat "
+        "membuka posisi baru."
     )
-    with live_v1_tab:
-        st.warning(
-            "Status v1: **KANDIDAT PAPER TRADING, BELUM LAYAK REAL-MONEY**. Exact OOS masih positif, tetapi robustness "
-            "belum memenuhi target profit factor 1,30 dan drawdown maksimum 10%."
-        )
-        optimization_v1_live_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
-        render_live_trading(
+    st.warning(
+        "Status v1: **KANDIDAT PAPER TRADING, BELUM LAYAK REAL-MONEY**. Exact OOS masih positif, tetapi robustness "
+        "belum memenuhi target profit factor 1,30 dan drawdown maksimum 10%."
+    )
+    optimization_v1_live_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
+    render_live_trading(
+        gold_ohlc,
+        optimization_v1_live_leaderboard,
+        title="Optimizer v1",
+        start_date=LIVE_START_DATE,
+        live_path=LIVE_TRADING_PATH,
+        manual_path=LIVE_MANUAL_EXIT_PATH,
+        key_prefix="v1",
+        strategy_note=(
+            "Entry mengikuti sinyal Optimizer v1, boleh menambah posisi dari sinyal hari berbeda sampai batas "
+            "maksimal 8 BUY dan 10 SELL. Strategi ini masih paper trading."
+        ),
+        broker_quote=broker_quote,
+    )
+
+    archived_v10_ledger = load_live_ledger(LIVE_TRADING_V10_PATH)
+    archived_open = archived_v10_ledger[archived_v10_ledger["status"].eq("OPEN")]
+    if not archived_open.empty:
+        archived_v10 = run_live_trading_update(
             gold_ohlc,
-            optimization_v1_live_leaderboard,
-            title="Optimizer v1",
-            start_date=LIVE_START_DATE,
-            live_path=LIVE_TRADING_PATH,
-            manual_path=LIVE_MANUAL_EXIT_PATH,
-            key_prefix="v1",
-            strategy_note=(
-                "Ini adalah Live Trading lama yang sudah berjalan. Entry mengikuti sinyal Optimizer v1, "
-                "boleh menambah posisi dari sinyal hari berbeda sampai batas maksimal 8 BUY dan 10 SELL."
-            ),
-            broker_quote=broker_quote,
-        )
-    with live_v10_tab:
-        st.error(
-            "Status v10: **TIDAK LOLOS EXACT BROKER-AWARE OOS**. Ledger dipertahankan hanya sebagai eksperimen sampai "
-            "30 Agustus 2026. Jangan gunakan sinyal ini sebagai dasar utama entry uang riil."
-        )
-        optimization_v10_live_leaderboard = get_v10_leaderboard_for_live(SIMULATION_CACHE_VERSION)
-        render_live_trading(
-            gold_ohlc,
-            optimization_v10_live_leaderboard,
-            title="Optimizer v10",
+            pd.DataFrame(),
+            path=LIVE_TRADING_V10_PATH,
             start_date=LIVE_V10_START_DATE,
-            live_path=LIVE_TRADING_V10_PATH,
-            manual_path=LIVE_MANUAL_EXIT_V10_PATH,
-            key_prefix="v10",
-            strategy_note=(
-                "Paper live v10 mulai 20 Juli 2026. Parameter diambil dari hasil Optimizer v10 precomputed, "
-                "sehingga tidak menghitung ulang optimizer berat saat dashboard dibuka."
-            ),
             broker_quote=broker_quote,
+            allow_new_entries=False,
         )
+        archived_open = archived_v10["open_positions"]
+        if not archived_open.empty:
+            st.info(
+                f"Arsip v10 masih memantau **{len(archived_open)} posisi lama** sampai TP/CL. Tidak ada posisi baru yang dibuka."
+            )
 
 elif page == "Data Broker":
     try:
