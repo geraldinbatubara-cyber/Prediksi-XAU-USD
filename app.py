@@ -70,10 +70,10 @@ SIMULATION_CACHE_VERSION = "optimizer-v1-v10-2025q1-2026q2"
 PRECOMPUTED_SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
 M1_BACKTEST_VERSION = "v1-full-history-v10-oos-2026-07-21"
 M1_BACKTEST_PATH = Path("data/precomputed/m1_backtests.pkl")
-MARTINGALE_BACKTEST_VERSION = "martingale-v1-daily-2025q1-2026q2"
-MARTINGALE_BACKTEST_PATH = Path("data/precomputed/martingale_v1.pkl")
 MARTINGALE_V2_VERSION = "martingale-v2-adaptive-train2025-oos2026h1"
 MARTINGALE_V2_PATH = Path("data/precomputed/martingale_v2.pkl")
+MARTINGALE_V3_VERSION = "martingale-v3-v10-recovery-train2025-oos2026h1"
+MARTINGALE_V3_PATH = Path("data/precomputed/martingale_v3.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -123,11 +123,11 @@ def load_precomputed_m1_backtests(backtest_version: str):
 
 
 @st.cache_resource
-def load_precomputed_martingale(backtest_version: str):
-    if not MARTINGALE_BACKTEST_PATH.exists():
+def load_precomputed_martingale_v2(backtest_version: str):
+    if not MARTINGALE_V2_PATH.exists():
         return None
     try:
-        with MARTINGALE_BACKTEST_PATH.open("rb") as file:
+        with MARTINGALE_V2_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -137,11 +137,11 @@ def load_precomputed_martingale(backtest_version: str):
 
 
 @st.cache_resource
-def load_precomputed_martingale_v2(backtest_version: str):
-    if not MARTINGALE_V2_PATH.exists():
+def load_precomputed_martingale_v3(backtest_version: str):
+    if not MARTINGALE_V3_PATH.exists():
         return None
     try:
-        with MARTINGALE_V2_PATH.open("rb") as file:
+        with MARTINGALE_V3_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -1455,19 +1455,26 @@ def _render_martingale_tab(payload) -> None:
             )
 
 
-def _render_martingale_v2_tab(payload) -> None:
-    st.subheader("Martingale v2")
+def _render_martingale_v2_tab(payload, *, version: str = "v2") -> None:
+    st.subheader(f"Martingale {version}")
     if payload is None:
-        st.warning("Hasil Martingale v2 belum tersedia pada artifact precomputed.")
+        st.warning(f"Hasil Martingale {version} belum tersedia pada artifact precomputed.")
         return
 
     full_result, leaderboard, train_result, oos_result = payload
     summary = full_result.summary
-    st.info(
-        "v2 menutup kelemahan v1 dengan fresh-signal entry, filter volatilitas, ATR spacing, lot bertahap yang dibatasi, "
-        "weighted basket target, hard risk 1%, minimum margin entry, time-stop, dan regime-flip exit. Parameter dipilih "
-        "hanya pada 2025 lalu dibekukan untuk pengujian Januari-Juni 2026."
-    )
+    if version == "v3":
+        st.info(
+            "v3 memakai sinyal inti Optimizer v10 dan recovery yang hanya boleh ditambah setelah candle sebelumnya "
+            "mengonfirmasi reversal searah. Parameter dipilih hanya dari 2025 lalu dibekukan untuk OOS Januari-Juni "
+            "2026. Kandidat terbaik boleh menolak penggandaan lot jika data train menunjukkan risiko yang lebih buruk."
+        )
+    else:
+        st.info(
+            "v2 menutup kelemahan v1 dengan fresh-signal entry, filter volatilitas, ATR spacing, lot bertahap yang dibatasi, "
+            "weighted basket target, hard risk 1%, minimum margin entry, time-stop, dan regime-flip exit. Parameter dipilih "
+            "hanya pada 2025 lalu dibekukan untuk pengujian Januari-Juni 2026."
+        )
     if summary["Status kelayakan"].startswith("LAYAK"):
         st.success("Hasil OOS memenuhi kriteria kandidat paper test.")
     elif summary["OOS growth (%)"] > 0 and summary["OOS jumlah basket"] < 3:
@@ -1478,7 +1485,7 @@ def _render_martingale_v2_tab(payload) -> None:
     else:
         st.warning(
             f"OOS belum lolos: growth {summary['OOS growth (%)']:+.2f}% pada "
-            f"{summary['OOS jumlah basket']:.0f} basket. v2 lebih terkendali daripada v1, tetapi belum layak untuk paper live."
+            f"{summary['OOS jumlah basket']:.0f} basket. Strategi belum layak untuk paper live."
         )
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -1491,7 +1498,8 @@ def _render_martingale_v2_tab(payload) -> None:
     selected_parameters = pd.DataFrame(
         [
             {"Parameter": "Arah terpilih", "Nilai": summary["Arah diizinkan"]},
-            {"Parameter": "Fresh signal", "Nilai": "Entry hanya saat sinyal v1 baru/berubah arah"},
+            {"Parameter": "Sumber sinyal", "Nilai": summary.get("Sumber sinyal", "Optimizer v1 fresh signal")},
+            {"Parameter": "Aturan recovery", "Nilai": summary.get("Aturan recovery", "Regime sebelumnya tetap searah")},
             {"Parameter": "Batas ATR/Close", "Nilai": f"Maksimum {summary['Maks ATR/Close (%)']:.2f}%"},
             {"Parameter": "Lot bertahap", "Nilai": f"0.10 x {summary['Lot multiplier']:.2f} per level"},
             {"Parameter": "Maks posisi / lot posisi", "Nilai": f"{summary['Max posisi per basket']:.0f} / {summary['Lot posisi maksimum']:.2f}"},
@@ -1573,7 +1581,7 @@ def _render_martingale_v2_tab(payload) -> None:
         )
         figure.add_vline(x=pd.Timestamp("2026-01-01"), line_dash="dash", line_color="#f59e0b")
         figure.add_hline(y=summary["Modal awal"], line_dash="dot", annotation_text="Equity awal")
-        figure.update_layout(title="Equity Curve Martingale v2 - Full Replay", yaxis_title="USD", height=430)
+        figure.update_layout(title=f"Equity Curve Martingale {version} - Full Replay", yaxis_title="USD", height=430)
         st.plotly_chart(figure, use_container_width=True)
 
     baskets = summary.get("Basket summary", pd.DataFrame())
@@ -1636,19 +1644,19 @@ def render_simulation(
         "Asumsi strategi utama: equity awal USD 1.000, target tiap fase +20%, maksimal 8 BUY dan 10 SELL. "
         "Simulasi memakai dataset 1 Jan 2025-30 Jun 2026. Data sebelum 1 Jan 2025 tidak dipakai agar proses tetap ringan. "
         "Swap BUY USD 0.2 per hari per 0.01 lot; SELL dianggap USD 0.0. "
-        "Martingale v1 memakai equity awal USD 10.000 dan aturan margin tersendiri. "
+        "Eksperimen recovery memakai equity awal USD 10.000 dan aturan margin tersendiri. "
         "Dua tab strategi harian memakai OHLC harian GC=F; tab M1 memiliki penjelasan dataset tersendiri. "
         "Jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v10_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab, martingale_tab, martingale_v2_tab = st.tabs(
+    optimizer_tab, optimizer_v10_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab, martingale_v2_tab, martingale_v3_tab = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v10",
             "v1 Intraday M1",
             "v10 Intraday M1",
-            "Martingale v1",
             "Martingale v2",
+            "Martingale v3",
         ]
     )
     with optimizer_tab:
@@ -1660,10 +1668,10 @@ def render_simulation(
         _render_m1_backtest_tab(m1_payload, payload_offset=0, title="Optimizer v1 Intraday M1")
     with optimizer_v10_m1_tab:
         _render_m1_backtest_tab(m1_payload, payload_offset=2, title="Optimizer v10 Intraday M1")
-    with martingale_tab:
-        _render_martingale_tab(load_precomputed_martingale(MARTINGALE_BACKTEST_VERSION))
     with martingale_v2_tab:
         _render_martingale_v2_tab(load_precomputed_martingale_v2(MARTINGALE_V2_VERSION))
+    with martingale_v3_tab:
+        _render_martingale_v2_tab(load_precomputed_martingale_v3(MARTINGALE_V3_VERSION), version="v3")
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:
