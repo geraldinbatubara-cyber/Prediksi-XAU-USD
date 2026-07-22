@@ -72,6 +72,8 @@ M1_BACKTEST_VERSION = "v1-full-history-v10-oos-2026-07-21"
 M1_BACKTEST_PATH = Path("data/precomputed/m1_backtests.pkl")
 MARTINGALE_BACKTEST_VERSION = "martingale-v1-daily-2025q1-2026q2"
 MARTINGALE_BACKTEST_PATH = Path("data/precomputed/martingale_v1.pkl")
+MARTINGALE_V2_VERSION = "martingale-v2-adaptive-train2025-oos2026h1"
+MARTINGALE_V2_PATH = Path("data/precomputed/martingale_v2.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -126,6 +128,20 @@ def load_precomputed_martingale(backtest_version: str):
         return None
     try:
         with MARTINGALE_BACKTEST_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_martingale_v2(backtest_version: str):
+    if not MARTINGALE_V2_PATH.exists():
+        return None
+    try:
+        with MARTINGALE_V2_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -1439,6 +1455,172 @@ def _render_martingale_tab(payload) -> None:
             )
 
 
+def _render_martingale_v2_tab(payload) -> None:
+    st.subheader("Martingale v2")
+    if payload is None:
+        st.warning("Hasil Martingale v2 belum tersedia pada artifact precomputed.")
+        return
+
+    full_result, leaderboard, train_result, oos_result = payload
+    summary = full_result.summary
+    st.info(
+        "v2 menutup kelemahan v1 dengan fresh-signal entry, filter volatilitas, ATR spacing, lot bertahap yang dibatasi, "
+        "weighted basket target, hard risk 1%, minimum margin entry, time-stop, dan regime-flip exit. Parameter dipilih "
+        "hanya pada 2025 lalu dibekukan untuk pengujian Januari-Juni 2026."
+    )
+    if summary["Status kelayakan"].startswith("LAYAK"):
+        st.success("Hasil OOS memenuhi kriteria kandidat paper test.")
+    elif summary["OOS growth (%)"] > 0 and summary["OOS jumlah basket"] < 3:
+        st.warning(
+            "OOS menghasilkan profit, tetapi belum dinyatakan layak karena hanya memiliki "
+            f"{summary['OOS jumlah basket']:.0f} basket. Sampel minimum internal adalah 3 basket."
+        )
+    else:
+        st.warning(
+            f"OOS belum lolos: growth {summary['OOS growth (%)']:+.2f}% pada "
+            f"{summary['OOS jumlah basket']:.0f} basket. v2 lebih terkendali daripada v1, tetapi belum layak untuk paper live."
+        )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Equity akhir full", f"${summary['Equity akhir']:,.2f}", f"{summary['Growth total']:+.2f}%")
+    c2.metric("Equity akhir OOS", f"${summary['OOS equity akhir']:,.2f}", f"{summary['OOS growth (%)']:+.2f}%")
+    c3.metric("Max drawdown full", f"${summary['Max drawdown']:,.2f}")
+    c4.metric("Jumlah basket full", f"{summary['Jumlah basket']:.0f}")
+    c5.metric("Biaya swap full", f"${abs(summary['Total swap']):,.2f}")
+
+    selected_parameters = pd.DataFrame(
+        [
+            {"Parameter": "Arah terpilih", "Nilai": summary["Arah diizinkan"]},
+            {"Parameter": "Fresh signal", "Nilai": "Entry hanya saat sinyal v1 baru/berubah arah"},
+            {"Parameter": "Batas ATR/Close", "Nilai": f"Maksimum {summary['Maks ATR/Close (%)']:.2f}%"},
+            {"Parameter": "Lot bertahap", "Nilai": f"0.10 x {summary['Lot multiplier']:.2f} per level"},
+            {"Parameter": "Maks posisi / lot posisi", "Nilai": f"{summary['Max posisi per basket']:.0f} / {summary['Lot posisi maksimum']:.2f}"},
+            {"Parameter": "Jarak averaging", "Nilai": f"{summary['Jarak entry (ATR)']:.2f} ATR per level"},
+            {"Parameter": "Target basket", "Nilai": f"USD {summary['Target basket (USD)']:,.2f} dari weighted entry"},
+            {"Parameter": "Hard basket loss", "Nilai": f"{summary['Hard basket loss (%)']:.2f}% equity awal basket"},
+            {"Parameter": "Minimum margin entry", "Nilai": f"{summary['Minimum margin entry (%)']:.0f}%"},
+            {"Parameter": "Leverage / stop-out", "Nilai": f"1:{summary['Leverage']:.0f} / {summary['Stop-out margin level (%)']:.0f}%"},
+        ]
+    )
+    st.markdown("**Parameter Terpilih dari Train 2025**")
+    st.dataframe(selected_parameters, use_container_width=True, hide_index=True)
+
+    validation = pd.DataFrame(
+        [
+            {
+                "Segmen": "Train",
+                "Periode": summary["Periode train"],
+                "Equity awal": train_result.summary["Modal awal"],
+                "Equity akhir": train_result.summary["Equity akhir"],
+                "Growth (%)": train_result.summary["Growth total"],
+                "Max drawdown": train_result.summary["Max drawdown"],
+                "Basket": train_result.summary["Jumlah basket"],
+                "Basket target": train_result.summary["Basket target"],
+                "Basket hard loss": train_result.summary["Basket hard loss"],
+                "Swap": train_result.summary["Total swap"],
+            },
+            {
+                "Segmen": "Out-of-sample",
+                "Periode": summary["Periode OOS"],
+                "Equity awal": oos_result.summary["Modal awal"],
+                "Equity akhir": oos_result.summary["Equity akhir"],
+                "Growth (%)": oos_result.summary["Growth total"],
+                "Max drawdown": oos_result.summary["Max drawdown"],
+                "Basket": oos_result.summary["Jumlah basket"],
+                "Basket target": oos_result.summary["Basket target"],
+                "Basket hard loss": oos_result.summary["Basket hard loss"],
+                "Swap": oos_result.summary["Total swap"],
+            },
+            {
+                "Segmen": "Full replay",
+                "Periode": summary["Periode uji"],
+                "Equity awal": summary["Modal awal"],
+                "Equity akhir": summary["Equity akhir"],
+                "Growth (%)": summary["Growth total"],
+                "Max drawdown": summary["Max drawdown"],
+                "Basket": summary["Jumlah basket"],
+                "Basket target": summary["Basket target"],
+                "Basket hard loss": summary["Basket hard loss"],
+                "Swap": summary["Total swap"],
+            },
+        ]
+    )
+    st.markdown("**Perbandingan Train, OOS, dan Full Replay**")
+    st.dataframe(
+        validation.style.format(
+            {
+                "Equity awal": "${:,.2f}",
+                "Equity akhir": "${:,.2f}",
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}",
+                "Basket": "{:.0f}",
+                "Basket target": "{:.0f}",
+                "Basket hard loss": "{:.0f}",
+                "Swap": "${:+,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    equity_curve = full_result.equity_curve.copy()
+    if not equity_curve.empty:
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=equity_curve.index, y=equity_curve["Equity"], name="Equity", line=dict(width=3)))
+        figure.add_trace(
+            go.Scatter(x=equity_curve.index, y=equity_curve["Balance"], name="Balance", line=dict(width=1.5, dash="dot"))
+        )
+        figure.add_vline(x=pd.Timestamp("2026-01-01"), line_dash="dash", line_color="#f59e0b")
+        figure.add_hline(y=summary["Modal awal"], line_dash="dot", annotation_text="Equity awal")
+        figure.update_layout(title="Equity Curve Martingale v2 - Full Replay", yaxis_title="USD", height=430)
+        st.plotly_chart(figure, use_container_width=True)
+
+    baskets = summary.get("Basket summary", pd.DataFrame())
+    st.markdown("**Summary Setiap Basket Full Replay**")
+    if isinstance(baskets, pd.DataFrame) and not baskets.empty:
+        st.dataframe(
+            baskets.style.format(
+                {
+                    "Anchor": "${:,.2f}",
+                    "ATR entry": "${:,.2f}",
+                    "Total lot": "{:.2f}",
+                    "Lot maksimum": "{:.2f}",
+                    "Gross P/L": "${:+,.2f}",
+                    "Swap": "${:+,.2f}",
+                    "Net P/L": "${:+,.2f}",
+                    "Balance akhir": "${:,.2f}",
+                },
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with st.expander("Seleksi filter hanya pada train 2025"):
+        st.dataframe(
+            leaderboard.style.format(
+                {
+                    "Maks ATR/Close (%)": lambda value: "Tanpa batas" if pd.isna(value) or value == float("inf") else f"{value:.2f}%",
+                    "Lot multiplier": "{:.2f}",
+                    "Lot maksimum": "{:.2f}",
+                    "Jarak entry (ATR)": "{:.2f}",
+                    "Hard basket loss (%)": "{:.2f}%",
+                    "Target basket (USD)": "${:,.2f}",
+                    "Train equity akhir": "${:,.2f}",
+                    "Train growth (%)": "{:+.2f}%",
+                    "Train max drawdown": "${:,.2f}",
+                    "Train max drawdown (%)": "{:.2f}%",
+                    "Train total swap": "${:+,.2f}",
+                    "Train risk-adjusted score": "{:.3f}",
+                },
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -1459,13 +1641,14 @@ def render_simulation(
         "Jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v10_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab, martingale_tab = st.tabs(
+    optimizer_tab, optimizer_v10_tab, optimizer_v1_m1_tab, optimizer_v10_m1_tab, martingale_tab, martingale_v2_tab = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v10",
             "v1 Intraday M1",
             "v10 Intraday M1",
             "Martingale v1",
+            "Martingale v2",
         ]
     )
     with optimizer_tab:
@@ -1479,6 +1662,8 @@ def render_simulation(
         _render_m1_backtest_tab(m1_payload, payload_offset=2, title="Optimizer v10 Intraday M1")
     with martingale_tab:
         _render_martingale_tab(load_precomputed_martingale(MARTINGALE_BACKTEST_VERSION))
+    with martingale_v2_tab:
+        _render_martingale_v2_tab(load_precomputed_martingale_v2(MARTINGALE_V2_VERSION))
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:
