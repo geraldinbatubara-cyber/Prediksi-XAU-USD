@@ -18,7 +18,7 @@ from gold_forecast.data import load_gold_data
 HISTORY_DIR = PROJECT_ROOT / "data" / "intraday"
 OOS_SOURCE = PROJECT_ROOT / "data" / "precomputed" / "optimizer_oos.pkl"
 OUTPUT_PATH = PROJECT_ROOT / "data" / "precomputed" / "exact_broker_oos.pkl"
-VERSION = "optimizer-v1-v10-exact-broker-aware-oos-2026h1"
+VERSION = "optimizer-v1-only-exact-broker-aware-oos-2026h1"
 
 
 def main() -> None:
@@ -34,10 +34,7 @@ def main() -> None:
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT_PATH.open("wb") as file:
         pickle.dump({"version": VERSION, "payload": payload}, file, protocol=pickle.HIGHEST_PROTOCOL)
-    print(
-        f"Saved {OUTPUT_PATH} | v1={payload['v1'][0].summary['Growth total']:+.2f}% | "
-        f"v10={payload['v10'][0].summary['Growth total']:+.2f}%"
-    )
+    print(f"Saved {OUTPUT_PATH} | v1={payload['v1'][0].summary['Growth total']:+.2f}%")
 
 
 if __name__ == "__main__":

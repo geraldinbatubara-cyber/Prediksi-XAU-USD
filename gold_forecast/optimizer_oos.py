@@ -8,9 +8,7 @@ from gold_forecast.strategy_optimizer import (
     _fixed_lot_signals,
     _indicator_predictions,
     _multiphase_result,
-    _run_v10_best_on_period,
     run_optimized_strategy,
-    run_optimized_strategy_v10,
 )
 
 
@@ -32,28 +30,7 @@ def run_optimizer_oos(gold_ohlc: pd.DataFrame) -> dict[str, tuple[MultiPhaseSimu
     v1_oos = _run_v1_best_on_period(gold_ohlc, v1_best)
     _attach_oos_metadata(v1_train, v1_oos, v1_best)
 
-    v10_train, v10_leaderboard = run_optimized_strategy_v10(
-        gold_ohlc,
-        optimization_start=TRAIN_START,
-        optimization_end=TRAIN_END,
-    )
-    if v10_leaderboard.empty:
-        raise ValueError("Optimizer v10 tidak menghasilkan kandidat pada periode train 2025.")
-    v10_best = v10_leaderboard.iloc[0].to_dict()
-    v10_oos = _run_v10_best_on_period(
-        gold_ohlc,
-        v10_best,
-        model_name="Optimizer v10 OOS",
-        test_start=OOS_START,
-        test_end=OOS_END,
-        strategy_suffix="parameter train 2025 dibekukan",
-    )
-    _attach_oos_metadata(v10_train, v10_oos, v10_best)
-
-    return {
-        "v1": (v1_train, v1_leaderboard, v1_oos),
-        "v10": (v10_train, v10_leaderboard, v10_oos),
-    }
+    return {"v1": (v1_train, v1_leaderboard, v1_oos)}
 
 
 def _run_v1_best_on_period(

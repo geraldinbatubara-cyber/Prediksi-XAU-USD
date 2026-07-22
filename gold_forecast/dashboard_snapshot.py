@@ -13,14 +13,14 @@ from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
 
 
-DASHBOARD_SNAPSHOT_VERSION = "dashboard-snapshot-v1"
+DASHBOARD_SNAPSHOT_VERSION = "dashboard-snapshot-v2-v1-only"
 DASHBOARD_SNAPSHOT_PATH = Path("data/precomputed/dashboard_snapshot.pkl")
-V10_PARAMS_PATH = Path("data/precomputed/v10_params.json")
+V1_PARAMS_PATH = Path("data/precomputed/v1_params.json")
 
 
 def build_dashboard_snapshot(
     market: pd.DataFrame,
-    v10_leaderboard: pd.DataFrame,
+    v1_leaderboard: pd.DataFrame,
 ) -> dict[str, Any]:
     return {
         "version": DASHBOARD_SNAPSHOT_VERSION,
@@ -29,7 +29,7 @@ def build_dashboard_snapshot(
         "model_1": train_and_forecast(market["gold"]),
         "model_2": train_model_v2(market),
         "direction_model": train_direction_model(market),
-        "v10_leaderboard": v10_leaderboard.head(1).copy(),
+        "v1_leaderboard": v1_leaderboard.head(1).copy(),
     }
 
 
@@ -65,15 +65,15 @@ def _json_value(value: object) -> object:
     return value
 
 
-def save_v10_params(leaderboard: pd.DataFrame, path: Path = V10_PARAMS_PATH) -> None:
+def save_v1_params(leaderboard: pd.DataFrame, path: Path = V1_PARAMS_PATH) -> None:
     if leaderboard.empty:
-        raise ValueError("Leaderboard Optimizer v10 kosong.")
+        raise ValueError("Leaderboard Optimizer v1 kosong.")
     params = {str(key): _json_value(value) for key, value in leaderboard.iloc[0].items()}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(params, indent=2, ensure_ascii=True), encoding="utf-8")
 
 
-def load_v10_params(path: Path = V10_PARAMS_PATH) -> pd.DataFrame:
+def load_v1_params(path: Path = V1_PARAMS_PATH) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     try:

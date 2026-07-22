@@ -14,7 +14,7 @@ from gold_forecast.optimizer_oos import run_optimizer_oos
 
 
 OUTPUT_PATH = PROJECT_ROOT / "data" / "precomputed" / "optimizer_oos.pkl"
-VERSION = "optimizer-v1-v10-train2025-oos2026h1"
+VERSION = "optimizer-v1-only-train2025-oos2026h1"
 
 
 def main() -> None:
@@ -23,11 +23,7 @@ def main() -> None:
     with OUTPUT_PATH.open("wb") as file:
         pickle.dump({"version": VERSION, "payload": payload}, file, protocol=pickle.HIGHEST_PROTOCOL)
     v1 = payload["v1"][2].summary
-    v10 = payload["v10"][2].summary
-    print(
-        f"Saved {OUTPUT_PATH} | v1 OOS={v1['Growth total']:+.2f}% | "
-        f"v10 OOS={v10['Growth total']:+.2f}%"
-    )
+    print(f"Saved {OUTPUT_PATH} | v1 OOS={v1['Growth total']:+.2f}%")
 
 
 if __name__ == "__main__":
