@@ -848,6 +848,7 @@ def run_live_trading_update(
     path: Path = LIVE_TRADING_PATH,
     start_date: pd.Timestamp = LIVE_START_DATE,
     broker_quote: pd.Series | None = None,
+    allow_new_entries: bool = True,
 ) -> dict[str, object]:
     now_wit = _now_wit(now)
     cutoff_date = now_wit.tz_localize(None).normalize()
@@ -889,17 +890,19 @@ def run_live_trading_update(
     signal = _current_optimizer_signal(usable_gold, params, now_wit, start_date)
     if signal is not None:
         signal["source"] = "Optimizer penuh"
+    entry_allowed = can_trade and allow_new_entries
+    archive_note = session_note if allow_new_entries else "Strategi diarsipkan; posisi baru dinonaktifkan."
     ledger = _maybe_open_position(
         ledger,
         signal,
         params,
         now_wit,
-        can_trade,
-        session_note,
+        entry_allowed,
+        archive_note,
         broker_bid=float(quote_state["bid"]) if quote_state["fresh"] else None,
         broker_ask=float(quote_state["ask"]) if quote_state["fresh"] else None,
     )
-    trigger_state = _optimizer_trigger_state(ledger, signal, params, can_trade, session_note)
+    trigger_state = _optimizer_trigger_state(ledger, signal, params, entry_allowed, archive_note)
     save_live_ledger(ledger, path)
 
     open_positions = ledger[ledger["status"].eq("OPEN")].copy()
@@ -938,8 +941,8 @@ def run_live_trading_update(
         "Broker quote fresh": quote_state["fresh"],
         "Broker quote age minutes": quote_state["age_minutes"],
         "Latest data date": quote_state["timestamp"] if quote_state["configured"] else (usable_gold.index.max() if not usable_gold.empty else pd.NaT),
-        "Can trade": can_trade,
-        "Session note": session_note,
+        "Can trade": entry_allowed,
+        "Session note": archive_note,
         "Now WIT": now_wit,
         "Ledger start date": start_date,
     }
