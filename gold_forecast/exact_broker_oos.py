@@ -132,6 +132,9 @@ def _simulate_exact(
     signals: pd.DataFrame,
     best: dict[str, object],
     variant: str,
+    *,
+    spread_multiplier: float = 1.0,
+    slippage_points: float = SLIPPAGE_POINTS,
 ) -> MultiPhaseSimulationResult:
     take_profit = float(best["TP (USD)"])
     stop_loss = float(best["SL (USD)"])
@@ -168,7 +171,7 @@ def _simulate_exact(
                     balance -= swap
         previous_trading_day = trading_day
 
-        spread = max(0.0, float(candle["SpreadPoints"]) * POINT_SIZE)
+        spread = max(0.0, float(candle["SpreadPoints"]) * POINT_SIZE * spread_multiplier)
         bid_high, bid_low, bid_close = float(candle["High"]), float(candle["Low"]), float(candle["Close"])
         ask_high, ask_low, ask_close = bid_high + spread, bid_low + spread, bid_close + spread
         still_open = []
@@ -178,9 +181,9 @@ def _simulate_exact(
                 still_open.append(position)
                 continue
             raw_exit, reason = exit_detail
-            exit_price = raw_exit - POINT_SIZE * SLIPPAGE_POINTS if position.direction == "BUY" else raw_exit + POINT_SIZE * SLIPPAGE_POINTS
+            exit_price = raw_exit - POINT_SIZE * slippage_points if position.direction == "BUY" else raw_exit + POINT_SIZE * slippage_points
             balance += _pnl(position, exit_price)
-            trades.append(_trade_row(position, timestamp, exit_price, reason, balance, spread))
+            trades.append(_trade_row(position, timestamp, exit_price, reason, balance, spread, slippage_points))
         positions = still_open
 
         if timestamp in signals.index:
@@ -201,10 +204,10 @@ def _simulate_exact(
                     lot = float(signal["lot"])
                     units = lot * CONTRACT_OUNCES_PER_LOT
                     if direction == "BUY":
-                        entry_price = ask_close + POINT_SIZE * SLIPPAGE_POINTS
+                        entry_price = ask_close + POINT_SIZE * slippage_points
                         spread_cost = spread * units
                     else:
-                        entry_price = bid_close - POINT_SIZE * SLIPPAGE_POINTS
+                        entry_price = bid_close - POINT_SIZE * slippage_points
                         spread_cost = 0.0
                     positions.append(
                         BrokerPosition(
@@ -246,9 +249,9 @@ def _simulate_exact(
         if close_on_target and equity >= target_equity:
             for position in positions:
                 raw_exit = bid_close if position.direction == "BUY" else ask_close
-                exit_price = raw_exit - POINT_SIZE * SLIPPAGE_POINTS if position.direction == "BUY" else raw_exit + POINT_SIZE * SLIPPAGE_POINTS
+                exit_price = raw_exit - POINT_SIZE * slippage_points if position.direction == "BUY" else raw_exit + POINT_SIZE * slippage_points
                 balance += _pnl(position, exit_price)
-                trades.append(_trade_row(position, timestamp, exit_price, "Target equity tercapai", balance, spread))
+                trades.append(_trade_row(position, timestamp, exit_price, "Target equity tercapai", balance, spread, slippage_points))
             positions = []
             curve[-1].update({"Balance": balance, "Equity": balance, "Unrealized P/L": 0.0, "Open BUY": 0, "Open SELL": 0, "Open total": 0})
             phase_rows.append(_phase_summary(phase, phase_start, target_equity, trades[phase_trade_start:], curve[phase_curve_start:], True, timestamp))
@@ -260,14 +263,14 @@ def _simulate_exact(
 
     if positions:
         timestamp = data.index[-1]
-        spread = max(0.0, float(data.iloc[-1]["SpreadPoints"]) * POINT_SIZE)
+        spread = max(0.0, float(data.iloc[-1]["SpreadPoints"]) * POINT_SIZE * spread_multiplier)
         bid_close = float(data.iloc[-1]["Close"])
         ask_close = bid_close + spread
         for position in positions:
             raw_exit = bid_close if position.direction == "BUY" else ask_close
-            exit_price = raw_exit - POINT_SIZE * SLIPPAGE_POINTS if position.direction == "BUY" else raw_exit + POINT_SIZE * SLIPPAGE_POINTS
+            exit_price = raw_exit - POINT_SIZE * slippage_points if position.direction == "BUY" else raw_exit + POINT_SIZE * slippage_points
             balance += _pnl(position, exit_price)
-            trades.append(_trade_row(position, timestamp, exit_price, "Akhir periode data", balance, spread))
+            trades.append(_trade_row(position, timestamp, exit_price, "Akhir periode data", balance, spread, slippage_points))
         positions = []
         if curve:
             curve[-1].update({"Balance": balance, "Equity": balance, "Unrealized P/L": 0.0, "Open BUY": 0, "Open SELL": 0, "Open total": 0})
@@ -326,11 +329,19 @@ def _mark_pnl(position: BrokerPosition, bid: float, ask: float) -> float:
     return _pnl(position, bid if position.direction == "BUY" else ask)
 
 
-def _trade_row(position: BrokerPosition, timestamp: pd.Timestamp, exit_price: float, reason: str, balance: float, exit_spread: float) -> dict[str, object]:
+def _trade_row(
+    position: BrokerPosition,
+    timestamp: pd.Timestamp,
+    exit_price: float,
+    reason: str,
+    balance: float,
+    exit_spread: float,
+    slippage_points: float,
+) -> dict[str, object]:
     gross = _pnl(position, exit_price)
     units = position.lot * CONTRACT_OUNCES_PER_LOT
     spread_cost = position.entry_spread_cost + (exit_spread * units if position.direction == "SELL" else 0.0)
-    slippage_cost = 2 * SLIPPAGE_POINTS * POINT_SIZE * units
+    slippage_cost = 2 * slippage_points * POINT_SIZE * units
     return {
         "Fase": position.phase,
         "Position ID": position.position_id,
