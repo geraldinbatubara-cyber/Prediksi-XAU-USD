@@ -72,6 +72,8 @@ OPTIMIZER_OOS_VERSION = "optimizer-v1-v10-train2025-oos2026h1"
 OPTIMIZER_OOS_PATH = Path("data/precomputed/optimizer_oos.pkl")
 BROKER_AWARE_OOS_VERSION = "optimizer-v1-v10-broker-aware-train2025-oos2026h1"
 BROKER_AWARE_OOS_PATH = Path("data/precomputed/broker_aware_oos.pkl")
+EXACT_BROKER_OOS_VERSION = "optimizer-v1-v10-exact-broker-aware-oos-2026h1"
+EXACT_BROKER_OOS_PATH = Path("data/precomputed/exact_broker_oos.pkl")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -126,6 +128,20 @@ def load_precomputed_broker_aware_oos(backtest_version: str):
         return None
     try:
         with BROKER_AWARE_OOS_PATH.open("rb") as file:
+            saved = pickle.load(file)
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_exact_broker_oos(backtest_version: str):
+    if not EXACT_BROKER_OOS_PATH.exists():
+        return None
+    try:
+        with EXACT_BROKER_OOS_PATH.open("rb") as file:
             saved = pickle.load(file)
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -1804,6 +1820,106 @@ def _render_broker_aware_oos_tab(payload, *, key: str, title: str) -> None:
         st.dataframe(result.trades, use_container_width=True, hide_index=True)
 
 
+def _render_exact_broker_oos_tab(payload, *, key: str, title: str) -> None:
+    st.subheader(title)
+    if payload is None or key not in payload:
+        st.warning("Hasil Exact Broker-Aware OOS belum tersedia pada artefak precomputed.")
+        return
+
+    result, leaderboard, daily_result = payload[key]
+    summary = result.summary
+    daily = daily_result.summary
+    st.info(
+        "Ini adalah replay apples-to-apples: parameter dan sinyal harian sama dengan Optimizer OOS, tanpa konfirmasi "
+        "EMA/momentum M1 tambahan. Entry dilakukan pada candle M1 pertama setelah sinyal harian selesai. TP/SL, lot, "
+        "batas posisi, multi-fase v1, risk cap dan profit protection v10 tetap mengikuti strategi asli."
+    )
+    st.warning(
+        "Harga eksekusi memakai XAUUSD MT5, sedangkan sumber sinyal harian tetap GC=F agar daftar sinyal sama dengan "
+        "OOS harian. Selisih basis harga kedua instrumen tetap merupakan risiko model yang perlu diaudit."
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Equity akhir Exact", f"${summary['Equity akhir']:,.2f}", f"{summary['Growth total']:+.2f}%")
+    c2.metric("Max drawdown", f"${summary['Max drawdown']:,.2f}")
+    c3.metric("Transaksi", f"{summary['Jumlah transaksi']:.0f}")
+    c4.metric("Profit factor", "-" if pd.isna(summary["Profit factor"]) else f"{summary['Profit factor']:.3f}")
+    c5.metric("Win rate", f"{summary['Win rate']:.1f}%")
+
+    comparison = pd.DataFrame(
+        [
+            {
+                "Pengujian": "OOS harian",
+                "Equity akhir": daily["Equity akhir"],
+                "Growth (%)": daily["Growth total"],
+                "Max drawdown": daily["Max drawdown"],
+                "Transaksi": daily["Jumlah transaksi"],
+                "Profit factor": daily["Profit factor"],
+            },
+            {
+                "Pengujian": "Exact Broker-Aware OOS",
+                "Equity akhir": summary["Equity akhir"],
+                "Growth (%)": summary["Growth total"],
+                "Max drawdown": summary["Max drawdown"],
+                "Transaksi": summary["Jumlah transaksi"],
+                "Profit factor": summary["Profit factor"],
+            },
+        ]
+    )
+    st.markdown("**Perbandingan Aturan Sama: Daily OHLC vs Eksekusi M1 Broker**")
+    st.dataframe(
+        comparison.style.format(
+            {
+                "Equity akhir": "${:,.2f}",
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}",
+                "Transaksi": "{:.0f}",
+                "Profit factor": "{:.3f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    costs = pd.DataFrame(
+        [
+            {"Komponen": "Spread historis", "Nilai": summary["Biaya spread"], "Status": "Sudah masuk Net P/L"},
+            {"Komponen": "Slippage adverse", "Nilai": summary["Biaya slippage"], "Status": "2 points per sisi; sudah masuk Net P/L"},
+            {"Komponen": "Swap BUY", "Nilai": abs(summary["Total swap"]), "Status": "USD 0,20 per 0,01 lot per trading day"},
+        ]
+    )
+    st.markdown("**Biaya Eksekusi Exact**")
+    st.dataframe(costs.style.format({"Nilai": "${:,.2f}"}), use_container_width=True, hide_index=True)
+
+    parameters = leaderboard.iloc[0] if not leaderboard.empty else pd.Series(dtype=object)
+    parameter_names = [
+        "Mode", "Fast MA", "Slow MA", "Momentum hari", "Threshold entry (%)", "TP (USD)", "SL (USD)",
+        "Lot", "Max BUY", "Max SELL", "Risk cap floating SL (%)", "Profit protection aktif (USD)",
+        "Profit protection floor (USD)", "Profit protection trail (USD)", "Close-all target equity",
+    ]
+    st.markdown("**Parameter Strategi Asli yang Dipertahankan**")
+    st.dataframe(
+        pd.DataFrame([{"Parameter": name, "Nilai": parameters[name]} for name in parameter_names if name in parameters.index]),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    curve = result.equity_curve
+    if not curve.empty:
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=curve.index, y=curve["Equity"], name="Equity Exact", line=dict(width=2.5)))
+        figure.add_trace(go.Scatter(x=curve.index, y=curve["Balance"], name="Balance Exact", line=dict(width=1.5, dash="dot")))
+        figure.add_hline(y=summary["Modal awal"], line_dash="dash", annotation_text="Equity awal")
+        figure.update_layout(title=f"Equity Curve {title}", yaxis_title="USD", height=430)
+        st.plotly_chart(figure, use_container_width=True)
+
+    with st.expander("Ringkasan fase Exact"):
+        st.dataframe(result.phases, use_container_width=True, hide_index=True)
+    with st.expander("Transaksi Exact Broker-Aware OOS"):
+        st.dataframe(result.trades, use_container_width=True, hide_index=True)
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -1823,14 +1939,25 @@ def render_simulation(
         "Jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    optimizer_tab, optimizer_v10_tab, optimizer_v1_oos_tab, optimizer_v10_oos_tab, broker_v1_tab, broker_v10_tab = st.tabs(
+    (
+        optimizer_tab,
+        optimizer_v10_tab,
+        optimizer_v1_oos_tab,
+        optimizer_v10_oos_tab,
+        broker_v1_tab,
+        broker_v10_tab,
+        exact_v1_tab,
+        exact_v10_tab,
+    ) = st.tabs(
         [
             "Strategi Terbaik Optimizer",
             "Strategi Optimizer v10",
             "Optimizer v1 OOS",
             "Optimizer v10 OOS",
-            "Optimizer v1 Broker-Aware OOS",
-            "Optimizer v10 Broker-Aware OOS",
+            "v1 Intraday Adaptation Broker-Aware OOS",
+            "v10 Intraday Adaptation Broker-Aware OOS",
+            "Optimizer v1 Exact Broker-Aware OOS",
+            "Optimizer v10 Exact Broker-Aware OOS",
         ]
     )
     with optimizer_tab:
@@ -1844,9 +1971,14 @@ def render_simulation(
         _render_optimizer_oos_tab(oos_payload, key="v10", title="Optimizer v10 OOS")
     broker_payload = load_precomputed_broker_aware_oos(BROKER_AWARE_OOS_VERSION)
     with broker_v1_tab:
-        _render_broker_aware_oos_tab(broker_payload, key="v1", title="Optimizer v1 Broker-Aware OOS")
+        _render_broker_aware_oos_tab(broker_payload, key="v1", title="v1 Intraday Adaptation Broker-Aware OOS")
     with broker_v10_tab:
-        _render_broker_aware_oos_tab(broker_payload, key="v10", title="Optimizer v10 Broker-Aware OOS")
+        _render_broker_aware_oos_tab(broker_payload, key="v10", title="v10 Intraday Adaptation Broker-Aware OOS")
+    exact_payload = load_precomputed_exact_broker_oos(EXACT_BROKER_OOS_VERSION)
+    with exact_v1_tab:
+        _render_exact_broker_oos_tab(exact_payload, key="v1", title="Optimizer v1 Exact Broker-Aware OOS")
+    with exact_v10_tab:
+        _render_exact_broker_oos_tab(exact_payload, key="v10", title="Optimizer v10 Exact Broker-Aware OOS")
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:
