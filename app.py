@@ -76,7 +76,7 @@ V1_ROBUSTNESS_VERSION = "optimizer-v1-robustness-oos-2026h1"
 V1_ROBUSTNESS_PATH = Path("data/precomputed/v1_robustness.pkl")
 V1_RISK_CONTROL_VERSION = "optimizer-v1-risk-control-lab-2025-2026h1-v1"
 V1_RISK_CONTROL_PATH = Path("data/precomputed/v1_risk_control.pkl")
-V1_SIGNAL_QUALITY_VERSION = "optimizer-v1-signal-quality-lab-2025-2026h1-v2"
+V1_SIGNAL_QUALITY_VERSION = "optimizer-v1-balanced-entry-2025-2026h1-v3"
 V1_SIGNAL_QUALITY_PATH = Path("data/precomputed/v1_signal_quality.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -2204,9 +2204,9 @@ def _render_v1_risk_control_tab(payload) -> None:
 
 
 def _render_v1_signal_quality_tab(payload) -> None:
-    st.subheader("Optimizer v1 Signal Quality Lab - Adaptive Confirmation v2")
+    st.subheader("Optimizer v1 Balanced Entry")
     if payload is None:
-        st.warning("Hasil Signal Quality Lab belum tersedia pada artefak precomputed.")
+        st.warning("Hasil v1 Balanced Entry belum tersedia pada artefak precomputed.")
         return
 
     methodology = payload["methodology"]
@@ -2253,7 +2253,7 @@ def _render_v1_signal_quality_tab(payload) -> None:
     comparison = validation[validation["Kandidat"].isin(comparison_names)][
         ["Kandidat", "Equity akhir", "Growth (%)", "Max drawdown (%)", "Profit factor", "Transaksi", "Retensi entry (%)"]
     ].rename(columns={"Kandidat": "Strategi"})
-    st.markdown("**Baseline versus SQ-A Strict dan Adaptive v2**")
+    st.markdown("**Baseline versus SQ-A Strict dan Balanced Entry**")
     st.dataframe(
         comparison.style.format(
             {
@@ -2289,7 +2289,7 @@ def _render_v1_signal_quality_tab(payload) -> None:
         hide_index=True,
     )
 
-    st.markdown("**Keputusan Tiga Finalis**")
+    st.markdown("**Keputusan Finalis Balanced Entry**")
     st.dataframe(
         decision.style.format({"Monte Carlo rugi (%)": "{:.2f}%", "Final score": "{:.2f}"}),
         use_container_width=True,
@@ -2297,7 +2297,7 @@ def _render_v1_signal_quality_tab(payload) -> None:
     )
     st.caption(
         f"{winner_name} menghasilkan {winner_validation['Transaksi']:.0f} transaksi. "
-        "Target frekuensi tercapai, tetapi kualitas OOS memburuk; tidak ada kandidat Adaptive v2 yang dipromosikan."
+        "Status ditentukan oleh enam kriteria; kandidat tidak menggantikan v1 baseline dan harus diuji melalui forward paper shadow."
     )
 
     with st.expander("Seluruh kandidat pada development 2025"):
@@ -2319,7 +2319,7 @@ def _render_v1_signal_quality_tab(payload) -> None:
         )
 
     winner_stress = stress[stress["Kandidat"].eq(winner_name)]
-    st.markdown("**Stress Matrix Kandidat Adaptive Terbaik Relatif**")
+    st.markdown("**Stress Matrix Kandidat Balanced Terbaik Relatif**")
     st.dataframe(
         winner_stress.style.format(
             {
@@ -2393,7 +2393,7 @@ def render_simulation(
             "Optimizer v1 Exact Broker-Aware OOS",
             "Optimizer v1 Robustness Test",
             "v1 Risk-Control Lab",
-            "v1 Signal Quality Lab",
+            "v1 Balanced Entry",
         ]
     )
     with optimizer_tab:
