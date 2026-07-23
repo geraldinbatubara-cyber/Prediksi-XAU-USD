@@ -80,6 +80,8 @@ V1_SIGNAL_QUALITY_VERSION = "optimizer-v1-balanced-entry-2025-2026h1-v3"
 V1_SIGNAL_QUALITY_PATH = Path("data/precomputed/v1_signal_quality.pkl.b64")
 V1_BALANCED_ROBUSTNESS_VERSION = "optimizer-v1-balanced-entry-robustness-2025-2026h1-v1"
 V1_BALANCED_ROBUSTNESS_PATH = Path("data/precomputed/v1_balanced_robustness.pkl.b64")
+V1_SIDEWAYS_DEFENSE_VERSION = "optimizer-v1-sideways-defense-2025-2026h1-v1"
+V1_SIDEWAYS_DEFENSE_PATH = Path("data/precomputed/v1_sideways_defense.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -190,6 +192,21 @@ def load_precomputed_v1_balanced_robustness(backtest_version: str):
     try:
         saved = pickle.loads(
             base64.b64decode(V1_BALANCED_ROBUSTNESS_PATH.read_text(encoding="ascii"))
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_sideways_defense(backtest_version: str):
+    if not V1_SIDEWAYS_DEFENSE_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(V1_SIDEWAYS_DEFENSE_PATH.read_text(encoding="ascii"))
         )
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -2535,6 +2552,163 @@ def _render_v1_balanced_robustness_tab(payload) -> None:
         )
 
 
+def _render_v1_sideways_defense_tab(payload) -> None:
+    st.subheader("v1 Balanced Entry - Sideways Defense Lab")
+    if payload is None:
+        st.warning("Hasil Sideways Defense belum tersedia pada artefak precomputed.")
+        return
+
+    methodology = payload["methodology"]
+    validation = payload["strategy_validation"]
+    decision = payload["decision"]
+    hybrid_result = payload["hybrid_result"]
+    hybrid_summary = hybrid_result.summary
+    mc_summary = payload["hybrid_monte_carlo_summary"]
+
+    st.warning(
+        "**Eksperimen terisolasi:** v1 Exact Baseline, Balanced Entry yang dibekukan, ledger, dan Live Trading "
+        "tidak diubah. Regime strategy ini belum dipromosikan."
+    )
+    if decision["Lulus seluruh kriteria"]:
+        st.success(
+            "**Status: LULUS seluruh gerbang historis.** Kandidat tetap memerlukan forward paper shadow sebelum "
+            "dipertimbangkan lebih lanjut."
+        )
+    else:
+        st.error(
+            "**Status: BELUM LULUS.** Secondary validation terlihat positif, tetapi classifier dan mesin sideways "
+            "tidak stabil pada development 2025; hasil bagus 2026H1 tidak boleh dipakai untuk menutupi kegagalan tersebut."
+        )
+    st.info(
+        f"Classifier: **{methodology['Selected classifier']}** | Sideways engine: "
+        f"**{methodology['Selected sideways config']}** | Fallback development: "
+        f"**{'YA' if methodology['Development selection fallback'] else 'TIDAK'}**."
+    )
+    st.caption(methodology["Caveat"])
+
+    h1, h2, h3, h4, h5 = st.columns(5)
+    h1.metric("Hybrid growth", f"{decision['Hybrid growth (%)']:+.2f}%")
+    h2.metric("Hybrid drawdown", f"{decision['Hybrid drawdown (%)']:.2f}%")
+    h3.metric("Hybrid profit factor", f"{decision['Hybrid profit factor']:.3f}")
+    h4.metric("Hybrid transaksi", f"{decision['Hybrid transaksi']:.0f}")
+    h5.metric(
+        "Risiko MC rugi",
+        f"{mc_summary['Probabilitas equity akhir < modal awal (%)']:.2f}%",
+    )
+
+    st.markdown("**Perbandingan Empat Arsitektur**")
+    st.dataframe(
+        validation.style.format(
+            {
+                "Equity akhir": "${:,.2f}", "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}", "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}", "Transaksi": "{:.0f}",
+                "Win rate (%)": "{:.1f}%", "Total swap": "${:,.2f}",
+                "Biaya spread": "${:,.2f}", "Biaya slippage": "${:,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    criteria_rows = []
+    for key, value in decision.items():
+        if key.startswith("Lolos:"):
+            criteria_rows.append(
+                {
+                    "Kriteria": key.replace("Lolos: ", ""),
+                    "Status": "LOLOS" if value else "BELUM",
+                }
+            )
+    criteria_rows.extend(
+        [
+            {"Kriteria": "Stress profitable 9/9", "Status": "LOLOS" if decision["Stress profitable 9/9"] else "BELUM"},
+            {"Kriteria": "Monte Carlo rugi <= 10%", "Status": "LOLOS" if decision["Monte Carlo rugi <= 10%"] else "BELUM"},
+        ]
+    )
+    st.markdown("**Audit Gerbang Keputusan**")
+    st.dataframe(pd.DataFrame(criteria_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("**Kualitas Classifier Regime**")
+    classifier = pd.concat(
+        [
+            payload["classifier_development"].assign(Periode="Development 2025"),
+            payload["classifier_validation"].assign(Periode="Validation 2026H1"),
+        ],
+        ignore_index=True,
+    )
+    st.dataframe(
+        classifier.style.format(
+            {
+                "Coverage keputusan (%)": "{:.1f}%", "Sideways precision": "{:.3f}",
+                "Sideways recall": "{:.3f}", "Trend precision": "{:.3f}",
+                "Trend recall": "{:.3f}", "Balanced accuracy": "{:.3f}", "Macro F1": "{:.3f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Distribusi State Regime**")
+    st.dataframe(
+        payload["state_distribution"].style.format({"Proporsi (%)": "{:.1f}%"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Atribusi P/L Hybrid**")
+    st.dataframe(
+        payload["strategy_attribution"].style.format(
+            {"Net P/L": "${:,.2f}", "Win rate (%)": "{:.1f}%", "Profit factor": "{:.3f}"},
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.warning(
+        f"Mesin sideways development: growth **{decision['Sideways development growth (%)']:+.2f}%**, "
+        f"PF **{decision['Sideways development profit factor']:.3f}**. Validation: growth "
+        f"**{decision['Sideways growth (%)']:+.2f}%**, PF **{decision['Sideways profit factor']:.3f}**. "
+        "Perubahan tanda ini menunjukkan ketidakstabilan regime yang material."
+    )
+
+    curve = hybrid_result.equity_curve
+    if not curve.empty:
+        figure = go.Figure()
+        figure.add_trace(go.Scatter(x=curve.index, y=curve["Equity"], name="Hybrid Equity"))
+        figure.add_hline(y=1000, line_dash="dash", annotation_text="Modal awal")
+        figure.update_layout(title="Equity Hybrid Regime Strategy", yaxis_title="USD", height=400)
+        st.plotly_chart(figure, use_container_width=True)
+
+    st.markdown("**Stress Spread dan Slippage Hybrid**")
+    st.dataframe(
+        payload["hybrid_stress"].style.format(
+            {
+                "Spread multiplier": "{:.1f}x", "Slippage points/sisi": "{:.0f}",
+                "Equity akhir": "${:,.2f}", "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}", "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}", "Transaksi": "{:.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    with st.expander("Seluruh hasil development 2025"):
+        st.dataframe(
+            payload["strategy_development"].style.format(
+                {
+                    "Equity akhir": "${:,.2f}", "Growth (%)": "{:+.2f}%",
+                    "Max drawdown (%)": "{:.2f}%", "Profit factor": "{:.3f}",
+                    "Transaksi": "{:.0f}", "Win rate (%)": "{:.1f}%",
+                },
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -2560,6 +2734,7 @@ def render_simulation(
         risk_control_v1_tab,
         signal_quality_v1_tab,
         balanced_robustness_v1_tab,
+        sideways_defense_v1_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -2569,6 +2744,7 @@ def render_simulation(
             "v1 Risk-Control Lab",
             "v1 Balanced Entry",
             "v1 Balanced Robustness",
+            "v1 Sideways Defense",
         ]
     )
     with optimizer_tab:
@@ -2588,6 +2764,10 @@ def render_simulation(
     with balanced_robustness_v1_tab:
         _render_v1_balanced_robustness_tab(
             load_precomputed_v1_balanced_robustness(V1_BALANCED_ROBUSTNESS_VERSION)
+        )
+    with sideways_defense_v1_tab:
+        _render_v1_sideways_defense_tab(
+            load_precomputed_v1_sideways_defense(V1_SIDEWAYS_DEFENSE_VERSION)
         )
 
 
