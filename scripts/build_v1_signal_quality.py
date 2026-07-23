@@ -19,7 +19,7 @@ from gold_forecast.v1_signal_quality import run_v1_signal_quality_lab
 INPUT_DIR = PROJECT_ROOT / "data" / "intraday"
 OOS_SOURCE = PROJECT_ROOT / "data" / "precomputed" / "optimizer_oos.pkl"
 OUTPUT_PATH = PROJECT_ROOT / "data" / "precomputed" / "v1_signal_quality.pkl.b64"
-VERSION = "optimizer-v1-signal-quality-lab-2025-2026h1-v2"
+VERSION = "optimizer-v1-balanced-entry-2025-2026h1-v3"
 
 
 def main() -> None:
@@ -42,7 +42,7 @@ def main() -> None:
     winner = payload["winner_name"]
     row = payload["validation"].set_index("Kandidat").loc[winner]
     print(
-        f"Signal Quality Lab selesai | winner={winner} | equity={row['Equity akhir']:.2f} | "
+        f"Balanced Entry selesai | winner={winner} | equity={row['Equity akhir']:.2f} | "
         f"growth={row['Growth (%)']:.2f}% | PF={row['Profit factor']:.3f} | "
         f"DD={row['Max drawdown (%)']:.2f}% | status={payload['winner_status']}"
     )
