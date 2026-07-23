@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 2.2 seconds
-Output:
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -710,4 +707,3 @@ def _decision_table(
         "Lulus seluruh kriteria": all(criteria.values()),
         "Profit trend dipertahankan (%)": profit_retention,
     }
-
