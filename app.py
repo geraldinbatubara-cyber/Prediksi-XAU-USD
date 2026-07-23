@@ -82,6 +82,8 @@ V1_BALANCED_ROBUSTNESS_VERSION = "optimizer-v1-balanced-entry-robustness-2025-20
 V1_BALANCED_ROBUSTNESS_PATH = Path("data/precomputed/v1_balanced_robustness.pkl.b64")
 V1_SIDEWAYS_DEFENSE_VERSION = "optimizer-v1-sideways-defense-2025-2026h1-v1"
 V1_SIDEWAYS_DEFENSE_PATH = Path("data/precomputed/v1_sideways_defense.pkl.b64")
+V1_REGIME_CLASSIFIER_VERSION = "optimizer-v1-regime-classifier-2025-2026h1-v2"
+V1_REGIME_CLASSIFIER_PATH = Path("data/precomputed/v1_regime_classifier.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -207,6 +209,21 @@ def load_precomputed_v1_sideways_defense(backtest_version: str):
     try:
         saved = pickle.loads(
             base64.b64decode(V1_SIDEWAYS_DEFENSE_PATH.read_text(encoding="ascii"))
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_regime_classifier(backtest_version: str):
+    if not V1_REGIME_CLASSIFIER_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(V1_REGIME_CLASSIFIER_PATH.read_text(encoding="ascii"))
         )
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -2709,6 +2726,110 @@ def _render_v1_sideways_defense_tab(payload) -> None:
         )
 
 
+def _render_v1_regime_classifier_tab(payload) -> None:
+    st.subheader("v1 Regime Classifier Lab v2")
+    if payload is None:
+        st.warning("Hasil Regime Classifier v2 belum tersedia pada artefak precomputed.")
+        return
+
+    methodology = payload["methodology"]
+    decision = payload["decision"]
+    selected = methodology["Selected model"]
+    selected_metrics = payload["validation"].set_index("Model").loc[selected]
+
+    st.warning(
+        "**Eksperimen terisolasi:** v1 Exact Baseline, Balanced Entry, ledger, dan Live Trading tetap dikunci. "
+        "Classifier ini belum dipromosikan dan hanya menjadi laboratorium offline."
+    )
+    if decision["Lulus seluruh kriteria"]:
+        st.success(
+            "**Status historis: LULUS.** Kandidat tetap wajib menjalani forward paper shadow sebelum dipakai "
+            "untuk mengendalikan entry live."
+        )
+    else:
+        st.error(
+            "**Status historis: BELUM LULUS.** Hasil ditampilkan apa adanya; classifier belum layak menggantikan "
+            "regime gate yang sedang diobservasi."
+        )
+    st.info(
+        f"Model terpilih: **{selected}** | Selection fallback: "
+        f"**{'YA' if methodology['Selection fallback'] else 'TIDAK'}** | "
+        f"Kriteria lolos: **{decision['Jumlah kriteria lolos']}/{len(decision) - 3}**."
+    )
+    st.caption(methodology["Caveat"])
+
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Macro F1", f"{selected_metrics['Macro F1']:.3f}")
+    m2.metric("Balanced accuracy", f"{selected_metrics['Balanced accuracy']:.3f}")
+    m3.metric("Trend precision", f"{selected_metrics['Trend precision']:.3f}")
+    m4.metric("Median delay", f"{selected_metrics['Median delay (jam)']:.2f} jam")
+    m5.metric("False trend", f"{selected_metrics['False trend rate (%)']:.1f}%")
+    m6.metric("Coverage", f"{selected_metrics['Coverage (%)']:.1f}%")
+
+    st.markdown("**Seleksi Model pada Purged Walk-Forward 2025**")
+    st.dataframe(
+        payload["model_summary"].style.format(precision=3),
+        use_container_width=True,
+        hide_index=True,
+    )
+    with st.expander("Detail setiap fold"):
+        st.dataframe(payload["folds"].style.format(precision=3), use_container_width=True, hide_index=True)
+
+    st.markdown("**Secondary Validation 2026H1**")
+    st.dataframe(
+        payload["validation"].style.format(precision=3),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Dampak Ekonomi pada Balanced Entry yang Dibekukan**")
+    st.dataframe(
+        payload["economic"].style.format(
+            {
+                "Equity akhir": "${:,.2f}", "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}", "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}", "Transaksi": "{:.0f}",
+                "Win rate (%)": "{:.1f}%", "Total swap": "${:,.2f}",
+                "Biaya spread": "${:,.2f}", "Biaya slippage": "${:,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    criteria = [
+        {"Kriteria": key, "Status": "LOLOS" if value else "BELUM"}
+        for key, value in decision.items()
+        if isinstance(value, (bool, np.bool_)) and key != "Lulus seluruh kriteria"
+    ]
+    st.markdown("**Audit Gerbang Keputusan**")
+    st.dataframe(pd.DataFrame(criteria), use_container_width=True, hide_index=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Confusion Matrix Validation**")
+        st.dataframe(payload["confusion"], use_container_width=True)
+    with c2:
+        st.markdown("**Audit Probabilitas**")
+        st.dataframe(payload["probability_audit"].style.format(precision=3), use_container_width=True, hide_index=True)
+
+    st.markdown("**Ablation Feature Group**")
+    st.dataframe(payload["ablation"].style.format(precision=3), use_container_width=True, hide_index=True)
+    st.markdown("**Stress Spread dan Slippage**")
+    st.dataframe(
+        payload["selected_stress"].style.format(
+            {
+                "Spread multiplier": "{:.1f}x", "Slippage points/sisi": "{:.0f}",
+                "Equity akhir": "${:,.2f}", "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}", "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}", "Transaksi": "{:.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -2735,6 +2856,7 @@ def render_simulation(
         signal_quality_v1_tab,
         balanced_robustness_v1_tab,
         sideways_defense_v1_tab,
+        regime_classifier_v1_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -2745,6 +2867,7 @@ def render_simulation(
             "v1 Balanced Entry",
             "v1 Balanced Robustness",
             "v1 Sideways Defense",
+            "v1 Regime Classifier v2",
         ]
     )
     with optimizer_tab:
@@ -2768,6 +2891,10 @@ def render_simulation(
     with sideways_defense_v1_tab:
         _render_v1_sideways_defense_tab(
             load_precomputed_v1_sideways_defense(V1_SIDEWAYS_DEFENSE_VERSION)
+        )
+    with regime_classifier_v1_tab:
+        _render_v1_regime_classifier_tab(
+            load_precomputed_v1_regime_classifier(V1_REGIME_CLASSIFIER_VERSION)
         )
 
 
