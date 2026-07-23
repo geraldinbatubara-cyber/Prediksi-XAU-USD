@@ -8,20 +8,33 @@ import pandas as pd
 from gold_forecast.monitoring import WIT
 from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT
 from gold_forecast.strategy_optimizer import _indicator_predictions, _rsi
+from gold_forecast.v1_risk_control import _entry_signals_for_period
+from gold_forecast.v1_signal_quality import (
+    SignalQualityConfig,
+    _entry_features,
+    _select_signals,
+)
 
 
 LIVE_TRADING_PATH = Path("data/live_trading_optimizer.csv")
 LIVE_MANUAL_EXIT_PATH = Path("data/live_trading_manual_exits.csv")
 LIVE_TRADING_V10_PATH = Path("data/live_trading_optimizer_v10.csv")
 LIVE_MANUAL_EXIT_V10_PATH = Path("data/live_trading_manual_exits_v10.csv")
+LIVE_TRADING_FIXED_DELAY_PATH = Path("data/live_trading_fixed_delay_5m.csv")
+LIVE_MANUAL_EXIT_FIXED_DELAY_PATH = Path("data/live_trading_manual_exits_fixed_delay_5m.csv")
 LIVE_INITIAL_EQUITY = 1000.0
 LIVE_START_DATE = pd.Timestamp("2026-07-15")
 LIVE_V10_START_DATE = pd.Timestamp("2026-07-20")
+LIVE_FIXED_DELAY_START = pd.Timestamp("2026-07-23 22:20:00", tz=WIT)
 LIVE_LOT_SIZE = 0.01
 LIVE_BUY_SWAP_PER_001_LOT = 0.02
 LIVE_SELL_SWAP_PER_001_LOT = 0.0
 LIVE_MAX_BUY = 8
 LIVE_MAX_SELL = 10
+FIXED_DELAY_MINUTES = 5
+FIXED_DELAY_SPREAD_LIMIT_POINTS = 20.0
+FIXED_DELAY_TP_USD = 25.0
+FIXED_DELAY_SL_USD = 10.0
 
 LIVE_COLUMNS = [
     "position_id",
@@ -694,18 +707,23 @@ def _maybe_open_position(
     buy_count, sell_count = _open_counts(ledger)
     max_buy = int(params.get("Max BUY", LIVE_MAX_BUY))
     max_sell = int(params.get("Max SELL", LIVE_MAX_SELL))
+    max_total = int(params.get("Max Total", max_buy + max_sell))
+    open_total = buy_count + sell_count
     direction = str(signal["arah"])
+    entry_eligible = bool(signal.get("entry_eligible", True))
     can_open = (
         can_trade
+        and entry_eligible
         and direction in {"BUY", "SELL"}
+        and open_total < max_total
         and ((direction == "BUY" and buy_count < max_buy) or (direction == "SELL" and sell_count < max_sell))
     )
-    status = "OPEN" if can_open else "SIGNAL"
+    status = "OPEN" if can_open else str(signal.get("record_status", "SIGNAL"))
     source = str(signal.get("source", "Optimizer penuh"))
     note = (
         f"Posisi dibuka dari sinyal {source}: seluruh syarat strategi terpenuhi."
         if can_open
-        else f"Sinyal {source} terdeteksi, belum buka posisi: {session_note}"
+        else str(signal.get("event_note", f"Sinyal {source} terdeteksi, belum buka posisi: {session_note}"))
     )
     next_id = int(pd.to_numeric(ledger["position_id"], errors="coerce").max() + 1) if not ledger.empty else 1
     if pd.isna(next_id):
@@ -759,8 +777,10 @@ def _optimizer_trigger_state(
     buy_count, sell_count = _open_counts(ledger)
     max_buy = int(params.get("Max BUY", LIVE_MAX_BUY))
     max_sell = int(params.get("Max SELL", LIVE_MAX_SELL))
+    max_total = int(params.get("Max Total", max_buy + max_sell))
     remaining_buy = max(max_buy - buy_count, 0)
     remaining_sell = max(max_sell - sell_count, 0)
+    remaining_total = max(max_total - buy_count - sell_count, 0)
 
     if signal is None:
         checklist = [
@@ -804,10 +824,14 @@ def _optimizer_trigger_state(
         (direction == "BUY" and expected_change_pct >= threshold)
         or (direction == "SELL" and expected_change_pct <= -threshold)
     )
-    slot_ok = direction in {"BUY", "SELL"} and direction_slot > 0
+    slot_ok = direction in {"BUY", "SELL"} and direction_slot > 0 and remaining_total > 0
+    entry_eligible = bool(signal.get("entry_eligible", True))
     can_open_now = direction in {"BUY", "SELL"} and threshold_ok and can_trade and slot_ok and not already_executed
 
-    if can_open_now:
+    if not entry_eligible:
+        status = str(signal.get("record_status", "Sinyal dibatalkan"))
+        note = str(signal.get("event_note", "Sinyal tidak lolos validasi entry."))
+    elif can_open_now:
         status = f"Siap buka {direction}"
         note = "Semua syarat eksekusi terpenuhi."
     elif already_executed:
@@ -844,6 +868,11 @@ def _optimizer_trigger_state(
             "Detail": f"Sisa slot BUY {remaining_buy}, SELL {remaining_sell}.",
         },
         {
+            "Syarat": "Batas total posisi tersedia",
+            "Status": "Lolos" if remaining_total > 0 else "Menunggu",
+            "Detail": f"Sisa slot total {remaining_total} dari maksimum {max_total}.",
+        },
+        {
             "Syarat": "Tanggal dan arah sinyal belum pernah dicatat",
             "Status": "Lolos" if not already_executed else "Sudah tercatat",
             "Detail": "Satu sinyal tanggal/arah hanya dicatat sekali agar tidak over-entry.",
@@ -864,10 +893,181 @@ def _optimizer_trigger_state(
         "Posisi SELL terbuka": sell_count,
         "Sisa slot BUY": remaining_buy,
         "Sisa slot SELL": remaining_sell,
+        "Sisa slot total": remaining_total,
         "Sudah dieksekusi": already_executed,
         "Catatan": note,
         "Checklist": checklist,
     }
+
+
+def _start_time_wit(start_date: pd.Timestamp) -> pd.Timestamp:
+    timestamp = pd.Timestamp(start_date)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize(WIT)
+    return timestamp.tz_convert(WIT)
+
+
+def _prepare_live_broker_m1(broker_bars: pd.DataFrame | None) -> pd.DataFrame:
+    if broker_bars is None or broker_bars.empty:
+        return pd.DataFrame()
+    frame = broker_bars.copy()
+    required = {"timestamp_utc", "open", "high", "low", "close", "spread_points"}
+    if not required.issubset(frame.columns):
+        return pd.DataFrame()
+    timestamps = pd.to_datetime(frame["timestamp_utc"], errors="coerce", utc=True)
+    frame = frame.assign(timestamp_utc=timestamps).dropna(subset=["timestamp_utc"])
+    frame = frame.set_index("timestamp_utc").sort_index()
+    frame.index = frame.index.tz_convert("UTC").tz_localize(None)
+    frame = frame.rename(
+        columns={
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "spread_points": "SpreadPoints",
+        }
+    )
+    numeric = ["Open", "High", "Low", "Close", "SpreadPoints"]
+    frame[numeric] = frame[numeric].apply(pd.to_numeric, errors="coerce")
+    return frame[numeric].dropna().loc[~frame.index.duplicated(keep="last")]
+
+
+def _fixed_delay_live_signal(
+    gold_ohlc: pd.DataFrame,
+    broker_bars: pd.DataFrame | None,
+    params: dict[str, object],
+    now: pd.Timestamp,
+    start_date: pd.Timestamp,
+) -> tuple[dict[str, object] | None, dict[str, object]]:
+    empty_state = {
+        "Status": "MENUNGGU DATA M1",
+        "Detail": "Candle M1 MT5 belum tersedia untuk validasi Fixed Delay.",
+        "Waktu sinyal awal": pd.NaT,
+        "Waktu konfirmasi": pd.NaT,
+        "Spread points": np.nan,
+        "Barrier tersentuh": False,
+    }
+    data = _prepare_live_broker_m1(broker_bars)
+    if data.empty or gold_ohlc.empty:
+        return None, empty_state
+
+    now_utc = now.tz_convert("UTC").tz_localize(None)
+    activation_utc = _start_time_wit(start_date).tz_convert("UTC").tz_localize(None)
+    data = data.loc[data.index <= now_utc]
+    if data.empty:
+        return None, empty_state
+
+    raw = _entry_signals_for_period(
+        data,
+        gold_ohlc,
+        params,
+        activation_utc.normalize(),
+        now_utc,
+    )
+    raw = raw.loc[raw.index >= activation_utc]
+    if raw.empty:
+        return None, {
+            **empty_state,
+            "Status": "MENUNGGU SINYAL HARIAN",
+            "Detail": "Belum ada sinyal v1 baru setelah aktivasi Fixed Delay.",
+        }
+
+    features = _entry_features(data)
+    balanced_config = SignalQualityConfig(
+        "Balanced Entry Frozen",
+        "Trend engine",
+        conviction_multiplier=1.05,
+        require_h1_trend=True,
+        wait_hours=2,
+    )
+    balanced, audit = _select_signals(
+        raw,
+        features,
+        params,
+        balanced_config,
+        FIXED_DELAY_SPREAD_LIMIT_POINTS,
+        now_utc,
+    )
+    if balanced.empty:
+        last_audit = audit.iloc[-1] if not audit.empty else pd.Series(dtype=object)
+        return None, {
+            **empty_state,
+            "Status": "MENUNGGU BALANCED ENTRY",
+            "Detail": str(last_audit.get("Alasan", "Alignment H1 atau conviction belum lolos.")),
+            "Waktu sinyal awal": last_audit.get("Waktu sinyal awal", pd.NaT),
+        }
+
+    signal_time = pd.Timestamp(balanced.index[-1])
+    signal = balanced.iloc[-1]
+    confirmation_due = signal_time + pd.Timedelta(minutes=FIXED_DELAY_MINUTES)
+    location = data.index.searchsorted(confirmation_due, side="left")
+    if location >= len(data.index):
+        return None, {
+            **empty_state,
+            "Status": "TUNGGU 5 MENIT",
+            "Detail": "Balanced Entry lolos; menunggu candle konfirmasi lima menit.",
+            "Waktu sinyal awal": signal_time,
+            "Waktu konfirmasi": confirmation_due,
+        }
+
+    confirmation_time = pd.Timestamp(data.index[location])
+    if confirmation_time > confirmation_due + pd.Timedelta(minutes=5):
+        return None, {
+            **empty_state,
+            "Status": "BATAL DATA M1",
+            "Detail": "Candle konfirmasi tidak tersedia dalam toleransi lima menit.",
+            "Waktu sinyal awal": signal_time,
+            "Waktu konfirmasi": confirmation_due,
+        }
+
+    expected = float(signal["expected_change_pct"])
+    direction = "BUY" if expected > 0 else "SELL"
+    reference = float(data.loc[signal_time, "Close"])
+    window = data.loc[(data.index > signal_time) & (data.index <= confirmation_time)]
+    units = LIVE_LOT_SIZE * CONTRACT_OUNCES_PER_LOT
+    if direction == "BUY":
+        adverse = max((reference - float(window["Low"].min())) * units, 0.0)
+        favorable = max((float(window["High"].max()) - reference) * units, 0.0)
+    else:
+        adverse = max((float(window["High"].max()) - reference) * units, 0.0)
+        favorable = max((reference - float(window["Low"].min())) * units, 0.0)
+    barrier_hit = adverse >= FIXED_DELAY_SL_USD or favorable >= FIXED_DELAY_TP_USD
+    spread_points = float(data.loc[confirmation_time, "SpreadPoints"])
+    spread_ok = spread_points <= FIXED_DELAY_SPREAD_LIMIT_POINTS
+    accepted = not barrier_hit and spread_ok
+    state = {
+        "Status": "ENTRY" if accepted else "BATAL BARRIER" if barrier_hit else "BATAL SPREAD",
+        "Detail": (
+            "Delay lima menit selesai; seluruh validasi entry lolos."
+            if accepted
+            else "TP/SL awal telah tersentuh selama masa tunggu."
+            if barrier_hit
+            else f"Spread {spread_points:.1f} points melebihi batas 20 points."
+        ),
+        "Waktu sinyal awal": signal_time,
+        "Waktu konfirmasi": confirmation_time,
+        "Spread points": spread_points,
+        "Barrier tersentuh": barrier_hit,
+        "Observed adverse USD": adverse,
+        "Observed favorable USD": favorable,
+    }
+    output = {
+        "signal_date": pd.Timestamp(signal["signal_date"]),
+        "prediction": float(signal["prediction"]),
+        "reference_price": float(data.loc[confirmation_time, "Close"]),
+        "expected_change_pct": expected,
+        "arah": direction,
+        "source": "Fixed Delay 5m",
+    }
+    if not accepted:
+        output.update(
+            {
+                "entry_eligible": False,
+                "record_status": "CANCELLED",
+                "event_note": state["Detail"],
+            }
+        )
+    return output, state
 
 
 def run_live_trading_update(
@@ -878,6 +1078,8 @@ def run_live_trading_update(
     start_date: pd.Timestamp = LIVE_START_DATE,
     broker_quote: pd.Series | None = None,
     allow_new_entries: bool = True,
+    entry_strategy: str = "baseline",
+    broker_bars: pd.DataFrame | None = None,
 ) -> dict[str, object]:
     now_wit = _now_wit(now)
     cutoff_date = now_wit.tz_localize(None).normalize()
@@ -885,10 +1087,22 @@ def run_live_trading_update(
     ledger = load_live_ledger(path)
     params = _best_optimizer_params(optimizer_leaderboard)
     can_trade, session_note = _is_live_session_open(now_wit)
-    start_date = pd.Timestamp(start_date)
-    if cutoff_date < start_date:
+    start_time_wit = _start_time_wit(start_date)
+    if now_wit < start_time_wit:
         can_trade = False
-        session_note = f"Paper live trading strategi ini baru dimulai {start_date.strftime('%d %b %Y')}."
+        session_note = f"Paper live trading strategi ini baru dimulai {start_time_wit.strftime('%d %b %Y %H:%M WIT')}."
+    if entry_strategy == "fixed_delay_5m":
+        params.update(
+            {
+                "Strategi": "Fixed Delay 5m",
+                "Lot": LIVE_LOT_SIZE,
+                "TP (USD)": FIXED_DELAY_TP_USD,
+                "SL (USD)": FIXED_DELAY_SL_USD,
+                "Max BUY": 1,
+                "Max SELL": 1,
+                "Max Total": 1,
+            }
+        )
 
     daily_data_date = usable_gold.index.max().normalize() if not usable_gold.empty else pd.NaT
     expected_anchor = cutoff_date if now_wit.hour >= 7 else cutoff_date - pd.Timedelta(days=1)
@@ -937,11 +1151,38 @@ def run_live_trading_update(
         live_price=float(quote_state["mid"]) if quote_state["fresh"] else None,
         live_timestamp=quote_state.get("market_timestamp") if quote_state["fresh"] else None,
     )
-    signal = _current_optimizer_signal(usable_gold, params, now_wit, start_date)
-    if signal is not None:
-        signal["source"] = "Optimizer penuh"
+    fixed_delay_state = None
+    if entry_strategy == "fixed_delay_5m":
+        signal, fixed_delay_state = _fixed_delay_live_signal(
+            usable_gold,
+            broker_bars,
+            params,
+            now_wit,
+            start_time_wit,
+        )
+    else:
+        signal = _current_optimizer_signal(
+            usable_gold,
+            params,
+            now_wit,
+            start_time_wit.tz_localize(None).normalize(),
+        )
+        if signal is not None:
+            signal["source"] = "Optimizer penuh"
     entry_allowed = can_trade and allow_new_entries
     archive_note = session_note if allow_new_entries else "Strategi diarsipkan; posisi baru dinonaktifkan."
+    if (
+        entry_strategy == "fixed_delay_5m"
+        and signal is not None
+        and bool(signal.get("entry_eligible", True))
+        and not entry_allowed
+    ):
+        signal["entry_eligible"] = False
+        signal["record_status"] = "CANCELLED"
+        signal["event_note"] = f"Entry Fixed Delay dibatalkan: {archive_note}"
+        if fixed_delay_state is not None:
+            fixed_delay_state["Status"] = "BATAL EKSEKUSI"
+            fixed_delay_state["Detail"] = signal["event_note"]
     ledger = _maybe_open_position(
         ledger,
         signal,
@@ -957,7 +1198,7 @@ def run_live_trading_update(
 
     open_positions = ledger[ledger["status"].eq("OPEN")].copy()
     closed_positions = ledger[ledger["status"].eq("CLOSED")].copy()
-    signal_rows = ledger[ledger["status"].isin(["SIGNAL", "OPEN"])].copy()
+    signal_rows = ledger[ledger["status"].isin(["SIGNAL", "OPEN", "CANCELLED"])].copy()
 
     if open_positions.empty or pd.isna(latest_price):
         floating_pl = 0.0
@@ -1005,6 +1246,7 @@ def run_live_trading_update(
         "signal": signal,
         "waiting_state": waiting_state,
         "trigger_state": trigger_state,
+        "fixed_delay_state": fixed_delay_state,
         "ledger": ledger,
         "signals": signal_rows,
         "open_positions": open_positions,
