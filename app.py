@@ -92,6 +92,8 @@ V1_ENTRY_QUALITY_PATH_VERSION = "optimizer-v1-entry-quality-path-aware-2022-2026
 V1_ENTRY_QUALITY_PATH_PATH = Path("data/precomputed/v1_entry_quality_path.pkl.b64")
 V1_ENTRY_TIMING_VERSION = "optimizer-v1-entry-timing-micro-confirmation-2022-2026h1-v1"
 V1_ENTRY_TIMING_PATH = Path("data/precomputed/v1_entry_timing.pkl.b64")
+V1_FIXED_DELAY_VERSION = "optimizer-v1-fixed-delay-5m-robustness-2022-2026h1-v1"
+V1_FIXED_DELAY_PATH = Path("data/precomputed/v1_fixed_delay.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -290,6 +292,21 @@ def load_precomputed_v1_entry_timing(backtest_version: str):
     try:
         saved = pickle.loads(
             base64.b64decode(V1_ENTRY_TIMING_PATH.read_text(encoding="ascii"))
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_fixed_delay(backtest_version: str):
+    if not V1_FIXED_DELAY_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(V1_FIXED_DELAY_PATH.read_text(encoding="ascii"))
         )
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -3619,6 +3636,154 @@ def _render_v1_entry_timing_tab(payload) -> None:
         )
 
 
+def _render_v1_fixed_delay_tab(payload) -> None:
+    st.subheader("v1 Fixed Delay 5m Robustness Lab")
+    if payload is None:
+        st.warning("Hasil Fixed Delay 5m belum tersedia pada artefak precomputed.")
+        return
+
+    methodology = payload["methodology"]
+    decision = payload["decision"]
+    confirmation = (
+        payload["confirmation_economic"]
+        .set_index("Strategi")
+        .loc["Fixed Delay 5m Validated"]
+    )
+    development = (
+        payload["development_economic"]
+        .set_index("Strategi")
+        .loc["Fixed Delay 5m Validated"]
+    )
+
+    st.warning(
+        "**Eksperimen terisolasi:** v1 Exact Baseline, Balanced Entry, ledger, dan Live Trading "
+        "tetap terkunci. Delay lima menit diuji tanpa pencarian parameter dan tanpa micro gate."
+    )
+    if decision["Lulus seluruh kriteria"]:
+        st.success("**Status: LULUS HISTORIS.** Kandidat tetap memerlukan prospective paper shadow.")
+    else:
+        st.error(
+            "**Status: BELUM LULUS ROBUSTNESS.** Historical confirmation 2026H1 kuat, "
+            "tetapi development agregat belum memenuhi batas drawdown dan profit factor."
+        )
+    st.info(
+        f"Rule: **{methodology['Rule']}** | Fold profitable: "
+        f"**{decision['Jumlah fold profitable']}/12** | Kriteria lolos: "
+        f"**{decision['Jumlah kriteria lolos']}/{decision['Jumlah kriteria']}**."
+    )
+    st.caption(methodology["Barrier rule"])
+    st.caption(methodology["Spread rule"])
+    st.caption(methodology["Caveat"])
+
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Growth 2026H1", f"{confirmation['Growth (%)']:+.2f}%")
+    m2.metric("PF 2026H1", f"{confirmation['Profit factor']:.3f}")
+    m3.metric("DD 2026H1", f"{confirmation['Max drawdown (%)']:.2f}%")
+    m4.metric("Transaksi 2026H1", f"{confirmation['Transaksi']:.0f}")
+    m5.metric("PF development", f"{development['Profit factor']:.3f}")
+    m6.metric("DD development", f"{development['Max drawdown (%)']:.2f}%")
+
+    metric_formats = {
+        "Equity akhir": "${:,.2f}",
+        "Growth (%)": "{:+.2f}%",
+        "Max drawdown": "${:,.2f}",
+        "Max drawdown (%)": "{:.2f}%",
+        "Profit factor": "{:.3f}",
+        "Transaksi": "{:.0f}",
+        "Win rate (%)": "{:.1f}%",
+        "Total swap": "${:,.2f}",
+        "Biaya spread": "${:,.2f}",
+        "Biaya slippage": "${:,.2f}",
+    }
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Development Agregat 2022-2025**")
+        st.dataframe(
+            payload["development_economic"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with c2:
+        st.markdown("**Historical Confirmation 2026H1**")
+        st.dataframe(
+            payload["confirmation_economic"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    criteria = [
+        {"Kriteria": key, "Status": "LOLOS" if value else "BELUM"}
+        for key, value in decision.items()
+        if isinstance(value, bool) and key != "Lulus seluruh kriteria"
+    ]
+    st.markdown("**Audit Gerbang Keputusan**")
+    st.dataframe(pd.DataFrame(criteria), use_container_width=True, hide_index=True)
+
+    st.markdown("**Sensitivitas Delay 4-6 Menit**")
+    st.dataframe(
+        payload["delay_sensitivity"].style.format(metric_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Audit Sinyal yang Dibatalkan Sebelum Entry**")
+    st.dataframe(
+        payload["cancellation_audit"],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    c3, c4 = st.columns(2)
+    with c3:
+        st.markdown("**Audit Regime 2026H1**")
+        st.dataframe(
+            payload["regime_audit"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with c4:
+        st.markdown("**Audit BUY vs SELL 2026H1**")
+        st.dataframe(
+            payload["direction_audit"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    monte_carlo = payload["selected_monte_carlo_summary"]
+    concentration = payload["profit_concentration"].iloc[0]
+    st.info(
+        f"Monte Carlo 10.000 run: probabilitas equity akhir di bawah modal "
+        f"**{monte_carlo['Probabilitas equity akhir < modal awal (%)']:.2f}%**, "
+        f"equity P5 **USD {monte_carlo['Monte Carlo equity P5']:,.2f}**. "
+        f"Konsentrasi gross profit dua transaksi terbesar "
+        f"**{concentration['Konsentrasi top 2 (%)']:.2f}%**."
+    )
+
+    with st.expander("Detail fold, bulanan, stress, dan audit event"):
+        st.markdown("**12 Quarterly Folds 2023-2025**")
+        st.dataframe(
+            payload["folds"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Pertumbuhan Bulanan 2026H1**")
+        st.dataframe(
+            payload["monthly"].style.format(precision=3),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Stress Spread dan Slippage**")
+        st.dataframe(
+            payload["stress"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Event Fixed Delay 5 Menit**")
+        st.dataframe(
+            payload["confirmation_events"].style.format(precision=3),
+            use_container_width=True,
+        )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -3650,6 +3815,7 @@ def render_simulation(
         entry_quality_v1_tab,
         entry_quality_path_v1_tab,
         entry_timing_v1_tab,
+        fixed_delay_v1_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -3665,6 +3831,7 @@ def render_simulation(
             "v1 Entry Quality Lab v2",
             "v1 Entry Quality Path-Aware v3",
             "v1 Entry Timing Lab v1",
+            "v1 Fixed Delay 5m Robustness",
         ]
     )
     with optimizer_tab:
@@ -3708,6 +3875,10 @@ def render_simulation(
     with entry_timing_v1_tab:
         _render_v1_entry_timing_tab(
             load_precomputed_v1_entry_timing(V1_ENTRY_TIMING_VERSION)
+        )
+    with fixed_delay_v1_tab:
+        _render_v1_fixed_delay_tab(
+            load_precomputed_v1_fixed_delay(V1_FIXED_DELAY_VERSION)
         )
 
 
