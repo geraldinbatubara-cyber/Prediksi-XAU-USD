@@ -88,6 +88,8 @@ V1_ENTRY_OUTCOME_VERSION = "optimizer-v1-balanced-entry-outcome-2025-2026h1-v1"
 V1_ENTRY_OUTCOME_PATH = Path("data/precomputed/v1_entry_outcome.pkl.b64")
 V1_ENTRY_QUALITY_VERSION = "optimizer-v1-entry-quality-2024-2026h1-v2"
 V1_ENTRY_QUALITY_PATH = Path("data/precomputed/v1_entry_quality.pkl.b64")
+V1_ENTRY_QUALITY_PATH_VERSION = "optimizer-v1-entry-quality-path-aware-2022-2026h1-v3"
+V1_ENTRY_QUALITY_PATH_PATH = Path("data/precomputed/v1_entry_quality_path.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -258,6 +260,21 @@ def load_precomputed_v1_entry_quality(backtest_version: str):
     try:
         saved = pickle.loads(
             base64.b64decode(V1_ENTRY_QUALITY_PATH.read_text(encoding="ascii"))
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_entry_quality_path(backtest_version: str):
+    if not V1_ENTRY_QUALITY_PATH_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(V1_ENTRY_QUALITY_PATH_PATH.read_text(encoding="ascii"))
         )
         if saved.get("version") == backtest_version:
             return saved["payload"]
@@ -3237,6 +3254,228 @@ def _render_v1_entry_quality_tab(payload) -> None:
         )
 
 
+def _render_v1_entry_quality_path_tab(payload) -> None:
+    st.subheader("v1 Entry Quality Lab v3 - Path-Aware")
+    if payload is None:
+        st.warning("Hasil Path-Aware v3 belum tersedia pada artefak precomputed.")
+        return
+
+    methodology = payload["methodology"]
+    decision = payload["decision"]
+    confirmation = payload["confirmation_metrics"].iloc[0]
+    economic = (
+        payload["economic"]
+        .set_index("Strategi")
+        .loc["v1 Entry Quality Path-Aware"]
+    )
+
+    st.warning(
+        "**Eksperimen terisolasi:** v1 Exact Baseline, Balanced Entry, ledger, dan Live Trading "
+        "tetap terkunci. MFE/MAE v3 berhenti pada barrier pertama."
+    )
+    if decision["Lulus seluruh kriteria"]:
+        st.success("**Status: LULUS HISTORIS.** Kandidat masih wajib menjalani prospective paper shadow.")
+    else:
+        st.error(
+            "**Status: BELUM LULUS.** Gate tidak berhasil membedakan winner dan loser pada "
+            "historical confirmation 2026H1."
+        )
+    st.info(
+        f"Model: **{methodology['Selected model']}** | EV minimum: "
+        f"**USD {methodology['Selected EV minimum']:.2f}** | P(TP) minimum: "
+        f"**{methodology['Selected TP probability minimum']:.0%}** | "
+        f"Kriteria lolos: **{decision['Jumlah kriteria lolos']}/{decision['Jumlah kriteria']}**."
+    )
+    st.caption(methodology["Development"])
+    st.caption(f"Purge: {methodology['Purge']}")
+    st.caption(methodology["Caveat"])
+
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Brier improvement", f"{confirmation['Brier improvement (%)']:+.2f}%")
+    m2.metric("TP ROC-AUC", f"{confirmation['ROC-AUC']:.3f}")
+    m3.metric("Transaksi", f"{economic['Transaksi']:.0f}")
+    m4.metric("Growth", f"{economic['Growth (%)']:+.2f}%")
+    m5.metric("Profit factor", f"{economic['Profit factor']:.3f}")
+    m6.metric("Max drawdown", f"{economic['Max drawdown (%)']:.2f}%")
+
+    st.markdown("**Audit Dataset Broker M1**")
+    st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
+
+    st.markdown("**Perbandingan Model pada 12 Expanding Quarterly Folds**")
+    st.dataframe(
+        payload["model_summary"].style.format(precision=3),
+        use_container_width=True,
+        hide_index=True,
+    )
+    with st.expander("Detail setiap fold"):
+        st.dataframe(
+            payload["folds"].style.format(precision=3),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("**Pemilihan Rule OOF Development**")
+    st.dataframe(
+        payload["threshold_development"].style.format(
+            {
+                "EV minimum": "${:,.2f}",
+                "TP probability minimum": "{:.0%}",
+                "Equity akhir": "${:,.2f}",
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}",
+                "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}",
+                "Transaksi": "{:.0f}",
+                "Win rate (%)": "{:.1f}%",
+                "Retensi entry (%)": "{:.1f}%",
+                "Retensi net profit (%)": "{:.1f}%",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Historical Confirmation Probabilitas 2026H1**")
+        st.dataframe(
+            payload["confirmation_metrics"].style.format(precision=3),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with c2:
+        criteria = [
+            {"Kriteria": key, "Status": "LOLOS" if value else "BELUM"}
+            for key, value in decision.items()
+            if isinstance(value, bool) and key != "Lulus seluruh kriteria"
+        ]
+        st.markdown("**Audit Gerbang Keputusan**")
+        st.dataframe(pd.DataFrame(criteria), use_container_width=True, hide_index=True)
+
+    st.markdown("**Apakah Gate Memilih Entry yang Tepat?**")
+    st.dataframe(
+        payload["classification_audit"].style.format(
+            {
+                "Proporsi dari seluruh event (%)": "{:.1f}%",
+                "Median probability (%)": "{:.1f}%",
+                "Median MFE": "${:,.2f}",
+                "Median MAE": "${:,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Dampak Ekonomi**")
+    st.dataframe(
+        payload["economic"].style.format(
+            {
+                "Equity akhir": "${:,.2f}",
+                "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}",
+                "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}",
+                "Transaksi": "{:.0f}",
+                "Win rate (%)": "{:.1f}%",
+                "Total swap": "${:,.2f}",
+                "Biaya spread": "${:,.2f}",
+                "Biaya slippage": "${:,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        f"Retensi net profit terhadap Balanced Entry: "
+        f"{payload['profit_retention']:.1f}%."
+    )
+
+    c3, c4 = st.columns(2)
+    with c3:
+        st.markdown("**Distribusi Outcome**")
+        st.dataframe(
+            payload["outcome_distribution"].style.format({"Proporsi (%)": "{:.1f}%"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit BUY vs SELL**")
+        st.dataframe(
+            payload["direction_audit"].style.format(
+                {
+                    "TP rate (%)": "{:.1f}%",
+                    "Median MFE": "${:,.2f}",
+                    "Median MAE": "${:,.2f}",
+                    "Median jam outcome": "{:.1f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with c4:
+        st.markdown("**Path MFE/MAE sampai Barrier Pertama**")
+        st.dataframe(
+            payload["path_excursions"].style.format(
+                {
+                    "Median MFE": "${:,.2f}",
+                    "P90 MFE": "${:,.2f}",
+                    "Median MAE": "${:,.2f}",
+                    "P90 MAE": "${:,.2f}",
+                    "Median jam outcome": "{:.1f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Sesi Entry**")
+        st.dataframe(
+            payload["session_audit"].style.format(
+                {"TP rate (%)": "{:.1f}%", "Mean probability (%)": "{:.1f}%"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    monte_carlo = payload["selected_monte_carlo_summary"]
+    st.markdown("**Monte Carlo dan Stress Eksekusi**")
+    st.info(
+        f"Probabilitas equity akhir di bawah modal: "
+        f"**{monte_carlo['Probabilitas equity akhir < modal awal (%)']:.2f}%** | "
+        f"Equity P5: **USD {monte_carlo['Monte Carlo equity P5']:,.2f}** | "
+        f"Median: **USD {monte_carlo['Monte Carlo equity median']:,.2f}**."
+    )
+    with st.expander("Stress spread, slippage, dan delay entry"):
+        st.markdown("**Spread dan Slippage**")
+        st.dataframe(
+            payload["stress"].style.format(precision=3),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Delay Entry M1**")
+        st.dataframe(
+            payload["delay_stress"].style.format(precision=3),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with st.expander("Audit event historical confirmation"):
+        st.dataframe(
+            payload["confirmation_events"].style.format(
+                {
+                    "probability": "{:.1%}",
+                    "expected_value": "${:,.2f}",
+                    "mfe_usd": "${:,.2f}",
+                    "mae_usd": "${:,.2f}",
+                    "hours_to_outcome": "{:.1f}",
+                },
+                na_rep="-",
+            ),
+            use_container_width=True,
+        )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -3266,6 +3505,7 @@ def render_simulation(
         regime_classifier_v1_tab,
         entry_outcome_v1_tab,
         entry_quality_v1_tab,
+        entry_quality_path_v1_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -3279,6 +3519,7 @@ def render_simulation(
             "v1 Regime Classifier v2",
             "v1 Entry Outcome Lab",
             "v1 Entry Quality Lab v2",
+            "v1 Entry Quality Path-Aware v3",
         ]
     )
     with optimizer_tab:
@@ -3314,6 +3555,10 @@ def render_simulation(
     with entry_quality_v1_tab:
         _render_v1_entry_quality_tab(
             load_precomputed_v1_entry_quality(V1_ENTRY_QUALITY_VERSION)
+        )
+    with entry_quality_path_v1_tab:
+        _render_v1_entry_quality_path_tab(
+            load_precomputed_v1_entry_quality_path(V1_ENTRY_QUALITY_PATH_VERSION)
         )
 
 
