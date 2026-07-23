@@ -296,7 +296,12 @@ def _candidate_configs() -> list[SignalQualityConfig]:
     ]
 
 
-def _entry_features(data: pd.DataFrame) -> pd.DataFrame:
+def _entry_features(
+    data: pd.DataFrame,
+    *,
+    h1_fast_span: int = 10,
+    h1_slow_span: int = 30,
+) -> pd.DataFrame:
     features = pd.DataFrame(index=data.index)
     features["price"] = data["Close"].shift(1)
     features["spread_points"] = data["SpreadPoints"].shift(1)
@@ -309,8 +314,8 @@ def _entry_features(data: pd.DataFrame) -> pd.DataFrame:
 
     h1 = _completed_bars(data, "1h")
     h1_features = pd.DataFrame(index=h1.index)
-    h1_features["h1_fast"] = h1["Close"].ewm(span=10, adjust=False).mean()
-    h1_features["h1_slow"] = h1["Close"].ewm(span=30, adjust=False).mean()
+    h1_features["h1_fast"] = h1["Close"].ewm(span=h1_fast_span, adjust=False).mean()
+    h1_features["h1_slow"] = h1["Close"].ewm(span=h1_slow_span, adjust=False).mean()
     h1_features["h1_momentum"] = h1["Close"].pct_change(6) * 100
     h1_true_range = pd.concat(
         [

@@ -78,6 +78,8 @@ V1_RISK_CONTROL_VERSION = "optimizer-v1-risk-control-lab-2025-2026h1-v1"
 V1_RISK_CONTROL_PATH = Path("data/precomputed/v1_risk_control.pkl")
 V1_SIGNAL_QUALITY_VERSION = "optimizer-v1-balanced-entry-2025-2026h1-v3"
 V1_SIGNAL_QUALITY_PATH = Path("data/precomputed/v1_signal_quality.pkl.b64")
+V1_BALANCED_ROBUSTNESS_VERSION = "optimizer-v1-balanced-entry-robustness-2025-2026h1-v1"
+V1_BALANCED_ROBUSTNESS_PATH = Path("data/precomputed/v1_balanced_robustness.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -174,6 +176,21 @@ def load_precomputed_v1_signal_quality(backtest_version: str):
         return None
     try:
         saved = pickle.loads(base64.b64decode(V1_SIGNAL_QUALITY_PATH.read_text(encoding="ascii")))
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_balanced_robustness(backtest_version: str):
+    if not V1_BALANCED_ROBUSTNESS_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(V1_BALANCED_ROBUSTNESS_PATH.read_text(encoding="ascii"))
+        )
         if saved.get("version") == backtest_version:
             return saved["payload"]
     except Exception:
@@ -2362,6 +2379,162 @@ def _render_v1_signal_quality_tab(payload) -> None:
     )
 
 
+def _render_v1_balanced_robustness_tab(payload) -> None:
+    st.subheader("v1 Balanced Entry Robustness Lab")
+    if payload is None:
+        st.warning("Hasil Balanced Entry Robustness belum tersedia pada artefak precomputed.")
+        return
+
+    methodology = payload["methodology"]
+    criteria = payload["criteria"]
+    stability = payload["stability"]
+    validation = payload["validation"]
+    center_result = payload["center_result"]
+    center_summary = center_result.summary
+    center_mc = payload["center_monte_carlo_summary"]
+
+    st.warning(
+        "**Baseline dan observasi terkunci:** lab ini tidak mengubah v1 Exact Baseline, ledger, atau paper live. "
+        "Hasilnya hanya mengukur sensitivitas kandidat Balanced Entry."
+    )
+    if stability["Robustness status"] == "LULUS":
+        st.success(
+            "**Status lingkungan parameter: LULUS.** Mayoritas konfigurasi tetangga mempertahankan kualitas inti. "
+            "Status ini tetap bukan izin real-money; forward paper shadow masih wajib."
+        )
+    else:
+        st.error(
+            "**Status lingkungan parameter: BELUM LULUS.** Konfigurasi pusat terlihat baik, tetapi keunggulannya "
+            "belum cukup merata ketika parameter digeser."
+        )
+    st.info(
+        f"Pusat: **{methodology['Center']}**. Lingkungan: **{methodology['Neighborhood']}**. "
+        f"Tujuan: {methodology['Purpose']}."
+    )
+    st.caption(methodology["Caveat"])
+
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Tetangga growth positif", f"{stability['Growth positif (%)']:.1f}%", "Target 70%")
+    s2.metric("Tetangga DD <= 10%", f"{stability['Drawdown <= 10% (%)']:.1f}%", "Target 60%")
+    s3.metric("Tetangga PF >= 1.30", f"{stability['Profit factor >= 1.30 (%)']:.1f}%", "Target 60%")
+    s4.metric("Lolos tiga kriteria", f"{stability['Lolos tiga kriteria (%)']:.1f}%", "Target 50%")
+
+    stability_rows = [
+        ("Growth positif", criteria["Proporsi growth positif minimum (%)"], stability["Growth positif (%)"]),
+        ("Drawdown <= 10%", criteria["Proporsi drawdown <= 10% minimum (%)"], stability["Drawdown <= 10% (%)"]),
+        ("Profit factor >= 1.30", criteria["Proporsi profit factor >= 1.30 minimum (%)"], stability["Profit factor >= 1.30 (%)"]),
+        ("Tiga kriteria sekaligus", criteria["Proporsi tiga kriteria minimum (%)"], stability["Lolos tiga kriteria (%)"]),
+    ]
+    st.markdown("**Audit Kelulusan Lingkungan Parameter**")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Kriteria": label,
+                    "Target": f">= {target:.0f}%",
+                    "Hasil": f"{actual:.1f}%",
+                    "Status": "LOLOS" if actual >= target else "BELUM",
+                }
+                for label, target, actual in stability_rows
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Konfigurasi Pusat Balanced Entry**")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Growth", f"{center_summary['Growth total']:+.2f}%")
+    c2.metric("Max drawdown", f"{center_summary['Max drawdown'] / center_summary['Modal awal'] * 100:.2f}%")
+    c3.metric("Profit factor", f"{center_summary['Profit factor']:.3f}")
+    c4.metric("Transaksi", f"{center_summary['Jumlah transaksi']:.0f}")
+    c5.metric("Risiko MC rugi", f"{center_mc['Probabilitas equity akhir < modal awal (%)']:.2f}%")
+
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=validation["Max drawdown (%)"],
+            y=validation["Growth (%)"],
+            mode="markers",
+            text=validation["Konfigurasi"],
+            marker={
+                "size": 10,
+                "color": validation["Profit factor"],
+                "colorscale": "Viridis",
+                "showscale": True,
+                "colorbar": {"title": "Profit factor"},
+            },
+            hovertemplate="%{text}<br>Growth %{y:.2f}%<br>DD %{x:.2f}%<extra></extra>",
+        )
+    )
+    center = validation[validation["Konfigurasi pusat"]]
+    figure.add_trace(
+        go.Scatter(
+            x=center["Max drawdown (%)"],
+            y=center["Growth (%)"],
+            mode="markers",
+            name="Konfigurasi pusat",
+            marker={"size": 16, "symbol": "star", "color": "#f59e0b"},
+        )
+    )
+    figure.add_vline(x=10, line_dash="dash", line_color="#dc2626")
+    figure.add_hline(y=0, line_dash="dash", line_color="#dc2626")
+    figure.update_layout(
+        title="Peta Sensitivitas 27 Konfigurasi - Validation 2026H1",
+        xaxis_title="Max drawdown (%)",
+        yaxis_title="Growth (%)",
+        height=430,
+    )
+    st.plotly_chart(figure, use_container_width=True)
+
+    st.markdown("**Kinerja Berdasarkan Arah**")
+    st.dataframe(
+        payload["direction_summary"].style.format(
+            {"Net P/L": "${:,.2f}", "Win rate (%)": "{:.1f}%", "Profit factor": "{:.3f}", "Rata-rata P/L": "${:,.2f}"},
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Kinerja Berdasarkan Regime Pasar**")
+    st.dataframe(
+        payload["regime_summary"].style.format(
+            {"Net P/L": "${:,.2f}", "Win rate (%)": "{:.1f}%", "Profit factor": "{:.3f}", "Rata-rata P/L": "${:,.2f}"},
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Stress Spread dan Slippage - Konfigurasi Pusat**")
+    st.dataframe(
+        payload["center_stress"].style.format(
+            {
+                "Spread multiplier": "{:.1f}x", "Slippage points/sisi": "{:.0f}",
+                "Equity akhir": "${:,.2f}", "Growth (%)": "{:+.2f}%",
+                "Max drawdown": "${:,.2f}", "Max drawdown (%)": "{:.2f}%",
+                "Profit factor": "{:.3f}", "Transaksi": "{:.0f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    with st.expander("Seluruh 27 konfigurasi validation"):
+        columns = [
+            "Konfigurasi", "Konfigurasi pusat", "Growth (%)", "Max drawdown (%)", "Profit factor",
+            "Transaksi", "Retensi entry (%)", "Growth positif", "Drawdown <= 10%",
+            "Profit factor >= 1.30", "Lolos tiga kriteria",
+        ]
+        st.dataframe(
+            validation[columns].sort_values(["Lolos tiga kriteria", "Growth (%)"], ascending=[False, False]).style.format(
+                {"Growth (%)": "{:+.2f}%", "Max drawdown (%)": "{:.2f}%", "Profit factor": "{:.3f}", "Transaksi": "{:.0f}", "Retensi entry (%)": "{:.1f}%"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -2386,6 +2559,7 @@ def render_simulation(
         robustness_v1_tab,
         risk_control_v1_tab,
         signal_quality_v1_tab,
+        balanced_robustness_v1_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -2394,6 +2568,7 @@ def render_simulation(
             "Optimizer v1 Robustness Test",
             "v1 Risk-Control Lab",
             "v1 Balanced Entry",
+            "v1 Balanced Robustness",
         ]
     )
     with optimizer_tab:
@@ -2410,6 +2585,10 @@ def render_simulation(
         _render_v1_risk_control_tab(load_precomputed_v1_risk_control(V1_RISK_CONTROL_VERSION))
     with signal_quality_v1_tab:
         _render_v1_signal_quality_tab(load_precomputed_v1_signal_quality(V1_SIGNAL_QUALITY_VERSION))
+    with balanced_robustness_v1_tab:
+        _render_v1_balanced_robustness_tab(
+            load_precomputed_v1_balanced_robustness(V1_BALANCED_ROBUSTNESS_VERSION)
+        )
 
 
 def _render_m1_backtest_tab(m1_payload, *, payload_offset: int, title: str) -> None:
