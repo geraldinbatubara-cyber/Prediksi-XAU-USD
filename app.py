@@ -30,8 +30,11 @@ from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
 from gold_forecast import live_trading as live_trading_module
 from gold_forecast.live_trading import (
     LIVE_INITIAL_EQUITY,
+    LIVE_FIXED_DELAY_START,
     LIVE_START_DATE,
+    LIVE_MANUAL_EXIT_FIXED_DELAY_PATH,
     LIVE_MANUAL_EXIT_PATH,
+    LIVE_TRADING_FIXED_DELAY_PATH,
     LIVE_TRADING_PATH,
     LIVE_TRADING_V10_PATH,
     LIVE_V10_START_DATE,
@@ -921,6 +924,18 @@ def _format_date(value) -> str:
         return "-"
     try:
         return pd.Timestamp(value).strftime("%d %b %Y")
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_utc_timestamp_wit(value) -> str:
+    if pd.isna(value):
+        return "-"
+    try:
+        timestamp = pd.Timestamp(value)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        return timestamp.tz_convert(WIT).strftime("%d %b %Y %H:%M:%S WIT")
     except (TypeError, ValueError):
         return str(value)
 
@@ -4911,6 +4926,8 @@ def render_live_trading(
     key_prefix: str = "v1",
     strategy_note: str | None = None,
     broker_quote: pd.Series | None = None,
+    entry_strategy: str = "baseline",
+    broker_bars: pd.DataFrame | None = None,
 ) -> None:
     if optimization_leaderboard.empty:
         st.warning(
@@ -4925,12 +4942,15 @@ def render_live_trading(
         path=live_path,
         start_date=start_date,
         broker_quote=broker_quote,
+        entry_strategy=entry_strategy,
+        broker_bars=broker_bars,
     )
     summary = live["summary"]
     params = live["params"]
     signal = live["signal"]
     waiting_state = live["waiting_state"]
     trigger_state = live["trigger_state"]
+    fixed_delay_state = live.get("fixed_delay_state")
     signals = live["signals"].copy()
     open_positions = live["open_positions"].copy()
     closed_positions = live["closed_positions"].copy()
@@ -5068,6 +5088,53 @@ def render_live_trading(
         "Posisi baru dibuka hanya ketika arah sinyal melewati threshold, sesi trading aktif, slot posisi tersedia, "
         "dan kombinasi tanggal sinyal + arah belum pernah dicatat di ledger."
     )
+
+    if entry_strategy == "fixed_delay_5m" and fixed_delay_state is not None:
+        st.markdown("**Status Validasi Fixed Delay 5 Menit**")
+        delay_status = str(fixed_delay_state.get("Status", "MENUNGGU"))
+        delay_detail = str(fixed_delay_state.get("Detail", "-"))
+        if delay_status == "ENTRY":
+            st.success(f"**{delay_status}** | {delay_detail}")
+        elif delay_status.startswith("BATAL"):
+            st.error(f"**{delay_status}** | {delay_detail}")
+        else:
+            st.info(f"**{delay_status}** | {delay_detail}")
+        delay_frame = pd.DataFrame(
+            [
+                {
+                    "Parameter": "Waktu sinyal Balanced Entry",
+                    "Nilai": _format_utc_timestamp_wit(fixed_delay_state.get("Waktu sinyal awal")),
+                },
+                {
+                    "Parameter": "Waktu konfirmasi 5 menit",
+                    "Nilai": _format_utc_timestamp_wit(fixed_delay_state.get("Waktu konfirmasi")),
+                },
+                {
+                    "Parameter": "Spread saat konfirmasi",
+                    "Nilai": (
+                        "-"
+                        if pd.isna(fixed_delay_state.get("Spread points"))
+                        else f"{float(fixed_delay_state['Spread points']):.1f} points"
+                    ),
+                },
+                {
+                    "Parameter": "Barrier TP/SL tersentuh saat menunggu",
+                    "Nilai": "Ya" if fixed_delay_state.get("Barrier tersentuh") else "Tidak",
+                },
+                {
+                    "Parameter": "Adverse / favorable selama delay",
+                    "Nilai": (
+                        "-"
+                        if pd.isna(fixed_delay_state.get("Observed adverse USD"))
+                        else (
+                            f"USD {float(fixed_delay_state['Observed adverse USD']):.2f} / "
+                            f"USD {float(fixed_delay_state.get('Observed favorable USD', 0.0)):.2f}"
+                        )
+                    ),
+                },
+            ]
+        )
+        st.dataframe(delay_frame, use_container_width=True, hide_index=True)
 
     st.markdown("**Sinyal Resmi v1 - Candle Harian Selesai**")
     official_date = waiting_state.get("Tanggal evaluasi")
@@ -5535,17 +5602,24 @@ def get_supabase_terminal_status(base_url: str, read_key: str, symbol: str) -> d
     return load_supabase_terminal_status(base_url, read_key, symbol=symbol)
 
 
-def _latest_broker_quote() -> tuple[pd.Series | None, str | None]:
+def _latest_broker_snapshot() -> tuple[pd.DataFrame, pd.Series | None, str | None]:
     supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
     if supabase_url and supabase_read_key:
         try:
-            _, quotes = get_supabase_broker_feed(supabase_url, supabase_read_key, supabase_symbol)
-            return (quotes.iloc[-1] if not quotes.empty else None), None
+            bars, quotes = get_supabase_broker_feed(supabase_url, supabase_read_key, supabase_symbol)
+            return bars, (quotes.iloc[-1] if not quotes.empty else None), None
         except Exception as exc:
+            bars = load_broker_bars(BROKER_BARS_PATH)
             fallback = load_broker_quote(BROKER_QUOTE_PATH)
-            return (fallback.iloc[-1] if not fallback.empty else None), str(exc)
+            return bars, (fallback.iloc[-1] if not fallback.empty else None), str(exc)
+    bars = load_broker_bars(BROKER_BARS_PATH)
     quotes = load_broker_quote(BROKER_QUOTE_PATH)
-    return (quotes.iloc[-1] if not quotes.empty else None), None
+    return bars, (quotes.iloc[-1] if not quotes.empty else None), None
+
+
+def _latest_broker_quote() -> tuple[pd.Series | None, str | None]:
+    _, quote, error = _latest_broker_snapshot()
+    return quote, error
 
 
 def _render_real_trading_readiness(terminal_status: dict[str, object], audit: dict[str, object]) -> None:
@@ -5967,7 +6041,7 @@ elif page == "Live Trading":
         st.error(f"Data OHLC belum dapat diproses: {exc}")
         st.stop()
 
-    broker_quote, broker_feed_error = _latest_broker_quote()
+    broker_bars, broker_quote, broker_feed_error = _latest_broker_snapshot()
     if broker_feed_error:
         st.warning(f"Feed Supabase gagal dibaca; mencoba quote lokal. Detail: {broker_feed_error}")
 
@@ -5998,28 +6072,49 @@ elif page == "Live Trading":
         )
 
     st.info(
-        "Optimizer v1 adalah satu-satunya baseline paper trading aktif. Strategi v10 telah diarsipkan dan tidak dapat "
-        "membuka posisi baru."
+        "Dua strategi paper trading berjalan paralel dengan ledger terpisah: **Baseline v1** dan "
+        "**Fixed Delay 5m**. Strategi v10 tetap diarsipkan dan tidak dapat membuka posisi baru."
     )
     st.warning(
         "Status v1: **KANDIDAT PAPER TRADING, BELUM LAYAK REAL-MONEY**. Exact OOS masih positif, tetapi robustness "
         "belum memenuhi target profit factor 1,30 dan drawdown maksimum 10%."
     )
     optimization_v1_live_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
-    render_live_trading(
-        gold_ohlc,
-        optimization_v1_live_leaderboard,
-        title="Optimizer v1",
-        start_date=LIVE_START_DATE,
-        live_path=LIVE_TRADING_PATH,
-        manual_path=LIVE_MANUAL_EXIT_PATH,
-        key_prefix="v1",
-        strategy_note=(
-            "Entry mengikuti sinyal Optimizer v1, boleh menambah posisi dari sinyal hari berbeda sampai batas "
-            "maksimal 8 BUY dan 10 SELL. Strategi ini masih paper trading."
-        ),
-        broker_quote=broker_quote,
-    )
+    baseline_live_tab, fixed_delay_live_tab = st.tabs(["Baseline v1", "Fixed Delay 5m"])
+    with baseline_live_tab:
+        render_live_trading(
+            gold_ohlc,
+            optimization_v1_live_leaderboard,
+            title="Optimizer v1",
+            start_date=LIVE_START_DATE,
+            live_path=LIVE_TRADING_PATH,
+            manual_path=LIVE_MANUAL_EXIT_PATH,
+            key_prefix="v1",
+            strategy_note=(
+                "Entry mengikuti sinyal Optimizer v1, boleh menambah posisi dari sinyal hari berbeda sampai batas "
+                "maksimal 8 BUY dan 10 SELL. Strategi ini masih paper trading."
+            ),
+            broker_quote=broker_quote,
+        )
+    with fixed_delay_live_tab:
+        render_live_trading(
+            gold_ohlc,
+            optimization_v1_live_leaderboard,
+            title="Fixed Delay 5m",
+            start_date=LIVE_FIXED_DELAY_START,
+            live_path=LIVE_TRADING_FIXED_DELAY_PATH,
+            manual_path=LIVE_MANUAL_EXIT_FIXED_DELAY_PATH,
+            key_prefix="fixed_delay_5m",
+            strategy_note=(
+                "Sinyal harian v1 terlebih dahulu melewati filter Balanced Entry: conviction 1,05x, "
+                "alignment tren H1, dan jendela validasi maksimum 2 jam. Setelah lolos, entry ditunda tepat "
+                "5 menit dan dibatalkan jika TP/SL awal sudah tersentuh atau spread MT5 melebihi 20 points. "
+                "Kontrak paper: lot 0.01, TP USD 25, SL USD 10, dan maksimum 1 posisi terbuka."
+            ),
+            broker_quote=broker_quote,
+            entry_strategy="fixed_delay_5m",
+            broker_bars=broker_bars,
+        )
 
     archived_v10_ledger = load_live_ledger(LIVE_TRADING_V10_PATH)
     archived_open = archived_v10_ledger[archived_v10_ledger["status"].eq("OPEN")]
