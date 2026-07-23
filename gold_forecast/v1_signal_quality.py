@@ -88,17 +88,17 @@ def run_v1_signal_quality_lab(
     development_table["Pre-score"] = development_table.apply(
         lambda row: _development_score(row, baseline_development.summary), axis=1
     )
-    adaptive = development_table[development_table["Kelompok"].eq("Adaptive v2")]
-    eligible = adaptive[adaptive["Development eligible"]]
+    balanced = development_table[development_table["Kelompok"].eq("Balanced v3")]
+    eligible = balanced[balanced["Development eligible"]]
     selection_fallback = eligible.empty
-    finalist_pool = eligible if not eligible.empty else adaptive
+    finalist_pool = eligible if not eligible.empty else balanced
     finalist_names = (
         finalist_pool
         .sort_values(
             ["Pre-score", "Kuartal positif", "Profit factor", "Max drawdown (%)"],
             ascending=[False, False, False, True],
         )
-        .head(3)["Kandidat"]
+        .head(5)["Kandidat"]
         .tolist()
     )
     config_by_name = {config.name: config for config in candidates}
@@ -192,10 +192,13 @@ def run_v1_signal_quality_lab(
             "Finalists": finalist_names,
             "Reference": reference_names,
             "Selection rule": (
-                "Retensi development 65-90%, minimal 3/4 kuartal positif, growth positif, "
+                "Retensi development 40-75%, minimal 3/4 kuartal positif, growth positif, "
                 "profit factor >= 1.25, dan drawdown <= 15%"
             ),
-            "Validation status": "Secondary validation; 2026H1 sudah pernah diamati pada eksperimen sebelumnya",
+            "Validation status": (
+                "Secondary validation; 2026H1 sudah pernah diamati pada eksperimen sebelumnya. "
+                "Pemenang wajib menjalani forward paper shadow dan tidak menggantikan baseline terkunci."
+            ),
             "Selection fallback": selection_fallback,
         },
         "criteria": {
@@ -236,66 +239,59 @@ def _candidate_configs() -> list[SignalQualityConfig]:
             require_h1_trend=True,
         ),
         SignalQualityConfig(
-            "AC-A 2of3 Immediate",
-            "Adaptive v2",
-            conviction_multiplier=1.05,
+            "BE-A 2of3 Immediate",
+            "Balanced v3",
+            conviction_multiplier=1.0,
             minimum_confirmations=2,
         ),
         SignalQualityConfig(
-            "AC-B 2of3 Wait-2h",
-            "Adaptive v2",
+            "BE-B M15 Trend Wait-2h",
+            "Balanced v3",
             conviction_multiplier=1.05,
-            minimum_confirmations=2,
+            require_m15_trend=True,
             wait_hours=2,
         ),
         SignalQualityConfig(
-            "AC-C 2of3 Wait-3h",
-            "Adaptive v2",
-            conviction_multiplier=1.05,
+            "BE-C 2of3 ATR Guard",
+            "Balanced v3",
+            conviction_multiplier=1.0,
             minimum_confirmations=2,
-            wait_hours=3,
+            max_stretch_atr=2.0,
         ),
         SignalQualityConfig(
-            "AC-D 2of3 Wait-4h",
-            "Adaptive v2",
-            conviction_multiplier=1.05,
-            minimum_confirmations=2,
-            wait_hours=4,
-        ),
-        SignalQualityConfig(
-            "AC-E H1 Anchor Wait-3h",
-            "Adaptive v2",
-            conviction_multiplier=1.05,
+            "BE-D H1 Anchor Wait-1h",
+            "Balanced v3",
+            conviction_multiplier=1.0,
             minimum_confirmations=2,
             require_h1_primary=True,
-            wait_hours=3,
+            wait_hours=1,
         ),
         SignalQualityConfig(
-            "AC-F H1 Anchor Wait-4h",
-            "Adaptive v2",
+            "BE-E H1 Trend Wait-2h",
+            "Balanced v3",
             conviction_multiplier=1.05,
-            minimum_confirmations=2,
-            require_h1_primary=True,
-            wait_hours=4,
+            require_h1_trend=True,
+            wait_hours=2,
         ),
         SignalQualityConfig(
-            "AC-G 2of3 Cost-Aware Wait-4h",
-            "Adaptive v2",
+            "BE-F 2of3 Wait-1h",
+            "Balanced v3",
             conviction_multiplier=1.05,
             minimum_confirmations=2,
-            max_stretch_atr=1.5,
+            wait_hours=1,
+        ),
+        SignalQualityConfig(
+            "BE-G H1 Trend Immediate",
+            "Balanced v3",
+            conviction_multiplier=1.05,
+            require_h1_trend=True,
+        ),
+        SignalQualityConfig(
+            "BE-H H1 Spread Guard",
+            "Balanced v3",
+            conviction_multiplier=1.05,
+            require_h1_trend=True,
             spread_quantile=0.90,
-            wait_hours=4,
-        ),
-        SignalQualityConfig(
-            "AC-H H1 Cost-Aware Wait-4h",
-            "Adaptive v2",
-            conviction_multiplier=1.05,
-            minimum_confirmations=2,
-            require_h1_primary=True,
-            max_stretch_atr=1.5,
-            spread_quantile=0.90,
-            wait_hours=4,
         ),
     ]
 
@@ -461,7 +457,7 @@ def _summary_row(
     )
     development_eligible = bool(
         period == "Development 2025"
-        and 65 <= retention <= 90
+        and 40 <= retention <= 75
         and positive_quarters >= 3
         and metrics["Growth (%)"] > 0
         and metrics["Profit factor"] >= 1.25
@@ -522,7 +518,7 @@ def _decision_table(
     monthly: dict[str, pd.DataFrame],
 ) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
-    for _, candidate in validation[validation["Kelompok"].eq("Adaptive v2")].iterrows():
+    for _, candidate in validation[validation["Kelompok"].eq("Balanced v3")].iterrows():
         name = str(candidate["Kandidat"])
         candidate_stress = stress[stress["Kandidat"].eq(name)]
         mc = monte_carlo[monte_carlo["Kandidat"].eq(name)].iloc[0]
