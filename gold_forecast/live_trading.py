@@ -890,6 +890,22 @@ def run_live_trading_update(
         can_trade = False
         session_note = f"Paper live trading strategi ini baru dimulai {start_date.strftime('%d %b %Y')}."
 
+    daily_data_date = usable_gold.index.max().normalize() if not usable_gold.empty else pd.NaT
+    expected_anchor = cutoff_date if now_wit.hour >= 7 else cutoff_date - pd.Timedelta(days=1)
+    expected_daily_date = (expected_anchor - pd.offsets.BDay(1)).normalize()
+    daily_data_stale = pd.isna(daily_data_date) or daily_data_date < expected_daily_date
+    if daily_data_stale:
+        can_trade = False
+        available_label = (
+            "tidak tersedia"
+            if pd.isna(daily_data_date)
+            else pd.Timestamp(daily_data_date).strftime("%d %b %Y")
+        )
+        session_note = (
+            f"Data harian GC=F stale ({available_label}); entry baru ditahan sampai candle "
+            f"{expected_daily_date.strftime('%d %b %Y')} tersedia."
+        )
+
     quote_state = _broker_quote_state(broker_quote, now_wit)
     if quote_state["configured"] and not quote_state["fresh"]:
         can_trade = False
@@ -975,6 +991,9 @@ def run_live_trading_update(
         "Broker quote fresh": quote_state["fresh"],
         "Broker quote age minutes": quote_state["age_minutes"],
         "Latest data date": quote_state["timestamp"] if quote_state["configured"] else (usable_gold.index.max() if not usable_gold.empty else pd.NaT),
+        "Daily data date": daily_data_date,
+        "Expected daily data date": expected_daily_date,
+        "Daily data stale": daily_data_stale,
         "Can trade": entry_allowed,
         "Session note": archive_note,
         "Now WIT": now_wit,

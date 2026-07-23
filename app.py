@@ -21,7 +21,7 @@ from gold_forecast.broker_data import (
     load_broker_bars,
     load_broker_quote,
 )
-from gold_forecast.data import load_gold_data, load_market_data
+from gold_forecast.data import load_gold_data, load_market_data, refresh_market_cache
 from gold_forecast.dashboard_snapshot import (
     DASHBOARD_SNAPSHOT_VERSION,
     load_dashboard_snapshot,
@@ -4626,6 +4626,20 @@ def render_live_trading(
     p3.metric("Closed net P/L", f"${summary['Closed net P/L']:+,.2f}")
     p4.metric("Swap posisi terbuka", f"${summary['Open swap']:+,.2f}")
 
+    daily_date = summary.get("Daily data date")
+    expected_daily_date = summary.get("Expected daily data date")
+    if summary.get("Daily data stale"):
+        st.error(
+            "**DATA HARIAN GC=F STALE.** Candle terakhir "
+            f"**{pd.Timestamp(daily_date).strftime('%d %b %Y')}**, sedangkan data selesai yang "
+            f"diharapkan minimal **{pd.Timestamp(expected_daily_date).strftime('%d %b %Y')}**. "
+            "Entry baru ditahan; pemantauan exit dari quote MT5 tetap berjalan."
+        )
+    elif pd.notna(daily_date):
+        st.success(
+            f"Data harian GC=F aktif sampai **{pd.Timestamp(daily_date).strftime('%d %b %Y')}**."
+        )
+
     with st.expander("Dokumentasi Strategi Live Trading"):
         st.write(strategy_note)
         strategy_frame = _build_live_strategy_frame(params, optimization_leaderboard, title)
@@ -5486,14 +5500,39 @@ with st.sidebar:
                 f"Auto refresh aktif tiap {refresh_interval_seconds // 60} menit. "
                 f"Refresh ke-{refresh_count} | {pd.Timestamp.now(tz=WIT).strftime('%H:%M:%S WIT')}"
             )
-    if st.button("Refresh data sekarang", use_container_width=True):
+    refresh_notice = st.session_state.pop("data_refresh_notice", None)
+    if refresh_notice:
+        notice_type, notice_text = refresh_notice
+        getattr(st, notice_type)(notice_text)
+
+    if st.button("Perbarui Data Harian GC=F", use_container_width=True):
+        try:
+            with st.spinner("Mengambil candle harian terbaru dari Yahoo Finance..."):
+                refreshed_gold, _ = refresh_market_cache(incremental_period="14d")
+            latest_daily = pd.Timestamp(refreshed_gold.index.max()).strftime("%d %b %Y")
+            st.session_state["data_refresh_notice"] = (
+                "success",
+                f"Data harian GC=F diperbarui. Candle terakhir: {latest_daily}.",
+            )
+        except Exception as exc:
+            st.session_state["data_refresh_notice"] = (
+                "error",
+                f"Pembaruan GC=F gagal: {exc}",
+            )
         get_data.clear()
         get_gold_ohlc.clear()
         get_dashboard_snapshot.clear()
-        get_supabase_broker_feed.clear()
-        get_supabase_terminal_status.clear()
         get_base_optimizer.clear()
         get_simulations.clear()
+        st.rerun()
+
+    if st.button("Muat Ulang Feed MT5 M1", use_container_width=True):
+        get_supabase_broker_feed.clear()
+        get_supabase_terminal_status.clear()
+        st.session_state["data_refresh_notice"] = (
+            "success",
+            "Feed MT5 dimuat ulang dari Supabase. Tombol ini tidak menyalakan terminal atau bridge di laptop.",
+        )
         st.rerun()
     page = st.radio(
         "Halaman",
