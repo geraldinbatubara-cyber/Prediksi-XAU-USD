@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 2.1 seconds
-Output:
 from __future__ import annotations
 
 import base64
@@ -56,4 +53,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
