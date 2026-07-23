@@ -273,7 +273,6 @@ def load_precomputed_v1_entry_quality(backtest_version: str):
         return None
     return None
 
-
 @st.cache_resource
 def load_precomputed_v1_entry_quality_path(backtest_version: str):
     if not V1_ENTRY_QUALITY_PATH_PATH.exists():
@@ -287,7 +286,6 @@ def load_precomputed_v1_entry_quality_path(backtest_version: str):
     except Exception:
         return None
     return None
-
 
 @st.cache_resource
 def load_precomputed_v1_entry_timing(backtest_version: str):
@@ -3304,7 +3302,6 @@ def _render_v1_entry_quality_tab(payload) -> None:
             use_container_width=True,
         )
 
-
 def _render_v1_entry_quality_path_tab(payload) -> None:
     st.subheader("v1 Entry Quality Lab v3 - Path-Aware")
     if payload is None:
@@ -3525,7 +3522,6 @@ def _render_v1_entry_quality_path_tab(payload) -> None:
             ),
             use_container_width=True,
         )
-
 
 def _render_v1_entry_timing_tab(payload) -> None:
     st.subheader("v1 Entry Timing Lab v1 - Micro Confirmation")
