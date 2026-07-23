@@ -964,6 +964,12 @@ def _fixed_delay_live_signal(
         activation_utc.normalize(),
         now_utc,
     )
+    if raw.empty:
+        return None, {
+            **empty_state,
+            "Status": "MENUNGGU SINYAL HARIAN",
+            "Detail": "Belum ada sinyal v1 baru setelah aktivasi Fixed Delay.",
+        }
     raw = raw.loc[raw.index >= activation_utc]
     if raw.empty:
         return None, {
