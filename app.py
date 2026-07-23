@@ -2800,7 +2800,7 @@ def _render_v1_regime_classifier_tab(payload) -> None:
     criteria = [
         {"Kriteria": key, "Status": "LOLOS" if value else "BELUM"}
         for key, value in decision.items()
-        if isinstance(value, (bool, np.bool_)) and key != "Lulus seluruh kriteria"
+        if isinstance(value, bool) and key != "Lulus seluruh kriteria"
     ]
     st.markdown("**Audit Gerbang Keputusan**")
     st.dataframe(pd.DataFrame(criteria), use_container_width=True, hide_index=True)
