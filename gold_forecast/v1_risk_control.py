@@ -66,6 +66,7 @@ class RiskPosition:
     expected_change_pct: float
     take_profit_usd: float
     stop_loss_usd: float
+    strategy: str
     entry_spread_cost: float
     time_exit_at: pd.Timestamp | None
     peak_profit_usd: float = 0.0
@@ -531,10 +532,18 @@ def _simulate_risk_control(
         if signal is not None:
             expected = float(signal["expected_change_pct"])
             direction = "BUY" if expected >= threshold else "SELL" if expected <= -threshold else None
+            raw_take_profit = signal.get("tp_usd", take_profit)
+            raw_stop_loss = signal.get("sl_usd", stop_loss)
+            signal_take_profit = (
+                float(raw_take_profit) if pd.notna(raw_take_profit) else take_profit
+            )
+            signal_stop_loss = (
+                float(raw_stop_loss) if pd.notna(raw_stop_loss) else stop_loss
+            )
             reason = _entry_block_reason(
                 direction,
                 positions,
-                stop_loss,
+                signal_stop_loss,
                 equity,
                 trading_day,
                 cooldown_until,
@@ -558,11 +567,16 @@ def _simulate_risk_control(
                 else:
                     entry_price = bid_close - POINT_SIZE * slippage_points
                     entry_spread_cost = 0.0
-                time_exit_at = (
-                    trading_day + pd.offsets.BDay(config.time_stop_days)
-                    if config.time_stop_days is not None
-                    else None
-                )
+                if pd.notna(signal.get("time_stop_hours", np.nan)):
+                    time_exit_at = timestamp + pd.Timedelta(
+                        hours=float(signal["time_stop_hours"])
+                    )
+                else:
+                    time_exit_at = (
+                        trading_day + pd.offsets.BDay(config.time_stop_days)
+                        if config.time_stop_days is not None
+                        else None
+                    )
                 positions.append(
                     RiskPosition(
                         position_id=next_id,
@@ -574,8 +588,9 @@ def _simulate_risk_control(
                         entry_price=entry_price,
                         prediction=float(signal["prediction"]),
                         expected_change_pct=expected,
-                        take_profit_usd=take_profit,
-                        stop_loss_usd=stop_loss,
+                        take_profit_usd=signal_take_profit,
+                        stop_loss_usd=signal_stop_loss,
+                        strategy=str(signal.get("strategy", "Optimizer v1")),
                         entry_spread_cost=entry_spread_cost,
                         time_exit_at=time_exit_at,
                     )
@@ -868,6 +883,7 @@ def _risk_trade_row(
         "Lot": position.lot,
         "Prediksi": position.prediction,
         "Expected change (%)": position.expected_change_pct,
+        "Strategi": position.strategy,
         "Entry": position.entry_price,
         "Exit": exit_price,
         "Alasan exit": reason,
