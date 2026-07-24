@@ -103,6 +103,8 @@ V1_FIXED_DELAY_QUALITY_VERSION = "optimizer-v1-fixed-delay-quality-guard-2022-20
 V1_FIXED_DELAY_QUALITY_PATH = Path("data/precomputed/v1_fixed_delay_quality.pkl.b64")
 V1_TREND_STRENGTH_STABILITY_VERSION = "optimizer-v1-trend-strength-stability-2022-2026h1-v1"
 V1_TREND_STRENGTH_STABILITY_PATH = Path("data/precomputed/v1_trend_strength_stability.pkl.b64")
+V1_TREND_REGIME_FUSION_VERSION = "optimizer-v1-trend-regime-fusion-2022-2026h1-v1"
+V1_TREND_REGIME_FUSION_PATH = Path("data/precomputed/v1_trend_regime_fusion.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -366,6 +368,23 @@ def load_precomputed_v1_trend_strength_stability(backtest_version: str):
         saved = pickle.loads(
             base64.b64decode(
                 V1_TREND_STRENGTH_STABILITY_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_trend_regime_fusion(backtest_version: str):
+    if not V1_TREND_REGIME_FUSION_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                V1_TREND_REGIME_FUSION_PATH.read_text(encoding="ascii")
             )
         )
         if saved.get("version") == backtest_version:
@@ -4360,6 +4379,170 @@ def _render_v1_trend_strength_stability_tab(payload) -> None:
         st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
 
 
+def _render_v1_trend_regime_fusion_tab(payload) -> None:
+    st.subheader("v1 Trend-Regime Fusion Lab")
+    if payload is None:
+        st.warning("Hasil Trend-Regime Fusion belum tersedia pada artefak precomputed.")
+        return
+
+    methodology = payload["methodology"]
+    ranking = payload["ranking"]
+    winner = ranking.iloc[0]
+    fusion = ranking.set_index("Kandidat").loc["Fusion Q40 Confirmed"]
+    st.warning(
+        "**Eksperimen terisolasi:** Baseline v1 dan paper live tetap terkunci. "
+        "2026H1 hanya referensi historis dan tidak menentukan peringkat."
+    )
+    st.error(
+        f"**Status: BELUM LULUS.** Peringkat pertama adalah **{winner['Kandidat']}** "
+        f"dengan {int(winner['Kriteria lolos'])}/10 gerbang. PF development "
+        f"**{winner['PF development']:.3f}** dan drawdown "
+        f"**{winner['DD development (%)']:.2f}%** belum memenuhi target bersamaan."
+    )
+    st.info(
+        f"Arsitektur yang diuji: **{methodology['Architecture']}**. "
+        f"Calibration **{methodology['Calibration']}**, validation "
+        f"**{methodology['Validation']}**, confirmation "
+        f"**{methodology['Development confirmation']}**."
+    )
+    st.caption(methodology["Execution contract"])
+    st.caption(methodology["Regime rule"])
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Peringkat", winner["Kandidat"])
+    c2.metric("Growth development", f"{winner['Growth development (%)']:+.2f}%")
+    c3.metric("PF development", f"{winner['PF development']:.3f}")
+    c4.metric("Drawdown", f"{winner['DD development (%)']:.2f}%")
+    c5.metric("Primary fold", f"{int(winner['Primary fold profitable'])}/8")
+    c6.metric("Growth 2026H1", f"{winner['Growth 2026H1 (%)']:+.2f}%")
+
+    ranking_formats = {
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Transaksi development": "{:.0f}",
+        "Retensi development (%)": "{:.1f}%",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+        "PF 2026H1": "{:.3f}",
+        "DD 2026H1 (%)": "{:.2f}%",
+        "Transaksi 2026H1": "{:.0f}",
+        "Primary fold profitable": "{:.0f}",
+        "Kriteria lolos": "{:.0f}",
+    }
+    st.markdown("**Peringkat Ablation Architecture**")
+    st.dataframe(
+        ranking.style.format(ranking_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Kesimpulan Utama**")
+    st.write(
+        "Q40 masih menjadi filter tunggal paling rasional, tetapi belum memenuhi PF 1,50 "
+        "dan drawdown 10%. Regime Gate menekan drawdown development menjadi "
+        f"**{fusion['DD development (%)']:.2f}%**, namun hanya mempertahankan "
+        f"**{fusion['Retensi development (%)']:.1f}%** transaksi. Fusion Q30, Q40, dan "
+        "Q40 Confirmed menghasilkan transaksi yang identik: setelah Regime Gate lolos, "
+        "Trend Strength dan konfirmasi lima menit tidak menyaring sinyal tambahan. "
+        "Artinya lapisan tersebut redundan, sementara classifier regime masih menjadi "
+        "bottleneck utama."
+    )
+
+    metric_formats = {
+        "Sinyal tersedia": "{:.0f}",
+        "Equity akhir": "${:,.2f}",
+        "Growth (%)": "{:+.2f}%",
+        "Max drawdown": "${:,.2f}",
+        "Max drawdown (%)": "{:.2f}%",
+        "Profit factor": "{:.3f}",
+        "Transaksi": "{:.0f}",
+        "Win rate (%)": "{:.1f}%",
+        "Total swap": "${:,.2f}",
+        "Biaya spread": "${:,.2f}",
+        "Biaya slippage": "${:,.2f}",
+    }
+    st.markdown("**Validasi Berjenjang Tanpa Retuning**")
+    st.dataframe(
+        payload["period_validation"].style.format(metric_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Historical Reference 2026H1**")
+    st.dataframe(
+        payload["historical_reference"].style.format(metric_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Gerbang Keputusan**")
+    st.dataframe(payload["decisions"], use_container_width=True, hide_index=True)
+
+    classifier_formats = {
+        "Observasi": "{:.0f}",
+        "Macro F1": "{:.3f}",
+        "Balanced accuracy": "{:.3f}",
+        "Trend precision": "{:.3f}",
+        "Trend recall": "{:.3f}",
+        "Sideways precision": "{:.3f}",
+        "Sideways recall": "{:.3f}",
+        "Coverage (%)": "{:.1f}%",
+        "False trend rate (%)": "{:.1f}%",
+        "Median delay (jam)": "{:.1f}",
+        "Trend episode detected (%)": "{:.1f}%",
+        "False switch/hari": "{:.3f}",
+    }
+    with st.expander("Detail classifier, funnel, fold, stress, Monte Carlo, dan arah"):
+        st.markdown("**Kualitas Regime Classifier v2**")
+        st.dataframe(
+            payload["classifier_validation"].style.format(
+                classifier_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Threshold Beku 2022-2023**")
+        st.dataframe(
+            payload["thresholds"].style.format({"Nilai beku": "{:.6f}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Funnel Sinyal Sebelum dan Setelah Delay**")
+        st.dataframe(payload["input_audit"], use_container_width=True, hide_index=True)
+        st.dataframe(payload["delay_audit"], use_container_width=True, hide_index=True)
+        st.markdown("**12 Fold: 2023 Diagnostic, 2024-2025 Primary**")
+        st.dataframe(
+            payload["folds"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Stress dan Monte Carlo Development**")
+        st.dataframe(
+            payload["stress_summary"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.dataframe(
+            payload["monte_carlo_summary"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit BUY/SELL**")
+        st.dataframe(
+            payload["direction_audit"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Transaksi Control yang Diterima vs Ditolak**")
+        st.dataframe(
+            payload["rejected_signal_audit"].style.format(
+                precision=3, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Data**")
+        st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -4395,6 +4578,7 @@ def render_simulation(
         unified_benchmark_v1_tab,
         fixed_delay_quality_v1_tab,
         trend_strength_stability_v1_tab,
+        trend_regime_fusion_v1_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -4414,6 +4598,7 @@ def render_simulation(
             "v1 Unified Strategy Benchmark",
             "v1 Fixed Delay Quality Guard",
             "v1 Trend Strength Stability",
+            "v1 Trend-Regime Fusion",
         ]
     )
     with optimizer_tab:
@@ -4474,6 +4659,12 @@ def render_simulation(
         _render_v1_trend_strength_stability_tab(
             load_precomputed_v1_trend_strength_stability(
                 V1_TREND_STRENGTH_STABILITY_VERSION
+            )
+        )
+    with trend_regime_fusion_v1_tab:
+        _render_v1_trend_regime_fusion_tab(
+            load_precomputed_v1_trend_regime_fusion(
+                V1_TREND_REGIME_FUSION_VERSION
             )
         )
 
