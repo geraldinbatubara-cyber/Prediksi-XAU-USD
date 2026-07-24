@@ -105,6 +105,8 @@ V1_TREND_STRENGTH_STABILITY_VERSION = "optimizer-v1-trend-strength-stability-202
 V1_TREND_STRENGTH_STABILITY_PATH = Path("data/precomputed/v1_trend_strength_stability.pkl.b64")
 V1_TREND_REGIME_FUSION_VERSION = "optimizer-v1-trend-regime-fusion-2022-2026h1-v1"
 V1_TREND_REGIME_FUSION_PATH = Path("data/precomputed/v1_trend_regime_fusion.pkl.b64")
+V1_REGIME_CLASSIFIER_V3_VERSION = "optimizer-v1-regime-classifier-hierarchical-soft-gate-2022-2026h1-v3"
+V1_REGIME_CLASSIFIER_V3_PATH = Path("data/precomputed/v1_regime_classifier_v3.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -385,6 +387,23 @@ def load_precomputed_v1_trend_regime_fusion(backtest_version: str):
         saved = pickle.loads(
             base64.b64decode(
                 V1_TREND_REGIME_FUSION_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_regime_classifier_v3(backtest_version: str):
+    if not V1_REGIME_CLASSIFIER_V3_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                V1_REGIME_CLASSIFIER_V3_PATH.read_text(encoding="ascii")
             )
         )
         if saved.get("version") == backtest_version:
@@ -4543,6 +4562,204 @@ def _render_v1_trend_regime_fusion_tab(payload) -> None:
         st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
 
 
+def _render_v1_regime_classifier_v3_tab(payload) -> None:
+    st.subheader("v1 Regime Classifier Lab v3 - Hierarchical Soft Gate")
+    if payload is None:
+        st.warning("Hasil Regime Classifier v3 belum tersedia pada artefak precomputed.")
+        return
+
+    methodology = payload["methodology"]
+    ranking = payload["ranking"]
+    winner = ranking.iloc[0]
+    locked = payload["classification_locked"].set_index("Kandidat").loc[winner["Kandidat"]]
+    st.warning(
+        "**Eksperimen terisolasi:** model dipilih berdasarkan kualitas klasifikasi, bukan profit. "
+        "Baseline v1 dan paper live tetap terkunci."
+    )
+    st.error(
+        f"**Status: BELUM LULUS.** {winner['Kandidat']} memimpin dengan "
+        f"{int(winner['Kriteria classifier lolos'])}/6 kriteria classifier dan "
+        f"{int(winner['Kriteria ekonomi lolos'])}/9 kriteria ekonomi. "
+        "Hasil ekonomi belum boleh dipromosikan karena classifier belum cukup tepat."
+    )
+    st.info(
+        f"Train **{methodology['Train']}** | Calibration **{methodology['Probability calibration']}** "
+        f"dan **{methodology['Threshold calibration']}** | Selection **{methodology['Model selection']}** "
+        f"| Locked confirmation **{methodology['Locked confirmation']}**."
+    )
+    st.caption(methodology["Architecture"])
+    st.caption(methodology["Historical reference"])
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Peringkat", winner["Kandidat"])
+    c2.metric("Trend precision 2025", f"{locked['Trend precision']:.1%}")
+    c3.metric("Direction precision", f"{locked['Direction precision']:.1%}")
+    c4.metric("False trend", f"{locked['False trend rate (%)']:.1f}%")
+    c5.metric("PF development", f"{winner['PF development']:.3f}")
+    c6.metric("Drawdown", f"{winner['DD development (%)']:.2f}%")
+
+    ranking_formats = {
+        "Trend precision 2025": "{:.1%}",
+        "Trend recall 2025": "{:.1%}",
+        "Direction precision 2025": "{:.1%}",
+        "False trend 2025 (%)": "{:.1f}%",
+        "Coverage 2025 (%)": "{:.1f}%",
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Transaksi development": "{:.0f}",
+        "Retensi development (%)": "{:.1f}%",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+        "PF 2026H1": "{:.3f}",
+        "DD 2026H1 (%)": "{:.2f}%",
+    }
+    st.markdown("**Peringkat Classifier dan Hasil Ekonomi**")
+    st.dataframe(
+        ranking.style.format(ranking_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Evaluasi Utama**")
+    st.write(
+        "Hierarchical v3 memperbaiki recall dan kecepatan dibanding v2, tetapi belum memperbaiki "
+        "precision. Adaptive Confirmation mencatat growth development "
+        f"**{winner['Growth development (%)']:+.2f}%**, PF **{winner['PF development']:.3f}**, "
+        f"dan drawdown **{winner['DD development (%)']:.2f}%**. Angka ini belum robust sebagai "
+        "classifier karena trend precision hanya "
+        f"**{locked['Trend precision']:.1%}**, direction precision "
+        f"**{locked['Direction precision']:.1%}**, false-trend "
+        f"**{locked['False trend rate (%)']:.1f}%**, dan retensi hanya "
+        f"**{winner['Retensi development (%)']:.1f}%** dari Fixed Delay Reference. "
+        "Audit arah juga menunjukkan keuntungan development berasal hanya dari BUY."
+    )
+
+    classifier_formats = {
+        "Horizon (jam)": "{:.0f}",
+        "Observasi": "{:.0f}",
+        "Trend precision": "{:.1%}",
+        "Trend recall": "{:.1%}",
+        "Direction precision": "{:.1%}",
+        "Trend F1": "{:.3f}",
+        "Balanced accuracy": "{:.3f}",
+        "Trend coverage (%)": "{:.1f}%",
+        "False trend rate (%)": "{:.1f}%",
+        "Median delay (jam)": "{:.1f}",
+    }
+    st.markdown("**Locked Confirmation 2025**")
+    st.dataframe(
+        payload["classification_locked"].style.format(
+            classifier_formats, na_rep="-"
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    metric_formats = {
+        "Sinyal tersedia": "{:.0f}",
+        "Equity akhir": "${:,.2f}",
+        "Growth (%)": "{:+.2f}%",
+        "Max drawdown": "${:,.2f}",
+        "Max drawdown (%)": "{:.2f}%",
+        "Profit factor": "{:.3f}",
+        "Transaksi": "{:.0f}",
+        "Win rate (%)": "{:.1f}%",
+        "Total swap": "${:,.2f}",
+        "Biaya spread": "${:,.2f}",
+        "Biaya slippage": "${:,.2f}",
+    }
+    st.markdown("**Validasi Ekonomi Berjenjang**")
+    st.dataframe(
+        payload["period_validation"].style.format(metric_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Fixed Delay Reference dan Historical Reference 2026H1**")
+    st.dataframe(
+        payload["fixed_delay_reference"].style.format(metric_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.dataframe(
+        payload["historical_reference"].style.format(metric_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Gerbang Keputusan**")
+    st.dataframe(payload["decisions"], use_container_width=True, hide_index=True)
+
+    with st.expander("Detail model, probability, funnel, fold, Monte Carlo, dan arah"):
+        st.markdown("**Horizon dan Threshold Terpilih**")
+        st.dataframe(
+            payload["selected_models"].style.format(precision=3),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Pemilihan Model pada 2024**")
+        st.dataframe(
+            payload["model_selection"].style.format(
+                classifier_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Validasi 2024 dan Historical Reference 2026H1**")
+        st.dataframe(
+            payload["classification_validation"].style.format(
+                classifier_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.dataframe(
+            payload["classification_reference"].style.format(
+                classifier_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Kalibrasi Probabilitas**")
+        st.dataframe(
+            payload["calibration_audit"].style.format(precision=4),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Funnel Classifier dan Fixed Delay**")
+        st.dataframe(payload["input_audit"], use_container_width=True, hide_index=True)
+        st.dataframe(payload["delay_audit"], use_container_width=True, hide_index=True)
+        st.markdown("**12 Fold: 2023 Diagnostic, 2024-2025 Primary**")
+        st.dataframe(
+            payload["folds"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Monte Carlo dan Stress Shortlist**")
+        st.dataframe(
+            payload["monte_carlo_summary"].style.format(precision=3),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.dataframe(
+            payload["stress_summary"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit BUY/SELL**")
+        st.dataframe(
+            payload["direction_audit"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Transaksi Fixed Delay Reference yang Diterima dan Ditolak**")
+        st.dataframe(
+            payload["rejected_trade_audit"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Data**")
+        st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -4579,6 +4796,7 @@ def render_simulation(
         fixed_delay_quality_v1_tab,
         trend_strength_stability_v1_tab,
         trend_regime_fusion_v1_tab,
+        regime_classifier_v3_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -4599,6 +4817,7 @@ def render_simulation(
             "v1 Fixed Delay Quality Guard",
             "v1 Trend Strength Stability",
             "v1 Trend-Regime Fusion",
+            "v1 Regime Classifier v3",
         ]
     )
     with optimizer_tab:
@@ -4665,6 +4884,12 @@ def render_simulation(
         _render_v1_trend_regime_fusion_tab(
             load_precomputed_v1_trend_regime_fusion(
                 V1_TREND_REGIME_FUSION_VERSION
+            )
+        )
+    with regime_classifier_v3_tab:
+        _render_v1_regime_classifier_v3_tab(
+            load_precomputed_v1_regime_classifier_v3(
+                V1_REGIME_CLASSIFIER_V3_VERSION
             )
         )
 
