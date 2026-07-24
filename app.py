@@ -29,11 +29,14 @@ from gold_forecast.dashboard_snapshot import (
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
 from gold_forecast import live_trading as live_trading_module
 from gold_forecast.live_trading import (
+    LIVE_BUY_SPECIALIST_V4_START,
     LIVE_INITIAL_EQUITY,
     LIVE_FIXED_DELAY_START,
     LIVE_START_DATE,
+    LIVE_MANUAL_EXIT_BUY_SPECIALIST_V4_PATH,
     LIVE_MANUAL_EXIT_FIXED_DELAY_PATH,
     LIVE_MANUAL_EXIT_PATH,
+    LIVE_TRADING_BUY_SPECIALIST_V4_PATH,
     LIVE_TRADING_FIXED_DELAY_PATH,
     LIVE_TRADING_PATH,
     LIVE_TRADING_V10_PATH,
@@ -110,6 +113,10 @@ V1_REGIME_CLASSIFIER_V3_PATH = Path("data/precomputed/v1_regime_classifier_v3.pk
 V1_DIRECTIONAL_SPECIALIZATION_VERSION = "optimizer-v1-directional-specialization-2022-2026h1-v4"
 V1_DIRECTIONAL_SPECIALIZATION_PATH = Path(
     "data/precomputed/v1_directional_specialization.pkl.b64"
+)
+BUY_SPECIALIST_V4_LIVE_VERSION = "buy-specialist-v4-live-inference-2026-07-24-v1"
+BUY_SPECIALIST_V4_LIVE_PATH = Path(
+    "data/precomputed/buy_specialist_v4_live.pkl.b64"
 )
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -428,6 +435,23 @@ def load_precomputed_v1_directional_specialization(backtest_version: str):
             )
         )
         if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_buy_specialist_v4_live_model(model_version: str):
+    if not BUY_SPECIALIST_V4_LIVE_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                BUY_SPECIALIST_V4_LIVE_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == model_version:
             return saved["payload"]
     except Exception:
         return None
@@ -5949,6 +5973,7 @@ def render_live_trading(
     broker_quote: pd.Series | None = None,
     entry_strategy: str = "baseline",
     broker_bars: pd.DataFrame | None = None,
+    strategy_model_bundle: dict[str, object] | None = None,
 ) -> None:
     if optimization_leaderboard.empty:
         st.warning(
@@ -5965,6 +5990,7 @@ def render_live_trading(
         broker_quote=broker_quote,
         entry_strategy=entry_strategy,
         broker_bars=broker_bars,
+        strategy_model_bundle=strategy_model_bundle,
     )
     summary = live["summary"]
     params = live["params"]
@@ -5972,6 +5998,7 @@ def render_live_trading(
     waiting_state = live["waiting_state"]
     trigger_state = live["trigger_state"]
     fixed_delay_state = live.get("fixed_delay_state")
+    specialist_state = live.get("specialist_state")
     signals = live["signals"].copy()
     open_positions = live["open_positions"].copy()
     closed_positions = live["closed_positions"].copy()
@@ -6110,7 +6137,51 @@ def render_live_trading(
         "dan kombinasi tanggal sinyal + arah belum pernah dicatat di ledger."
     )
 
-    if entry_strategy == "fixed_delay_5m" and fixed_delay_state is not None:
+    if entry_strategy == "buy_specialist_v4" and specialist_state is not None:
+        st.markdown("**Gerbang BUY Specialist v4**")
+        specialist_status = str(specialist_state.get("Status", "MENUNGGU"))
+        specialist_detail = str(specialist_state.get("Detail", "-"))
+        if specialist_status == "SIAP BUY":
+            st.success(f"**{specialist_status}** | {specialist_detail}")
+        elif specialist_status.startswith("ABSTAIN"):
+            st.warning(f"**{specialist_status}** | {specialist_detail}")
+        else:
+            st.info(f"**{specialist_status}** | {specialist_detail}")
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Regime v4", specialist_state.get("Regime", "-"))
+        s2.metric(
+            "P(trend)",
+            "-"
+            if pd.isna(specialist_state.get("P(trend)"))
+            else f"{float(specialist_state['P(trend)']):.1%}",
+        )
+        s3.metric(
+            "P(BUY)",
+            "-"
+            if pd.isna(specialist_state.get("P(BUY)"))
+            else f"{float(specialist_state['P(BUY)']):.1%}",
+        )
+        s4.metric(
+            "Loss pause 48 jam",
+            "AKTIF" if specialist_state.get("Loss pause aktif") else "TIDAK",
+        )
+        specialist_checks = pd.DataFrame(
+            specialist_state.get("Checklist", [])
+        )
+        if not specialist_checks.empty:
+            st.dataframe(
+                specialist_checks, use_container_width=True, hide_index=True
+            )
+        st.caption(
+            "BUY Specialist v4 hanya dapat membuka BUY. Regime BEARISH dan "
+            "SIDEWAYS selalu diblokir; TRANSITION tetap harus lolos classifier "
+            "Adaptive dan konfirmasi M15 sesuai kontrak eksperimen v4."
+        )
+
+    if (
+        entry_strategy in {"fixed_delay_5m", "buy_specialist_v4"}
+        and fixed_delay_state is not None
+    ):
         st.markdown("**Status Validasi Fixed Delay 5 Menit**")
         delay_status = str(fixed_delay_state.get("Status", "MENUNGGU"))
         delay_detail = str(fixed_delay_state.get("Detail", "-"))
@@ -7093,15 +7164,21 @@ elif page == "Live Trading":
         )
 
     st.info(
-        "Dua strategi paper trading berjalan paralel dengan ledger terpisah: **Baseline v1** dan "
-        "**Fixed Delay 5m**. Strategi v10 tetap diarsipkan dan tidak dapat membuka posisi baru."
+        "Tiga strategi paper trading berjalan paralel dengan ledger terpisah: "
+        "**Baseline v1**, **Fixed Delay 5m**, dan **BUY Specialist v4**. "
+        "Strategi v10 tetap diarsipkan dan tidak dapat membuka posisi baru."
     )
     st.warning(
         "Status v1: **KANDIDAT PAPER TRADING, BELUM LAYAK REAL-MONEY**. Exact OOS masih positif, tetapi robustness "
         "belum memenuhi target profit factor 1,30 dan drawdown maksimum 10%."
     )
     optimization_v1_live_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
-    baseline_live_tab, fixed_delay_live_tab = st.tabs(["Baseline v1", "Fixed Delay 5m"])
+    buy_specialist_v4_model = load_buy_specialist_v4_live_model(
+        BUY_SPECIALIST_V4_LIVE_VERSION
+    )
+    baseline_live_tab, fixed_delay_live_tab, buy_specialist_v4_tab = st.tabs(
+        ["Baseline v1", "Fixed Delay 5m", "BUY Specialist v4"]
+    )
     with baseline_live_tab:
         render_live_trading(
             gold_ohlc,
@@ -7135,6 +7212,28 @@ elif page == "Live Trading":
             broker_quote=broker_quote,
             entry_strategy="fixed_delay_5m",
             broker_bars=broker_bars,
+        )
+    with buy_specialist_v4_tab:
+        render_live_trading(
+            gold_ohlc,
+            optimization_v1_live_leaderboard,
+            title="BUY Specialist v4 - Bullish Regime",
+            start_date=LIVE_BUY_SPECIALIST_V4_START,
+            live_path=LIVE_TRADING_BUY_SPECIALIST_V4_PATH,
+            manual_path=LIVE_MANUAL_EXIT_BUY_SPECIALIST_V4_PATH,
+            key_prefix="buy_specialist_v4",
+            strategy_note=(
+                "Pemenang eksperimen Directional Specialization v4 dikunci: "
+                "Adaptive v3 BUY-only, Bear/Sideways Defense, Balanced Entry, "
+                "Fixed Delay 5m, konfirmasi M15, dan jeda 48 jam setelah dua "
+                "kerugian beruntun. Mesin tidak pernah membuka SELL. Kontrak "
+                "paper: equity USD 1.000, lot 0.01, TP USD 25, SL USD 10, "
+                "maksimum satu posisi."
+            ),
+            broker_quote=broker_quote,
+            entry_strategy="buy_specialist_v4",
+            broker_bars=broker_bars,
+            strategy_model_bundle=buy_specialist_v4_model,
         )
 
     archived_v10_ledger = load_live_ledger(LIVE_TRADING_V10_PATH)
