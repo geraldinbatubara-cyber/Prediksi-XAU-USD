@@ -6,6 +6,16 @@ import numpy as np
 import pandas as pd
 
 from gold_forecast.monitoring import WIT
+from gold_forecast.paper_ledger_store import (
+    load_persistent_manual_exits,
+    load_persistent_positions,
+    load_recovery_manual_exits,
+    load_recovery_positions,
+    merge_ledger_frames,
+    save_persistent_manual_exits,
+    save_persistent_positions,
+    strategy_id_for_path,
+)
 from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT
 from gold_forecast.strategy_optimizer import _indicator_predictions, _rsi
 from gold_forecast.v1_risk_control import _entry_signals_for_period
@@ -127,37 +137,72 @@ def _empty_manual_exit_ledger() -> pd.DataFrame:
 
 
 def load_live_ledger(path: Path = LIVE_TRADING_PATH) -> pd.DataFrame:
-    if not path.exists():
+    strategy_id = strategy_id_for_path(path)
+    local = pd.read_csv(path) if path.exists() else _empty_ledger()
+    persistent = load_persistent_positions(strategy_id)
+    recovery = load_recovery_positions(strategy_id)
+    frame = merge_ledger_frames(
+        persistent,
+        local,
+        recovery,
+        "position_id",
+    )
+    if frame.empty:
         return _empty_ledger()
-    frame = pd.read_csv(path)
     for column in LIVE_COLUMNS:
         if column not in frame.columns:
             frame[column] = np.nan
     for column in LIVE_TEXT_COLUMNS:
         frame[column] = frame[column].fillna("").astype(str)
-    return frame[LIVE_COLUMNS]
+    normalized = frame[LIVE_COLUMNS]
+    save_persistent_positions(strategy_id, normalized)
+    return normalized
 
 
 def save_live_ledger(frame: pd.DataFrame, path: Path = LIVE_TRADING_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(path, index=False)
+    save_persistent_positions(strategy_id_for_path(path), frame)
 
 
 def load_manual_exit_ledger(path: Path = LIVE_MANUAL_EXIT_PATH) -> pd.DataFrame:
-    if not path.exists():
+    strategy_id = strategy_id_for_path(_live_path_for_manual_path(path))
+    local = pd.read_csv(path) if path.exists() else _empty_manual_exit_ledger()
+    persistent = load_persistent_manual_exits(strategy_id)
+    recovery = load_recovery_manual_exits(strategy_id)
+    frame = merge_ledger_frames(
+        persistent,
+        local,
+        recovery,
+        "manual_exit_id",
+    )
+    if frame.empty:
         return _empty_manual_exit_ledger()
-    frame = pd.read_csv(path)
     for column in LIVE_MANUAL_EXIT_COLUMNS:
         if column not in frame.columns:
             frame[column] = np.nan
     for column in LIVE_MANUAL_EXIT_TEXT_COLUMNS:
         frame[column] = frame[column].fillna("").astype(str)
-    return frame[LIVE_MANUAL_EXIT_COLUMNS]
+    normalized = frame[LIVE_MANUAL_EXIT_COLUMNS]
+    save_persistent_manual_exits(strategy_id, normalized)
+    return normalized
 
 
 def save_manual_exit_ledger(frame: pd.DataFrame, path: Path = LIVE_MANUAL_EXIT_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(path, index=False)
+    strategy_id = strategy_id_for_path(_live_path_for_manual_path(path))
+    save_persistent_manual_exits(strategy_id, frame)
+
+
+def _live_path_for_manual_path(path: Path) -> Path:
+    mapping = {
+        LIVE_MANUAL_EXIT_PATH.name: LIVE_TRADING_PATH,
+        LIVE_MANUAL_EXIT_V10_PATH.name: LIVE_TRADING_V10_PATH,
+        LIVE_MANUAL_EXIT_FIXED_DELAY_PATH.name: LIVE_TRADING_FIXED_DELAY_PATH,
+        LIVE_MANUAL_EXIT_BUY_SPECIALIST_V4_PATH.name: LIVE_TRADING_BUY_SPECIALIST_V4_PATH,
+    }
+    return mapping.get(Path(path).name, Path(path))
 
 
 def _now_wit(now: pd.Timestamp | None = None) -> pd.Timestamp:
@@ -688,6 +733,16 @@ def _close_hit_positions_quote(
             continue
 
         exit_reason = "CL tersentuh" if hit_cl else "TP tersentuh"
+        if "Dipulihkan dari observasi pengguna" in str(row.get("catatan", "")):
+            if direction == "BUY":
+                executable_price = (
+                    entry_price - cl_points if hit_cl else entry_price + tp_points
+                )
+            else:
+                executable_price = (
+                    entry_price + cl_points if hit_cl else entry_price - tp_points
+                )
+            exit_reason = f"{exit_reason} setelah pemulihan ledger"
         gross_pl = _unrealized(direction, entry_price, executable_price, lot)
         swap = float(pd.to_numeric(row.get("swap", 0.0), errors="coerce") or 0.0)
         ledger.loc[index, "status"] = "CLOSED"
