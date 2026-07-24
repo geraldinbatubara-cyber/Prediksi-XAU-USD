@@ -627,6 +627,9 @@ def _simulate_dynamic(
         max_adverse = 0.0
         high_count = 0
         structural_count = 0
+        event_high_count = 0
+        event_confirm_count = 0
+        protection_armed = False
         previous_hazard = 0.0
         exit_time = pd.Timestamp(path.index[-1])
         exit_price = None
@@ -710,6 +713,25 @@ def _simulate_dynamic(
                     high_count = high_count + 1 if hazard_3h >= threshold_3h else 0
                     acceleration = hazard_3h - previous_hazard
                     previous_hazard = hazard_3h
+                    event_hazard = float(state.get("event_hazard", hazard_3h))
+                    structural_score = float(state.get("structural_score", 0.0))
+                    path_pressure = float(state.get("path_pressure", 0.0))
+                    recovery_score = float(state.get("recovery_score", 0.0))
+                    event_high_count = (
+                        event_high_count + 1
+                        if event_hazard >= threshold_3h
+                        else 0
+                    )
+                    event_confirmed = (
+                        structural_score >= 0.50 and path_pressure >= 0.50
+                    )
+                    event_confirm_count = (
+                        event_confirm_count + 1 if event_confirmed else 0
+                    )
+                    protection_armed = protection_armed or (
+                        event_hazard >= threshold_3h
+                        or structural_score >= 0.65
+                    )
                     should_exit = False
                     dynamic_reason = ""
                     if candidate == "Structural Exit":
@@ -738,6 +760,42 @@ def _simulate_dynamic(
                             )
                         )
                         dynamic_reason = "Adaptive dynamic hazard"
+                    elif candidate == "Structural + Path Confirmation":
+                        should_exit = event_confirm_count >= 2
+                        dynamic_reason = "Structural path confirmation"
+                    elif candidate == "Event Hazard Confirmed":
+                        should_exit = (
+                            event_high_count >= 2 and recovery_score < 0.50
+                        )
+                        dynamic_reason = "Event hazard confirmed"
+                    elif candidate == "Selective Protection":
+                        should_exit = (
+                            event_high_count >= 2
+                            and event_confirmed
+                            and recovery_score < 0.50
+                        )
+                        dynamic_reason = "Selective protection"
+                    elif candidate == "Recovery Veto Protection":
+                        should_exit = (
+                            event_high_count >= 2
+                            and event_confirm_count >= 2
+                            and recovery_score < 0.34
+                        )
+                        dynamic_reason = "Recovery veto protection"
+                    elif candidate == "Two-Layer Protection":
+                        emergency = (
+                            structural_score >= 0.80
+                            or (
+                                event_hazard >= threshold_3h * 1.10
+                                and path_pressure >= 0.65
+                            )
+                        )
+                        should_exit = (
+                            protection_armed
+                            and emergency
+                            and recovery_score < 0.50
+                        )
+                        dynamic_reason = "Two-layer protection"
                     if should_exit and candidate != "Breakout Hazard v2 Control":
                         exit_price = (
                             bid_close - slippage_points * POINT_SIZE
