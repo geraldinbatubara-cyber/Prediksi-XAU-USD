@@ -62,9 +62,28 @@ publishable_key = "sb_publishable_..."
 symbol = "XAUUSD"
 ```
 
-Jangan menyimpan `SUPABASE_SERVICE_ROLE_KEY` di source code, `.streamlit/secrets.toml`,
-Streamlit Cloud, atau GitHub. Dashboard hanya memerlukan publishable/anon key karena
-RLS pada tabel broker memberikan izin `select` dan menolak penulisan publik.
+Feed broker hanya memerlukan publishable/anon key karena RLS memberikan izin
+`select` dan menolak penulisan publik. Jangan menyimpan service-role key di source
+code, `.streamlit/secrets.toml` lokal, atau GitHub.
+
+### Ledger Paper Trading Persisten
+
+Jalankan `supabase/paper_trading.sql` pada SQL Editor agar ledger tidak hilang saat
+Streamlit redeploy. Tambahkan service-role key hanya pada **Streamlit Cloud
+Secrets** yang dieksekusi server-side:
+
+```toml
+[supabase_broker]
+url = "https://PROJECT.supabase.co"
+publishable_key = "sb_publishable_..."
+service_role_key = "sb_secret_..."
+symbol = "XAUUSD"
+```
+
+Jangan menampilkan nilai `service_role_key` pada dashboard atau log. Tabel memakai
+namespace terpisah untuk `baseline_v1`, `fixed_delay_5m`, dan
+`buy_specialist_v4`. Snapshot posisi di-upsert tanpa menghapus record lain,
+sedangkan setiap perubahan juga masuk ke event log append-only.
 
 ### Launcher Windows Satu Klik
 

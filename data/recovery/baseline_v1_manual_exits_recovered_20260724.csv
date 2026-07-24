@@ -1,0 +1,2 @@
+manual_exit_id,position_id,optimizer_signal_date,optimizer_direction,optimizer_entry_time_wit,optimizer_entry_price,optimizer_tp_usd,optimizer_cl_usd,manual_exit_time_wit,manual_exit_price,manual_gross_pl,manual_swap_at_exit,manual_net_pl,manual_result_label,last_update_wit,catatan
+1,5,RECOVERY-5,SELL,2026-07-24 15:59:00 WIT,4029.0,25.0,10.0,2026-07-24 15:59:45 WIT,4020.0,9.0,0.0,9.0,TP Manual,2026-07-24 15:59:45 WIT,"Dipulihkan dari observasi pengguna. Harga exit dan hasil asli; timestamp rekonstruksi karena waktu exit asli tidak tersimpan. Posisi Optimizer tetap OPEN."

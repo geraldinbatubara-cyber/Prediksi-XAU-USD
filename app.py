@@ -53,6 +53,10 @@ from gold_forecast.monitoring import (
     load_monitoring,
     monitoring_summary,
 )
+from gold_forecast.paper_ledger_store import (
+    configure_paper_ledger_store,
+    paper_ledger_store_status,
+)
 from gold_forecast.signals import build_signal
 from gold_forecast import strategy_optimizer as strategy_optimizer_module
 from gold_forecast.supabase_broker import load_supabase_broker_feed
@@ -6861,6 +6865,22 @@ def _supabase_broker_config() -> tuple[str, str, str]:
     return str(config.get("url", "")).strip(), str(read_key).strip(), str(config.get("symbol", "XAUUSD")).strip()
 
 
+def _supabase_paper_ledger_config() -> tuple[str, str, str]:
+    try:
+        config = st.secrets.get("supabase_broker", {})
+    except Exception:
+        config = {}
+    if not config:
+        return "", "", ""
+    read_key = config.get("publishable_key") or config.get("anon_key") or ""
+    write_key = config.get("service_role_key") or ""
+    return (
+        str(config.get("url", "")).strip(),
+        str(read_key).strip(),
+        str(write_key).strip(),
+    )
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_supabase_broker_feed(base_url: str, read_key: str, symbol: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     return load_supabase_broker_feed(base_url, read_key, symbol=symbol)
@@ -7313,6 +7333,33 @@ elif page == "Live Trading":
     broker_bars, broker_quote, broker_feed_error = _latest_broker_snapshot()
     if broker_feed_error:
         st.warning(f"Feed Supabase gagal dibaca; mencoba quote lokal. Detail: {broker_feed_error}")
+
+    paper_url, paper_read_key, paper_write_key = _supabase_paper_ledger_config()
+    configure_paper_ledger_store(
+        paper_url,
+        paper_read_key,
+        paper_write_key,
+    )
+    baseline_persistence_probe = load_live_ledger(LIVE_TRADING_PATH)
+    paper_store = paper_ledger_store_status()
+    if paper_store["mode"] == "Supabase persistent":
+        st.success(
+            f"Ledger paper trading tersimpan persisten di Supabase. "
+            f"Baseline v1 memuat **{len(baseline_persistence_probe)} record** dan "
+            "tidak akan di-reset oleh redeploy."
+        )
+    else:
+        detail = (
+            f" Detail: {paper_store['last_error']}"
+            if paper_store.get("last_error")
+            else ""
+        )
+        st.error(
+            "Ledger paper trading masih memakai CSV fallback. Tambahkan "
+            "`service_role_key` ke `[supabase_broker]` pada Streamlit Secrets "
+            "setelah menjalankan `supabase/paper_trading.sql` agar observasi "
+            f"tidak hilang saat redeploy.{detail}"
+        )
 
     supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
     live_terminal_status: dict[str, object] = {}
