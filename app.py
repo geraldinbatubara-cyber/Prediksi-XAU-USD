@@ -146,6 +146,12 @@ V1_SIDEWAYS_SPECIALIST_V2_VERSION = (
 V1_SIDEWAYS_SPECIALIST_V2_PATH = Path(
     "data/precomputed/v1_sideways_specialist_v2.pkl.b64"
 )
+V1_SIDEWAYS_SPECIALIST_V3_VERSION = (
+    "optimizer-v1-sideways-specialist-dynamic-hazard-2022-2026h1-v3"
+)
+V1_SIDEWAYS_SPECIALIST_V3_PATH = Path(
+    "data/precomputed/v1_sideways_specialist_v3.pkl.b64"
+)
 BUY_SPECIALIST_V4_LIVE_VERSION = "buy-specialist-v4-live-inference-2026-07-24-v1"
 BUY_SPECIALIST_V4_LIVE_PATH = Path(
     "data/precomputed/buy_specialist_v4_live.pkl.b64"
@@ -549,6 +555,23 @@ def load_precomputed_v1_sideways_specialist_v2(backtest_version: str):
         saved = pickle.loads(
             base64.b64decode(
                 V1_SIDEWAYS_SPECIALIST_V2_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_sideways_specialist_v3(backtest_version: str):
+    if not V1_SIDEWAYS_SPECIALIST_V3_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                V1_SIDEWAYS_SPECIALIST_V3_PATH.read_text(encoding="ascii")
             )
         )
         if saved.get("version") == backtest_version:
@@ -5882,6 +5905,181 @@ def _render_v1_sideways_specialist_v2_tab(payload) -> None:
         st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
 
 
+def _render_v1_sideways_specialist_v3_tab(payload) -> None:
+    st.subheader(
+        "v1 Sideways Specialist Lab v3 - Dynamic Hazard Monitoring & Early Exit"
+    )
+    if payload is None:
+        st.warning("Hasil Sideways Specialist v3 belum tersedia.")
+        return
+
+    ranking = payload["ranking"]
+    winner = ranking.loc[ranking["Kandidat"].eq(payload["winner"])].iloc[0]
+    st.warning(
+        "**Eksperimen offline terisolasi:** entry Breakout Hazard Gate v2 tidak "
+        "diubah; eksperimen hanya membandingkan kebijakan exit. Ledger Paper "
+        "Live Trading tetap terkunci."
+    )
+    st.error(
+        f"**SIDEWAYS SPECIALIST v3 BELUM LULUS.** Kandidat selection terbaik "
+        f"adalah **{winner['Kandidat']}** dengan development "
+        f"**{winner['Growth development (%)']:+.2f}%**, PF "
+        f"**{winner['PF development']:.3f}**, DD "
+        f"**{winner['DD development (%)']:.2f}%**, dan "
+        f"**{int(winner['Kriteria lolos'])}/10** kriteria. Reference 2026H1 "
+        f"masih **{winner['Growth 2026H1 (%)']:+.2f}%**, sehingga belum layak "
+        "menggantikan control atau masuk Paper Live Trading."
+    )
+    st.info(
+        "Kesimpulan utama: dynamic exit 1h/3h murni terlalu defensif dan "
+        "mengorbankan profit. Hazard Acceleration Protection lebih rasional "
+        "karena hanya bertindak saat risiko memburuk cepat, tetapi keunggulannya "
+        "belum stabil lintas periode."
+    )
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Kandidat terbaik", winner["Kandidat"])
+    c2.metric("Development", f"{winner['Growth development (%)']:+.2f}%")
+    c3.metric("Selection 2024", f"{winner['Growth selection 2024 (%)']:+.2f}%")
+    c4.metric("Locked 2025", f"{winner['Growth locked 2025 (%)']:+.2f}%")
+    c5.metric("Reference 2026H1", f"{winner['Growth 2026H1 (%)']:+.2f}%")
+    c6.metric("Kriteria", f"{int(winner['Kriteria lolos'])}/10")
+
+    ranking_formats = {
+        "Selection score 2024": "{:.3f}",
+        "Growth selection 2024 (%)": "{:+.2f}%",
+        "PF selection 2024": "{:.3f}",
+        "DD selection 2024 (%)": "{:.2f}%",
+        "Transaksi selection 2024": "{:.0f}",
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Transaksi development": "{:.0f}",
+        "Growth locked 2025 (%)": "{:+.2f}%",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+        "Net exit benefit": "${:,.2f}",
+    }
+    metric_formats = {
+        "Sinyal tersedia": "{:.0f}",
+        "Equity akhir": "${:,.2f}",
+        "Growth (%)": "{:+.2f}%",
+        "Max drawdown": "${:,.2f}",
+        "Max drawdown (%)": "{:.2f}%",
+        "Profit factor": "{:.3f}",
+        "Transaksi": "{:.0f}",
+        "Win rate (%)": "{:.1f}%",
+        "Total swap": "${:,.2f}",
+        "Biaya spread": "${:,.2f}",
+        "Biaya slippage": "${:,.2f}",
+    }
+    st.markdown("**Peringkat Model Selection 2024**")
+    st.dataframe(
+        ranking.style.format(ranking_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Atribusi Dynamic Exit**")
+    st.caption(
+        "Saved loss adalah kerugian control yang berhasil dikurangi. Sacrificed "
+        "profit adalah profit control yang hilang akibat posisi ditutup terlalu dini."
+    )
+    st.dataframe(
+        payload["exit_attribution"].style.format(
+            {
+                "Common entry": "{:.0f}",
+                "Dynamic exits": "{:.0f}",
+                "Saved loss": "${:,.2f}",
+                "Sacrificed profit": "${:,.2f}",
+                "Net exit benefit": "${:,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Gerbang Kelulusan**")
+    st.dataframe(payload["decisions"], use_container_width=True, hide_index=True)
+
+    with st.expander("Detail state model, periode, fold, risiko, dan stress"):
+        methodology = payload["methodology"]
+        for key in (
+            "Control",
+            "State dataset",
+            "Targets",
+            "Monitoring",
+            "Train",
+            "Probability calibration",
+            "Threshold calibration",
+            "Model selection",
+            "Locked confirmation",
+            "Historical reference",
+            "Execution",
+        ):
+            st.caption(f"**{key}:** {methodology[key]}")
+        st.markdown("**Audit Position State**")
+        st.dataframe(
+            payload["state_audit"].style.format(precision=2, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Pemilihan Model Hazard 1h dan 3h**")
+        st.dataframe(
+            payload["model_1h_selection"].style.format(precision=4, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.dataframe(
+            payload["model_3h_selection"].style.format(precision=4, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        for label, key in (
+            ("Selection 2024", "classification_selection"),
+            ("Locked 2025", "classification_locked"),
+            ("Reference 2026H1", "classification_reference"),
+        ):
+            st.markdown(f"**Klasifikasi State {label}**")
+            st.dataframe(
+                payload[key].style.format(precision=4, na_rep="-"),
+                use_container_width=True,
+                hide_index=True,
+            )
+        st.markdown("**Validasi Ekonomi per Periode**")
+        st.dataframe(
+            payload["period_validation"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Historical Reference 2026H1**")
+        st.dataframe(
+            payload["historical_reference"].style.format(
+                metric_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Fold, Monte Carlo, Konsentrasi, dan Stress Pemenang**")
+        for key in (
+            "folds",
+            "monte_carlo_summary",
+            "profit_concentration",
+            "stress_summary",
+        ):
+            st.dataframe(
+                payload[key].style.format(precision=3, na_rep="-"),
+                use_container_width=True,
+                hide_index=True,
+            )
+        st.markdown("**Referensi Peringkat v2**")
+        st.dataframe(
+            payload["v2_reference"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Data**")
+        st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -5925,6 +6123,7 @@ def render_simulation(
         sell_specialist_v7_tab,
         sideways_specialist_v1_tab,
         sideways_specialist_v2_tab,
+        sideways_specialist_v3_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -5952,6 +6151,7 @@ def render_simulation(
             "v1 SELL Specialist v7",
             "v1 Sideways Specialist v1",
             "v1 Sideways Specialist v2",
+            "v1 Sideways Specialist v3",
         ]
     )
     with optimizer_tab:
@@ -6058,6 +6258,12 @@ def render_simulation(
         _render_v1_sideways_specialist_v2_tab(
             load_precomputed_v1_sideways_specialist_v2(
                 V1_SIDEWAYS_SPECIALIST_V2_VERSION
+            )
+        )
+    with sideways_specialist_v3_tab:
+        _render_v1_sideways_specialist_v3_tab(
+            load_precomputed_v1_sideways_specialist_v3(
+                V1_SIDEWAYS_SPECIALIST_V3_VERSION
             )
         )
 
