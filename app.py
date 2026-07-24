@@ -107,6 +107,10 @@ V1_TREND_REGIME_FUSION_VERSION = "optimizer-v1-trend-regime-fusion-2022-2026h1-v
 V1_TREND_REGIME_FUSION_PATH = Path("data/precomputed/v1_trend_regime_fusion.pkl.b64")
 V1_REGIME_CLASSIFIER_V3_VERSION = "optimizer-v1-regime-classifier-hierarchical-soft-gate-2022-2026h1-v3"
 V1_REGIME_CLASSIFIER_V3_PATH = Path("data/precomputed/v1_regime_classifier_v3.pkl.b64")
+V1_DIRECTIONAL_SPECIALIZATION_VERSION = "optimizer-v1-directional-specialization-2022-2026h1-v4"
+V1_DIRECTIONAL_SPECIALIZATION_PATH = Path(
+    "data/precomputed/v1_directional_specialization.pkl.b64"
+)
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -404,6 +408,23 @@ def load_precomputed_v1_regime_classifier_v3(backtest_version: str):
         saved = pickle.loads(
             base64.b64decode(
                 V1_REGIME_CLASSIFIER_V3_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_directional_specialization(backtest_version: str):
+    if not V1_DIRECTIONAL_SPECIALIZATION_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                V1_DIRECTIONAL_SPECIALIZATION_PATH.read_text(encoding="ascii")
             )
         )
         if saved.get("version") == backtest_version:
@@ -4760,6 +4781,183 @@ def _render_v1_regime_classifier_v3_tab(payload) -> None:
         st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
 
 
+def _render_v1_directional_specialization_tab(payload) -> None:
+    st.subheader("v1 Directional Specialization Lab v4")
+    if payload is None:
+        st.warning(
+            "Hasil Directional Specialization v4 belum tersedia pada artefak precomputed."
+        )
+        return
+
+    methodology = payload["methodology"]
+    long_winner = payload["long_ranking"].iloc[0]
+    symmetric_winner = payload["symmetric_ranking"].iloc[0]
+    st.warning(
+        "**Eksperimen terisolasi:** baseline v1, Fixed Delay paper live, ledger, "
+        "dan parameter observasi tetap terkunci."
+    )
+    st.success(
+        f"**LONG SPECIALIST LULUS {int(long_winner['Kriteria lolos'])}/9.** "
+        f"Pemenang: **{long_winner['Kandidat']}** dengan growth development "
+        f"**{long_winner['Growth development (%)']:+.2f}%**, PF "
+        f"**{long_winner['PF development']:.3f}**, dan drawdown "
+        f"**{long_winner['DD development (%)']:.2f}%**."
+    )
+    st.error(
+        f"**SYMMETRIC ENGINE BELUM LULUS ({int(symmetric_winner['Kriteria lolos'])}/13).** "
+        f"Kandidat terbaik **{symmetric_winner['Kandidat']}** hanya mencatat worst "
+        f"direction precision **{symmetric_winner['Worst precision']:.1%}**, PF "
+        f"**{symmetric_winner['PF development']:.3f}**, dan drawdown "
+        f"**{symmetric_winner['DD development (%)']:.2f}%**."
+    )
+    st.info(
+        "Kesimpulan: Adaptive v3 lebih tepat diperlakukan sebagai spesialis BUY dengan "
+        "perlindungan bearish/sideways. Hasil ini bukan bukti bahwa model telah menjadi "
+        "strategi universal dua arah; mesin SELL simetris masih belum andal."
+    )
+    st.caption(
+        f"Train {methodology['Train']} | calibration "
+        f"{methodology['Probability calibration']} dan "
+        f"{methodology['Threshold calibration']} | selection "
+        f"{methodology['Model selection']} | locked confirmation "
+        f"{methodology['Locked confirmation']}."
+    )
+    st.caption(methodology["Execution contract"])
+    st.caption(methodology["Fold diagnostic"])
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Long winner", long_winner["Kandidat"])
+    c2.metric("Growth development", f"{long_winner['Growth development (%)']:+.2f}%")
+    c3.metric("Profit factor", f"{long_winner['PF development']:.3f}")
+    c4.metric("Drawdown", f"{long_winner['DD development (%)']:.2f}%")
+    c5.metric("Transaksi", f"{int(long_winner['Transaksi'])}")
+    c6.metric("Reference 2026H1", f"{long_winner['Growth 2026H1 (%)']:+.2f}%")
+
+    long_formats = {
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Transaksi": "{:.0f}",
+        "Bearish growth (%)": "{:+.2f}%",
+        "Bearish DD (%)": "{:.2f}%",
+        "Sideways growth (%)": "{:+.2f}%",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+        "Kriteria lolos": "{:.0f}",
+    }
+    symmetric_formats = {
+        "BUY precision": "{:.1%}",
+        "SELL precision": "{:.1%}",
+        "Worst precision": "{:.1%}",
+        "Worst recall": "{:.1%}",
+        "Precision gap (pp)": "{:.2f}",
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Transaksi": "{:.0f}",
+        "Retensi (%)": "{:.1f}%",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+        "Kriteria lolos": "{:.0f}",
+    }
+    st.markdown("**Peringkat Track A - Long Specialist**")
+    st.dataframe(
+        payload["long_ranking"].style.format(long_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Peringkat Track B - Symmetric BUY/SELL Engine**")
+    st.dataframe(
+        payload["symmetric_ranking"].style.format(symmetric_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    metric_formats = {
+        "Sinyal tersedia": "{:.0f}",
+        "Equity akhir": "${:,.2f}",
+        "Growth (%)": "{:+.2f}%",
+        "Max drawdown": "${:,.2f}",
+        "Max drawdown (%)": "{:.2f}%",
+        "Profit factor": "{:.3f}",
+        "Transaksi": "{:.0f}",
+        "Win rate (%)": "{:.1f}%",
+        "Total swap": "${:,.2f}",
+        "Biaya spread": "${:,.2f}",
+        "Biaya slippage": "${:,.2f}",
+    }
+    st.markdown("**Gerbang Keputusan Long Specialist**")
+    st.dataframe(
+        payload["long_decisions"], use_container_width=True, hide_index=True
+    )
+    st.markdown("**Gerbang Keputusan Symmetric Engine**")
+    st.dataframe(
+        payload["symmetric_decisions"], use_container_width=True, hide_index=True
+    )
+
+    with st.expander(
+        "Detail klasifikasi, validasi periode, fold, regime, biaya, dan risiko"
+    ):
+        st.markdown("**Locked Confirmation 2025 - Mesin Simetris**")
+        st.dataframe(
+            payload["symmetric_classification_locked"].style.format(
+                symmetric_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Validasi Development per Periode**")
+        st.dataframe(
+            payload["period_validation"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Historical Reference 2026H1**")
+        st.dataframe(
+            payload["historical_reference"].style.format(
+                metric_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Ekonomi per Regime - Long Specialist**")
+        st.dataframe(
+            payload["regime_economic_audit"].style.format(
+                metric_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**12 Fold Diagnostic**")
+        st.dataframe(
+            payload["folds"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit BUY/SELL dan Retensi**")
+        st.dataframe(
+            payload["direction_audit"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.dataframe(
+            payload["retention"].style.format(precision=2, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Monte Carlo dan Stress Pemenang**")
+        st.dataframe(
+            payload["monte_carlo_summary"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.dataframe(
+            payload["stress_summary"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Data**")
+        st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -4797,6 +4995,7 @@ def render_simulation(
         trend_strength_stability_v1_tab,
         trend_regime_fusion_v1_tab,
         regime_classifier_v3_tab,
+        directional_specialization_v4_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -4818,6 +5017,7 @@ def render_simulation(
             "v1 Trend Strength Stability",
             "v1 Trend-Regime Fusion",
             "v1 Regime Classifier v3",
+            "v1 Directional Specialization v4",
         ]
     )
     with optimizer_tab:
@@ -4890,6 +5090,12 @@ def render_simulation(
         _render_v1_regime_classifier_v3_tab(
             load_precomputed_v1_regime_classifier_v3(
                 V1_REGIME_CLASSIFIER_V3_VERSION
+            )
+        )
+    with directional_specialization_v4_tab:
+        _render_v1_directional_specialization_tab(
+            load_precomputed_v1_directional_specialization(
+                V1_DIRECTIONAL_SPECIALIZATION_VERSION
             )
         )
 
