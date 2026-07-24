@@ -114,6 +114,10 @@ V1_DIRECTIONAL_SPECIALIZATION_VERSION = "optimizer-v1-directional-specialization
 V1_DIRECTIONAL_SPECIALIZATION_PATH = Path(
     "data/precomputed/v1_directional_specialization.pkl.b64"
 )
+V1_SELL_SPECIALIST_VERSION = (
+    "optimizer-v1-directional-specialist-sell-2022-2026h1-v5"
+)
+V1_SELL_SPECIALIST_PATH = Path("data/precomputed/v1_sell_specialist.pkl.b64")
 BUY_SPECIALIST_V4_LIVE_VERSION = "buy-specialist-v4-live-inference-2026-07-24-v1"
 BUY_SPECIALIST_V4_LIVE_PATH = Path(
     "data/precomputed/buy_specialist_v4_live.pkl.b64"
@@ -432,6 +436,23 @@ def load_precomputed_v1_directional_specialization(backtest_version: str):
         saved = pickle.loads(
             base64.b64decode(
                 V1_DIRECTIONAL_SPECIALIZATION_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_sell_specialist(backtest_version: str):
+    if not V1_SELL_SPECIALIST_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                V1_SELL_SPECIALIST_PATH.read_text(encoding="ascii")
             )
         )
         if saved.get("version") == backtest_version:
@@ -4982,6 +5003,156 @@ def _render_v1_directional_specialization_tab(payload) -> None:
         st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
 
 
+def _render_v1_sell_specialist_tab(payload) -> None:
+    st.subheader("v1 Directional Specialists Lab v5 - SELL Specialist")
+    if payload is None:
+        st.warning("Hasil SELL Specialist v5 belum tersedia pada artefak precomputed.")
+        return
+
+    winner = payload["ranking"].iloc[0]
+    methodology = payload["methodology"]
+    st.warning(
+        "**Eksperimen terisolasi:** BUY Specialist v4 dan Baseline v1 tetap terkunci. "
+        "v5 hanya dapat memilih SELL atau ABSTAIN."
+    )
+    if bool(winner["Lulus"]):
+        st.success(
+            f"**SELL SPECIALIST LULUS {int(winner['Kriteria lolos'])}/10.** "
+            f"Pemenang: **{winner['Kandidat']}**."
+        )
+    else:
+        st.error(
+            f"**SELL SPECIALIST BELUM LULUS ({int(winner['Kriteria lolos'])}/10).** "
+            f"Kandidat terbaik **{winner['Kandidat']}** mencatat growth development "
+            f"**{winner['Growth development (%)']:+.2f}%**, PF "
+            f"**{winner['PF development']:.3f}**, drawdown "
+            f"**{winner['DD development (%)']:.2f}%**, growth 2024 "
+            f"**{winner['Growth selection 2024 (%)']:+.2f}%**, dan growth locked 2025 "
+            f"**{winner['Growth locked 2025 (%)']:+.2f}%**."
+        )
+    st.info(
+        "Kesimpulan eksperimen: mesin menemukan beberapa peluang SELL yang menghasilkan "
+        "profit secara agregat, tetapi edge belum stabil lintas tahun dan drawdown masih "
+        "melewati batas. Kandidat ini belum diizinkan masuk paper live trading."
+    )
+    st.caption(
+        f"Train {methodology['Train']} | calibration "
+        f"{methodology['Probability calibration']} dan "
+        f"{methodology['Threshold calibration']} | selection "
+        f"{methodology['Model selection']} | locked "
+        f"{methodology['Locked confirmation']}."
+    )
+    st.caption(methodology["Outcome label"])
+    st.caption(methodology["Execution"])
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Kandidat terbaik", winner["Kandidat"])
+    c2.metric("Growth development", f"{winner['Growth development (%)']:+.2f}%")
+    c3.metric("Profit factor", f"{winner['PF development']:.3f}")
+    c4.metric("Drawdown", f"{winner['DD development (%)']:.2f}%")
+    c5.metric("Transaksi", f"{int(winner['Transaksi development'])}")
+    c6.metric("Kriteria", f"{int(winner['Kriteria lolos'])}/10")
+
+    ranking_formats = {
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Transaksi development": "{:.0f}",
+        "Growth selection 2024 (%)": "{:+.2f}%",
+        "Growth locked 2025 (%)": "{:+.2f}%",
+        "Precision locked": "{:.1%}",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+    }
+    metric_formats = {
+        "Sinyal tersedia": "{:.0f}",
+        "Equity akhir": "${:,.2f}",
+        "Growth (%)": "{:+.2f}%",
+        "Max drawdown": "${:,.2f}",
+        "Max drawdown (%)": "{:.2f}%",
+        "Profit factor": "{:.3f}",
+        "Transaksi": "{:.0f}",
+        "Win rate (%)": "{:.1f}%",
+        "Total swap": "${:,.2f}",
+        "Biaya spread": "${:,.2f}",
+        "Biaya slippage": "${:,.2f}",
+    }
+    st.markdown("**Peringkat Enam Kandidat SELL**")
+    st.dataframe(
+        payload["ranking"].style.format(ranking_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Gerbang Kelulusan**")
+    st.dataframe(payload["decisions"], use_container_width=True, hide_index=True)
+
+    with st.expander(
+        "Detail kandidat, klasifikasi, periode, fold, Monte Carlo, dan stress"
+    ):
+        st.markdown("**Audit Candidate Universe Bearish**")
+        st.dataframe(
+            payload["candidate_audit"].style.format(precision=2, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Funnel Sinyal**")
+        st.dataframe(payload["funnel"], use_container_width=True, hide_index=True)
+        st.markdown("**Locked Classification 2025**")
+        st.dataframe(
+            payload["classification_locked"].style.format(
+                {
+                    "Threshold": "{:.4f}",
+                    "Precision": "{:.1%}",
+                    "Recall": "{:.1%}",
+                    "Coverage (%)": "{:.2f}%",
+                    "Brier": "{:.4f}",
+                },
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Validasi Ekonomi per Periode**")
+        st.dataframe(
+            payload["period_validation"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Historical Reference 2026H1**")
+        st.dataframe(
+            payload["historical_reference"].style.format(
+                metric_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Primary Fold Diagnostic**")
+        st.dataframe(
+            payload["folds"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Monte Carlo, Konsentrasi Profit, dan Stress Pemenang**")
+        st.dataframe(
+            payload["monte_carlo_summary"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.dataframe(
+            payload["profit_concentration"].style.format(
+                precision=2, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.dataframe(
+            payload["stress_summary"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Data**")
+        st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -5020,6 +5191,7 @@ def render_simulation(
         trend_regime_fusion_v1_tab,
         regime_classifier_v3_tab,
         directional_specialization_v4_tab,
+        sell_specialist_v5_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -5042,6 +5214,7 @@ def render_simulation(
             "v1 Trend-Regime Fusion",
             "v1 Regime Classifier v3",
             "v1 Directional Specialization v4",
+            "v1 SELL Specialist v5",
         ]
     )
     with optimizer_tab:
@@ -5121,6 +5294,10 @@ def render_simulation(
             load_precomputed_v1_directional_specialization(
                 V1_DIRECTIONAL_SPECIALIZATION_VERSION
             )
+        )
+    with sell_specialist_v5_tab:
+        _render_v1_sell_specialist_tab(
+            load_precomputed_v1_sell_specialist(V1_SELL_SPECIALIST_VERSION)
         )
 
 
