@@ -9,6 +9,15 @@ from gold_forecast.monitoring import WIT
 from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT
 from gold_forecast.strategy_optimizer import _indicator_predictions, _rsi
 from gold_forecast.v1_risk_control import _entry_signals_for_period
+from gold_forecast.v1_regime_classifier import (
+    FEATURE_COLUMNS,
+    _ohlc_bars,
+    _timeframe_features,
+)
+from gold_forecast.v1_regime_classifier_v3 import (
+    _apply_calibration,
+    _raw_model_probabilities,
+)
 from gold_forecast.v1_signal_quality import (
     SignalQualityConfig,
     _entry_features,
@@ -22,10 +31,17 @@ LIVE_TRADING_V10_PATH = Path("data/live_trading_optimizer_v10.csv")
 LIVE_MANUAL_EXIT_V10_PATH = Path("data/live_trading_manual_exits_v10.csv")
 LIVE_TRADING_FIXED_DELAY_PATH = Path("data/live_trading_fixed_delay_5m.csv")
 LIVE_MANUAL_EXIT_FIXED_DELAY_PATH = Path("data/live_trading_manual_exits_fixed_delay_5m.csv")
+LIVE_TRADING_BUY_SPECIALIST_V4_PATH = Path(
+    "data/live_trading_buy_specialist_v4.csv"
+)
+LIVE_MANUAL_EXIT_BUY_SPECIALIST_V4_PATH = Path(
+    "data/live_trading_manual_exits_buy_specialist_v4.csv"
+)
 LIVE_INITIAL_EQUITY = 1000.0
 LIVE_START_DATE = pd.Timestamp("2026-07-15")
 LIVE_V10_START_DATE = pd.Timestamp("2026-07-20")
 LIVE_FIXED_DELAY_START = pd.Timestamp("2026-07-23 22:20:00", tz=WIT)
+LIVE_BUY_SPECIALIST_V4_START = pd.Timestamp("2026-07-24 16:00:00", tz=WIT)
 LIVE_LOT_SIZE = 0.01
 LIVE_BUY_SWAP_PER_001_LOT = 0.02
 LIVE_SELL_SWAP_PER_001_LOT = 0.0
@@ -1076,6 +1092,294 @@ def _fixed_delay_live_signal(
     return output, state
 
 
+def _buy_specialist_v4_signal(
+    gold_ohlc: pd.DataFrame,
+    broker_bars: pd.DataFrame | None,
+    params: dict[str, object],
+    now: pd.Timestamp,
+    start_date: pd.Timestamp,
+    model_bundle: dict[str, object] | None,
+    ledger: pd.DataFrame,
+) -> tuple[dict[str, object] | None, dict[str, object]]:
+    state = {
+        "Status": "MENUNGGU",
+        "Detail": "Menunggu evaluasi BUY Specialist v4.",
+        "Regime": "BELUM TERSEDIA",
+        "P(trend)": np.nan,
+        "P(BUY)": np.nan,
+        "Direction confidence": np.nan,
+        "M15 alignment": False,
+        "Loss pause aktif": False,
+        "Waktu loss pause selesai": pd.NaT,
+        "Fixed delay": None,
+        "Checklist": [],
+    }
+    if not model_bundle:
+        state.update(
+            {
+                "Status": "MODEL BELUM TERSEDIA",
+                "Detail": "Artefak inferensi BUY Specialist v4 belum dapat dimuat.",
+            }
+        )
+        return None, state
+
+    data = _prepare_live_broker_m1(broker_bars)
+    if data.empty:
+        state.update(
+            {
+                "Status": "MENUNGGU DATA M1",
+                "Detail": "Candle M1 MT5 belum tersedia untuk inferensi v4.",
+            }
+        )
+        return None, state
+
+    fixed_signal, fixed_state = _fixed_delay_live_signal(
+        gold_ohlc, broker_bars, params, now, start_date
+    )
+    state["Fixed delay"] = fixed_state
+    if fixed_signal is None:
+        state.update(
+            {
+                "Status": str(fixed_state.get("Status", "MENUNGGU FIXED DELAY")),
+                "Detail": str(fixed_state.get("Detail", "-")),
+            }
+        )
+        return None, state
+    if str(fixed_signal.get("arah")) != "BUY":
+        state.update(
+            {
+                "Status": "ABSTAIN - BUKAN BUY",
+                "Detail": "Sinyal Fixed Delay bukan BUY; BUY Specialist v4 tidak membuka SELL.",
+            }
+        )
+        return None, state
+
+    classifier = _buy_specialist_classifier_frame(data, model_bundle)
+    confirmation_time = pd.Timestamp(
+        fixed_state.get("Waktu konfirmasi", data.index.max())
+    )
+    usable = classifier.loc[:confirmation_time].dropna(
+        subset=list(model_bundle.get("feature_columns", FEATURE_COLUMNS))
+    )
+    if usable.empty:
+        state.update(
+            {
+                "Status": "MENUNGGU WARM-UP MODEL",
+                "Detail": "Fitur H1/H4/D1 v4 belum lengkap; entry ditahan.",
+            }
+        )
+        return None, state
+
+    latest = usable.tail(1)
+    raw = _raw_model_probabilities(
+        model_bundle["estimators"], latest
+    )["Hierarchical Ensemble"]
+    probability = _apply_calibration(raw, model_bundle["calibrators"]).iloc[0]
+    thresholds = model_bundle["thresholds"]
+    direction_confidence = float(probability["direction_confidence"])
+    classifier_buy = bool(
+        float(probability["trend"]) >= float(thresholds.moderate_trend)
+        and direction_confidence >= float(thresholds.moderate_direction)
+        and float(probability["up"]) >= 0.50
+    )
+    entry_features = _entry_features(data)
+    m15_row = entry_features.reindex(
+        pd.DatetimeIndex([confirmation_time]), method="ffill"
+    )
+    m15_buy = False
+    if not m15_row.empty:
+        values = m15_row.iloc[0]
+        required = ["price", "m15_fast", "m15_slow", "m15_momentum"]
+        if all(pd.notna(values.get(column)) for column in required):
+            m15_buy = bool(
+                float(values["price"]) > float(values["m15_fast"])
+                > float(values["m15_slow"])
+                and float(values["m15_momentum"]) > 0
+            )
+
+    regime = _buy_specialist_regime(
+        model_bundle, data, confirmation_time, latest.iloc[0]
+    )
+    defense_ok = regime not in {"BEARISH", "SIDEWAYS"}
+    pause_until = _buy_specialist_loss_pause_until(ledger)
+    now_naive = now.tz_convert("UTC").tz_localize(None)
+    pause_active = pd.notna(pause_until) and now_naive <= pause_until
+    fixed_ok = bool(fixed_signal.get("entry_eligible", True))
+    checklist = [
+        {
+            "Syarat": "Fixed Delay 5m dan spread/barrier",
+            "Status": "LOLOS" if fixed_ok else "BELUM",
+            "Detail": str(fixed_state.get("Detail", "-")),
+        },
+        {
+            "Syarat": "Adaptive classifier mengarah BUY",
+            "Status": "LOLOS" if classifier_buy else "BELUM",
+            "Detail": (
+                f"P(trend) {float(probability['trend']):.1%} | "
+                f"P(BUY) {float(probability['up']):.1%} | "
+                f"confidence {direction_confidence:.1%}"
+            ),
+        },
+        {
+            "Syarat": "Konfirmasi tren M15",
+            "Status": "LOLOS" if m15_buy else "BELUM",
+            "Detail": "Harga > MA cepat > MA lambat dan momentum M15 positif.",
+        },
+        {
+            "Syarat": "Bear/Sideways Defense",
+            "Status": "LOLOS" if defense_ok else "BELUM",
+            "Detail": f"Regime saat konfirmasi: {regime}.",
+        },
+        {
+            "Syarat": "Jeda 48 jam setelah dua loss",
+            "Status": "LOLOS" if not pause_active else "BELUM",
+            "Detail": (
+                "Tidak ada loss pause aktif."
+                if not pause_active
+                else f"Pause aktif sampai {pause_until} UTC."
+            ),
+        },
+    ]
+    eligible = all(item["Status"] == "LOLOS" for item in checklist)
+    state.update(
+        {
+            "Status": "SIAP BUY" if eligible else "ABSTAIN / MENUNGGU",
+            "Detail": (
+                "Seluruh gerbang BUY Specialist v4 terpenuhi."
+                if eligible
+                else "Satu atau lebih gerbang v4 belum terpenuhi; tidak membuka posisi."
+            ),
+            "Regime": regime,
+            "P(trend)": float(probability["trend"]),
+            "P(BUY)": float(probability["up"]),
+            "Direction confidence": direction_confidence,
+            "M15 alignment": m15_buy,
+            "Loss pause aktif": pause_active,
+            "Waktu loss pause selesai": pause_until,
+            "Checklist": checklist,
+        }
+    )
+    if not eligible:
+        fixed_signal.update(
+            {
+                "entry_eligible": False,
+                "record_status": "CANCELLED",
+                "event_note": state["Detail"],
+            }
+        )
+    fixed_signal["source"] = "BUY Specialist v4"
+    return fixed_signal, state
+
+
+def _buy_specialist_classifier_frame(
+    data: pd.DataFrame,
+    model_bundle: dict[str, object],
+) -> pd.DataFrame:
+    h1 = _merge_warmup_bars(model_bundle.get("warmup_h1"), _ohlc_bars(data, "1h"))
+    h4 = _merge_warmup_bars(model_bundle.get("warmup_h4"), _ohlc_bars(data, "4h"))
+    d1 = _merge_warmup_bars(model_bundle.get("warmup_d1"), _ohlc_bars(data, "1D"))
+    spread_live = data["SpreadPoints"].resample(
+        "1h", label="right", closed="left"
+    ).agg(["median", lambda values: values.quantile(0.90)])
+    spread_live.columns = ["spread_median", "spread_p90"]
+    spread = _merge_warmup_bars(
+        model_bundle.get("warmup_spread_h1"), spread_live
+    )
+    h1_features = _timeframe_features(h1, "h1")
+    h4_features = _timeframe_features(h4, "h4")
+    d1_features = _timeframe_features(d1, "d1")
+    frame = pd.DataFrame(index=h1.index)
+    frame["return_1"] = h1["Close"].pct_change(1) * 100
+    frame["return_3"] = h1["Close"].pct_change(3) * 100
+    frame["return_6"] = h1["Close"].pct_change(6) * 100
+    for column in (
+        "ema_gap_atr",
+        "ema_fast_slope_atr",
+        "ema_slow_slope_atr",
+        "adx",
+        "adx_change_3",
+        "efficiency",
+        "choppiness",
+        "atr_percentile",
+        "bb_width_atr",
+        "range_width_atr",
+        "donchian_position",
+        "breakout_up",
+        "breakout_down",
+    ):
+        frame[column] = h1_features[column]
+    frame["h4_return"] = (
+        h4["Close"].pct_change().reindex(frame.index, method="ffill") * 100
+    )
+    frame["h4_gap_atr"] = h4_features["ema_gap_atr"].reindex(
+        frame.index, method="ffill"
+    )
+    frame["h4_adx"] = h4_features["adx"].reindex(frame.index, method="ffill")
+    frame["d1_return"] = (
+        d1["Close"].pct_change().reindex(frame.index, method="ffill") * 100
+    )
+    frame["d1_gap_atr"] = d1_features["ema_gap_atr"].reindex(
+        frame.index, method="ffill"
+    )
+    frame["spread_median"] = spread["spread_median"].reindex(frame.index)
+    frame["spread_p90"] = spread["spread_p90"].reindex(frame.index)
+    return frame.replace([np.inf, -np.inf], np.nan)
+
+
+def _merge_warmup_bars(warmup: object, live: pd.DataFrame) -> pd.DataFrame:
+    historical = warmup.copy() if isinstance(warmup, pd.DataFrame) else pd.DataFrame()
+    combined = pd.concat([historical, live]).sort_index()
+    return combined.loc[~combined.index.duplicated(keep="last")]
+
+
+def _buy_specialist_regime(
+    model_bundle: dict[str, object],
+    data: pd.DataFrame,
+    timestamp: pd.Timestamp,
+    classifier_row: pd.Series,
+) -> str:
+    d1 = _merge_warmup_bars(model_bundle.get("warmup_d1"), _ohlc_bars(data, "1D"))
+    close = d1["Close"].loc[:timestamp]
+    if close.empty:
+        return "TRANSITION"
+    fast = close.ewm(span=20, adjust=False).mean().iloc[-1]
+    slow = close.ewm(span=50, adjust=False).mean().iloc[-1]
+    momentum = close.pct_change(20).iloc[-1] * 100
+    latest = float(close.iloc[-1])
+    if latest > fast > slow and momentum > 0:
+        regime = "BULLISH"
+    elif latest < fast < slow and momentum < 0:
+        regime = "BEARISH"
+    else:
+        regime = "TRANSITION"
+    if (
+        float(classifier_row.get("adx", np.nan)) < 20
+        and float(classifier_row.get("efficiency", np.nan)) < 0.30
+        and float(classifier_row.get("choppiness", np.nan)) > 58
+    ):
+        regime = "SIDEWAYS"
+    return regime
+
+
+def _buy_specialist_loss_pause_until(ledger: pd.DataFrame) -> pd.Timestamp:
+    closed = ledger[ledger["status"].eq("CLOSED")].copy()
+    if len(closed) < 2:
+        return pd.NaT
+    closed["_closed_at"] = pd.to_datetime(
+        closed["exit_time_wit"].astype(str).str.replace(" WIT", "", regex=False),
+        errors="coerce",
+    )
+    closed["_net"] = pd.to_numeric(closed["net_pl"], errors="coerce").fillna(0)
+    latest = closed.dropna(subset=["_closed_at"]).sort_values("_closed_at").tail(2)
+    if len(latest) < 2 or not latest["_net"].lt(0).all():
+        return pd.NaT
+    close_wit = pd.Timestamp(latest.iloc[-1]["_closed_at"]).tz_localize(WIT)
+    return (
+        close_wit.tz_convert("UTC").tz_localize(None)
+        + pd.Timedelta(hours=48)
+    )
+
+
 def run_live_trading_update(
     gold_ohlc: pd.DataFrame,
     optimizer_leaderboard: pd.DataFrame,
@@ -1086,6 +1390,7 @@ def run_live_trading_update(
     allow_new_entries: bool = True,
     entry_strategy: str = "baseline",
     broker_bars: pd.DataFrame | None = None,
+    strategy_model_bundle: dict[str, object] | None = None,
 ) -> dict[str, object]:
     now_wit = _now_wit(now)
     cutoff_date = now_wit.tz_localize(None).normalize()
@@ -1106,6 +1411,18 @@ def run_live_trading_update(
                 "SL (USD)": FIXED_DELAY_SL_USD,
                 "Max BUY": 1,
                 "Max SELL": 1,
+                "Max Total": 1,
+            }
+        )
+    elif entry_strategy == "buy_specialist_v4":
+        params.update(
+            {
+                "Strategi": "BUY Specialist v4 - Bullish Regime",
+                "Lot": LIVE_LOT_SIZE,
+                "TP (USD)": FIXED_DELAY_TP_USD,
+                "SL (USD)": FIXED_DELAY_SL_USD,
+                "Max BUY": 1,
+                "Max SELL": 0,
                 "Max Total": 1,
             }
         )
@@ -1158,7 +1475,19 @@ def run_live_trading_update(
         live_timestamp=quote_state.get("market_timestamp") if quote_state["fresh"] else None,
     )
     fixed_delay_state = None
-    if entry_strategy == "fixed_delay_5m":
+    specialist_state = None
+    if entry_strategy == "buy_specialist_v4":
+        signal, specialist_state = _buy_specialist_v4_signal(
+            usable_gold,
+            broker_bars,
+            params,
+            now_wit,
+            start_time_wit,
+            strategy_model_bundle,
+            ledger,
+        )
+        fixed_delay_state = specialist_state.get("Fixed delay")
+    elif entry_strategy == "fixed_delay_5m":
         signal, fixed_delay_state = _fixed_delay_live_signal(
             usable_gold,
             broker_bars,
@@ -1178,7 +1507,7 @@ def run_live_trading_update(
     entry_allowed = can_trade and allow_new_entries
     archive_note = session_note if allow_new_entries else "Strategi diarsipkan; posisi baru dinonaktifkan."
     if (
-        entry_strategy == "fixed_delay_5m"
+        entry_strategy in {"fixed_delay_5m", "buy_specialist_v4"}
         and signal is not None
         and bool(signal.get("entry_eligible", True))
         and not entry_allowed
@@ -1253,6 +1582,7 @@ def run_live_trading_update(
         "waiting_state": waiting_state,
         "trigger_state": trigger_state,
         "fixed_delay_state": fixed_delay_state,
+        "specialist_state": specialist_state,
         "ledger": ledger,
         "signals": signal_rows,
         "open_positions": open_positions,
