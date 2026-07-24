@@ -4,4 +4,6 @@ __pycache__/
 .pytest_cache/
 data/broker/*.csv
 data/intraday/*.csv.gz
+data/live_trading_buy_specialist_v4.csv
+data/live_trading_manual_exits_buy_specialist_v4.csv
 
