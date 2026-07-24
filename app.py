@@ -53,6 +53,7 @@ from gold_forecast.monitoring import (
     load_monitoring,
     monitoring_summary,
 )
+from gold_forecast.model_comparison import MODEL_COMPARISON_VERSION
 from gold_forecast.paper_ledger_store import (
     configure_paper_ledger_store,
     paper_ledger_store_status,
@@ -162,6 +163,7 @@ BUY_SPECIALIST_V4_LIVE_VERSION = "buy-specialist-v4-live-inference-2026-07-24-v1
 BUY_SPECIALIST_V4_LIVE_PATH = Path(
     "data/precomputed/buy_specialist_v4_live.pkl.b64"
 )
+MODEL_COMPARISON_PATH = Path("data/precomputed/model_comparison.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
 st.title("Prediksi Harga Emas")
@@ -615,6 +617,21 @@ def load_buy_specialist_v4_live_model(model_version: str):
             )
         )
         if saved.get("version") == model_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_model_comparison(comparison_version: str):
+    if not MODEL_COMPARISON_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(MODEL_COMPARISON_PATH.read_text(encoding="ascii"))
+        )
+        if saved.get("version") == comparison_version:
             return saved["payload"]
     except Exception:
         return None
@@ -6271,6 +6288,139 @@ def _render_v1_sideways_specialist_v4_tab(payload) -> None:
         st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
 
 
+def _render_model_comparison_tab(payload) -> None:
+    st.subheader("Komparasi Model Mesin")
+    st.caption(
+        "Ranking 26 eksperimen menggunakan kerangka skor yang sama. Hasil ini membandingkan "
+        "bukti eksperimen yang sudah tersimpan dan tidak menjalankan ulang backtest."
+    )
+    if payload is None:
+        st.warning(
+            "Artefak komparasi belum tersedia. Jalankan "
+            "`python scripts/build_model_comparison.py` untuk membangunnya."
+        )
+        return
+
+    master = payload["master"].copy()
+    winners = payload["winners"].copy()
+    comparable_count = int((master["Komparabilitas"] == "Setara M1/OOS").sum())
+    promising_count = int(master["Grade"].astype(str).str.startswith(("A", "B")).sum())
+    leader = master.iloc[0]
+
+    st.warning(
+        "Skor bukan jaminan profit dan bukan pengganti validasi paper live. Ranking keseluruhan "
+        "memudahkan orientasi, tetapi mesin BUY, SELL, dan sideways tetap harus dinilai menurut "
+        "mandat rezimnya. Eksperimen berlabel **Terbatas** memakai basis eksekusi yang tidak "
+        "sepenuhnya setara dengan pengujian M1 broker-aware."
+    )
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Eksperimen", f"{payload['experiment_count']}")
+    c2.metric("Kelompok", f"{payload['group_count']}")
+    c3.metric("Basis setara", f"{comparable_count}/{len(master)}")
+    c4.metric("Grade A/B", f"{promising_count}/{len(master)}")
+    st.success(
+        f"Peringkat keseluruhan tertinggi: **{leader['Eksperimen']}** "
+        f"dengan skor **{leader['Skor Total']:.1f}/100**. "
+        "Status eksperimen asli tetap terlihat pada kolom Lulus Lab."
+    )
+
+    st.markdown("**Pemenang Setiap Kelompok**")
+    st.dataframe(
+        winners.style.format(
+            {
+                "Skor Total": "{:.1f}",
+                "Growth OOS (%)": "{:+.2f}%",
+                "PF OOS": "{:.2f}",
+                "DD OOS (%)": "{:.2f}%",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Leaderboard Keseluruhan**")
+    master_columns = [
+        "Peringkat",
+        "Kelompok",
+        "Eksperimen",
+        "Kandidat wakil",
+        "Skor Total",
+        "Grade",
+        "Growth OOS (%)",
+        "PF OOS",
+        "DD OOS (%)",
+        "Transaksi OOS",
+        "Prob. Rugi MC (%)",
+        "Lulus Lab",
+        "Komparabilitas",
+    ]
+    st.dataframe(
+        master[master_columns].style.format(
+            {
+                "Skor Total": "{:.1f}",
+                "Growth OOS (%)": "{:+.2f}%",
+                "PF OOS": "{:.2f}",
+                "DD OOS (%)": "{:.2f}%",
+                "Transaksi OOS": "{:.0f}",
+                "Prob. Rugi MC (%)": "{:.2f}%",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown("**Ranking Dalam Kelompok**")
+    group_rankings = payload["group_rankings"]
+    group_names = list(group_rankings)
+    group_tabs = st.tabs(group_names)
+    for group_tab, group_name in zip(group_tabs, group_names):
+        with group_tab:
+            frame = group_rankings[group_name]
+            display_columns = [
+                "Peringkat kelompok",
+                "Eksperimen",
+                "Kandidat wakil",
+                "Skor Total",
+                "Grade",
+                "Growth OOS (%)",
+                "PF OOS",
+                "DD OOS (%)",
+                "Transaksi OOS",
+                "Growth development (%)",
+                "Growth locked (%)",
+                "Catatan",
+            ]
+            st.dataframe(
+                frame[display_columns].style.format(
+                    {
+                        "Skor Total": "{:.1f}",
+                        "Growth OOS (%)": "{:+.2f}%",
+                        "PF OOS": "{:.2f}",
+                        "DD OOS (%)": "{:.2f}%",
+                        "Transaksi OOS": "{:.0f}",
+                        "Growth development (%)": "{:+.2f}%",
+                        "Growth locked (%)": "{:+.2f}%",
+                    },
+                    na_rep="-",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with st.expander("Metodologi Skor dan Batas Interpretasi"):
+        st.dataframe(payload["methodology"], use_container_width=True, hide_index=True)
+        st.markdown(
+            "- Penalti diterapkan untuk growth OOS negatif, PF di bawah 1, drawdown di atas "
+            "15%, probabilitas rugi Monte Carlo di atas 25%, dan sampel di bawah 10 transaksi.\n"
+            "- Nilai yang tidak tersedia diberi skor netral parsial, bukan diasumsikan lulus.\n"
+            "- Grade A mensyaratkan skor tinggi, gerbang OOS, dan status Lulus dari laboratorium asli.\n"
+            "- Model dengan kandidat atau periode yang berulang tetap dicatat sebagai eksperimen "
+            "terpisah karena masing-masing menguji hipotesis yang berbeda."
+        )
+
+
 def render_simulation(
     optimized_result,
     optimization_leaderboard: pd.DataFrame,
@@ -6290,6 +6440,7 @@ def render_simulation(
 
     (
         optimizer_tab,
+        model_comparison_tab,
         optimizer_v1_oos_tab,
         exact_v1_tab,
         robustness_v1_tab,
@@ -6319,6 +6470,7 @@ def render_simulation(
     ) = st.tabs(
         [
             "Optimizer v1",
+            "Komparasi Model Mesin",
             "Optimizer v1 OOS",
             "Optimizer v1 Exact Broker-Aware OOS",
             "Optimizer v1 Robustness Test",
@@ -6349,6 +6501,10 @@ def render_simulation(
     )
     with optimizer_tab:
         _render_multiphase_result("Optimizer v1", optimized_result, optimization_leaderboard, gold_ohlc)
+    with model_comparison_tab:
+        _render_model_comparison_tab(
+            load_precomputed_model_comparison(MODEL_COMPARISON_VERSION)
+        )
     oos_payload = load_precomputed_optimizer_oos(OPTIMIZER_OOS_VERSION)
     with optimizer_v1_oos_tab:
         _render_optimizer_oos_tab(oos_payload, key="v1", title="Optimizer v1 OOS")
