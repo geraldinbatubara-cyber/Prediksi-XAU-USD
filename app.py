@@ -165,7 +165,12 @@ V1_SIDEWAYS_SPECIALIST_V5_VERSION = (
 V1_SIDEWAYS_SPECIALIST_V5_PATH = Path(
     "data/precomputed/v1_sideways_specialist_v5.pkl.b64"
 )
-
+V1_SIDEWAYS_SPECIALIST_V5_EXTENSIONS_VERSION = (
+    "optimizer-v1-sideways-specialist-v5b-v5c-v5d-2022-2026h1-v1"
+)
+V1_SIDEWAYS_SPECIALIST_V5_EXTENSIONS_PATH = Path(
+    "data/precomputed/v1_sideways_specialist_v5_extensions.pkl.b64"
+)
 BUY_SPECIALIST_V4_LIVE_VERSION = "buy-specialist-v4-live-inference-2026-07-24-v1"
 BUY_SPECIALIST_V4_LIVE_PATH = Path(
     "data/precomputed/buy_specialist_v4_live.pkl.b64"
@@ -630,6 +635,21 @@ def load_precomputed_v1_sideways_specialist_v5(backtest_version: str):
     return None
 
 
+@st.cache_resource
+def load_precomputed_v1_sideways_specialist_v5_extensions(backtest_version: str):
+    if not V1_SIDEWAYS_SPECIALIST_V5_EXTENSIONS_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                V1_SIDEWAYS_SPECIALIST_V5_EXTENSIONS_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
 
 
 @st.cache_resource
@@ -6470,12 +6490,132 @@ def _render_v1_sideways_specialist_v5_tab(payload) -> None:
         st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
 
 
+def _render_v1_sideways_v5_extension_tab(
+    payload,
+    *,
+    title: str,
+    finding: str,
+) -> None:
+    st.subheader(title)
+    if payload is None:
+        st.warning(f"Hasil {title} belum tersedia.")
+        return
+
+    ranking = payload["ranking"]
+    winner_name = payload["winner"]
+    control_name = payload["control"]
+    top = ranking.loc[ranking["Kandidat"].eq(winner_name)].iloc[0]
+    control = ranking.loc[ranking["Kandidat"].eq(control_name)].iloc[0]
+    st.warning(
+        "**Pengujian terisolasi:** entry Breakout Hazard Gate v2, lot 0.01, "
+        "TP/SL, biaya broker, time stop, periode, dan batas posisi dibekukan. "
+        "Hanya komponen exit yang disebut dalam eksperimen ini yang berubah. "
+        "Ledger Paper Live Trading tidak disentuh."
+    )
+    if payload["winner_passed"]:
+        st.success(f"**LULUS LAB:** {winner_name} melewati seluruh gerbang kelulusan.")
+    else:
+        st.error(
+            f"**BELUM LULUS:** {winner_name} memimpin selection 2024, tetapi baru "
+            f"memenuhi **{int(top['Kriteria lolos'])}/10** kriteria. Historical "
+            f"reference 2026H1 menghasilkan **{top['Growth 2026H1 (%)']:+.2f}%**."
+        )
+    st.info(finding)
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Pemenang selection", winner_name)
+    c2.metric("Growth development", f"{top['Growth development (%)']:+.2f}%")
+    c3.metric("Profit factor", f"{top['PF development']:.3f}")
+    c4.metric("Max drawdown", f"{top['DD development (%)']:.2f}%")
+    c5.metric("Reference 2026H1", f"{top['Growth 2026H1 (%)']:+.2f}%")
+    c6.metric(
+        "Delta vs control",
+        f"{top['Growth development (%)'] - control['Growth development (%)']:+.2f} pp",
+    )
+
+    ranking_formats = {
+        "Selection score 2024": "{:.3f}",
+        "Growth selection 2024 (%)": "{:+.2f}%",
+        "PF selection 2024": "{:.3f}",
+        "DD selection 2024 (%)": "{:.2f}%",
+        "Transaksi selection 2024": "{:.0f}",
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Transaksi development": "{:.0f}",
+        "Growth locked 2025 (%)": "{:+.2f}%",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+        "Net exit benefit": "${:,.2f}",
+    }
+    st.markdown("**Peringkat Kandidat**")
+    st.dataframe(
+        ranking.style.format(ranking_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Atribusi Perubahan Exit terhadap Control**")
+    st.dataframe(
+        payload["exit_attribution"].style.format(
+            {
+                "Common entry": "{:.0f}",
+                "BE activations": "{:.0f}",
+                "Trailing activations": "{:.0f}",
+                "Warning evaluations": "{:.0f}",
+                "Hazard exits": "{:.0f}",
+                "Saved loss": "${:,.2f}",
+                "Sacrificed profit": "${:,.2f}",
+                "Net exit benefit": "${:,.2f}",
+                "Median MFE captured (%)": "{:.1f}%",
+                "Total profit giveback": "${:,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Ringkasan Alasan Exit**")
+    st.dataframe(
+        payload["exit_reason_summary"].style.format(
+            {
+                "Jumlah": "{:.0f}",
+                "Total net P/L": "${:,.2f}",
+                "Rata-rata net P/L": "${:,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Gerbang Kelulusan**")
+    st.dataframe(payload["decisions"], use_container_width=True, hide_index=True)
+
+    with st.expander("Metodologi, periode, fold, risiko, stress, dan audit"):
+        for key, value in payload["methodology"].items():
+            if key != "Name":
+                st.caption(f"**{key}:** {value}")
+        for label, key in (
+            ("Validasi Ekonomi per Periode", "period_validation"),
+            ("Historical Reference 2026H1", "historical_reference"),
+            ("Fold", "folds"),
+            ("Monte Carlo", "monte_carlo_summary"),
+            ("Konsentrasi Profit", "profit_concentration"),
+            ("Stress", "stress_summary"),
+            ("Audit State", "state_audit"),
+            ("Referensi v5A", "v5a_reference"),
+            ("Audit Data", "data_audit"),
+        ):
+            st.markdown(f"**{label}**")
+            st.dataframe(
+                payload[key].style.format(precision=3, na_rep="-"),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def _render_model_comparison_tab(payload) -> None:
     st.subheader("Komparasi Model Mesin")
     st.caption(
-        "Ranking 27 eksperimen menggunakan kerangka skor yang sama. Hasil ini membandingkan "
+        "Ranking 30 eksperimen menggunakan kerangka skor yang sama. Hasil ini membandingkan "
         "bukti eksperimen yang sudah tersimpan dan tidak menjalankan ulang backtest."
     )
     if payload is None:
@@ -6652,6 +6792,9 @@ def render_simulation(
         sideways_specialist_v3_tab,
         sideways_specialist_v4_tab,
         sideways_specialist_v5_tab,
+        sideways_specialist_v5b_tab,
+        sideways_specialist_v5c_tab,
+        sideways_specialist_v5d_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -6682,7 +6825,10 @@ def render_simulation(
             "v1 Sideways Specialist v2",
             "v1 Sideways Specialist v3",
             "v1 Sideways Specialist v4",
-            "v1 Sideways Specialist v5",
+            "v1 Sideways Specialist v5A",
+            "v1 Sideways Specialist v5B",
+            "v1 Sideways Specialist v5C",
+            "v1 Sideways Specialist v5D",
         ]
     )
     with optimizer_tab:
@@ -6812,6 +6958,40 @@ def render_simulation(
             load_precomputed_v1_sideways_specialist_v5(
                 V1_SIDEWAYS_SPECIALIST_V5_VERSION
             )
+        )
+    v5_extensions = load_precomputed_v1_sideways_specialist_v5_extensions(
+        V1_SIDEWAYS_SPECIALIST_V5_EXTENSIONS_VERSION
+    )
+    with sideways_specialist_v5b_tab:
+        _render_v1_sideways_v5_extension_tab(
+            None if v5_extensions is None else v5_extensions["v5b"],
+            title="v1 Sideways Specialist Lab v5B - Exit Timing Isolation",
+            finding=(
+                "M15 Break-Even 1R menjadi pemenang selection. Proxy evaluasi pada "
+                "close M1 menghasilkan P/L yang sama dengan M15, sehingga data ini "
+                "belum memberi bukti bahwa evaluasi lebih sering memperbaiki hasil. "
+                "Trailing 2R tidak pernah aktif karena TP tercapai lebih dahulu."
+            ),
+        )
+    with sideways_specialist_v5c_tab:
+        _render_v1_sideways_v5_extension_tab(
+            None if v5_extensions is None else v5_extensions["v5c"],
+            title="v1 Sideways Specialist Lab v5C - Feasible Trailing",
+            finding=(
+                "Trailing 70% TP memimpin selection 2024 dan trailing 0.50R memberi "
+                "growth development tertinggi. Namun seluruh kandidat trailing feasible "
+                "tetap negatif pada 2026H1, sehingga belum layak dipromosikan."
+            ),
+        )
+    with sideways_specialist_v5d_tab:
+        _render_v1_sideways_v5_extension_tab(
+            None if v5_extensions is None else v5_extensions["v5d"],
+            title="v1 Sideways Specialist Lab v5D - Hazard Severity",
+            finding=(
+                "Zona warning dan critical memperbaiki drawdown development, tetapi "
+                "semua kebijakan hazard aktif memperburuk hasil 2026H1 dibanding hard-exit "
+                "control. Hazard severity belum stabil sebagai aturan exit."
+            ),
         )
 
 
