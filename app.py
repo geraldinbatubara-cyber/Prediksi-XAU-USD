@@ -159,6 +159,12 @@ V1_SIDEWAYS_SPECIALIST_V4_VERSION = (
 V1_SIDEWAYS_SPECIALIST_V4_PATH = Path(
     "data/precomputed/v1_sideways_specialist_v4.pkl.b64"
 )
+V1_SIDEWAYS_SPECIALIST_V5_VERSION = (
+    "optimizer-v1-sideways-specialist-exit-attribution-2022-2026h1-v5"
+)
+V1_SIDEWAYS_SPECIALIST_V5_PATH = Path(
+    "data/precomputed/v1_sideways_specialist_v5.pkl.b64"
+)
 BUY_SPECIALIST_V4_LIVE_VERSION = "buy-specialist-v4-live-inference-2026-07-24-v1"
 BUY_SPECIALIST_V4_LIVE_PATH = Path(
     "data/precomputed/buy_specialist_v4_live.pkl.b64"
@@ -597,6 +603,23 @@ def load_precomputed_v1_sideways_specialist_v4(backtest_version: str):
         saved = pickle.loads(
             base64.b64decode(
                 V1_SIDEWAYS_SPECIALIST_V4_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_sideways_specialist_v5(backtest_version: str):
+    if not V1_SIDEWAYS_SPECIALIST_V5_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                V1_SIDEWAYS_SPECIALIST_V5_PATH.read_text(encoding="ascii")
             )
         )
         if saved.get("version") == backtest_version:
@@ -6288,10 +6311,166 @@ def _render_v1_sideways_specialist_v4_tab(payload) -> None:
         st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
 
 
+def _render_v1_sideways_specialist_v5_tab(payload) -> None:
+    st.subheader("v1 Sideways Specialist Lab v5A - Exit Attribution")
+    if payload is None:
+        st.warning("Hasil Sideways Specialist v5 belum tersedia.")
+        return
+
+    ranking = payload["ranking"]
+    top = ranking.iloc[0]
+    control = ranking.loc[
+        ranking["Kandidat"].eq("Breakout Hazard v2 Control")
+    ].iloc[0]
+    st.warning(
+        "**Eksperimen exit terisolasi:** entry Breakout Hazard Gate v2, lot "
+        "0.01, TP/SL, biaya broker, time stop, dan batas posisi tidak diubah. "
+        "Ledger Paper Live Trading tidak disentuh."
+    )
+    if payload["winner_passed"]:
+        st.success(
+            f"**LULUS LAB:** {top['Kandidat']} lolos selection, locked period, "
+            "fold, risiko, dan stress."
+        )
+    else:
+        st.error(
+            f"**BELUM LULUS:** {top['Kandidat']} memimpin selection 2024, tetapi "
+            f"baru memenuhi **{int(top['Kriteria lolos'])}/10** kriteria dan "
+            f"reference 2026H1 masih **{top['Growth 2026H1 (%)']:+.2f}%**."
+        )
+    st.info(
+        "Temuan atribusi: **ATR Trailing 2R tidak pernah aktif**. Dengan TP/SL "
+        "v2 yang dibekukan, harga menyentuh TP sebelum keuntungan dapat mencapai "
+        "2R. Karena itu hasil ATR Trailing 2R sama dengan control, sedangkan "
+        "BE + ATR sama dengan Break-Even 1R."
+    )
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Pemenang selection", top["Kandidat"])
+    c2.metric("Growth development", f"{top['Growth development (%)']:+.2f}%")
+    c3.metric("Profit factor", f"{top['PF development']:.3f}")
+    c4.metric("Max drawdown", f"{top['DD development (%)']:.2f}%")
+    c5.metric("Reference 2026H1", f"{top['Growth 2026H1 (%)']:+.2f}%")
+    c6.metric(
+        "Delta vs control",
+        f"{top['Growth development (%)'] - control['Growth development (%)']:+.2f} pp",
+    )
+
+    ranking_formats = {
+        "Selection score 2024": "{:.3f}",
+        "Growth selection 2024 (%)": "{:+.2f}%",
+        "PF selection 2024": "{:.3f}",
+        "DD selection 2024 (%)": "{:.2f}%",
+        "Transaksi selection 2024": "{:.0f}",
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Transaksi development": "{:.0f}",
+        "Growth locked 2025 (%)": "{:+.2f}%",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+        "Net exit benefit": "${:,.2f}",
+    }
+    metric_formats = {
+        "Sinyal tersedia": "{:.0f}",
+        "Equity akhir": "${:,.2f}",
+        "Growth (%)": "{:+.2f}%",
+        "Max drawdown": "${:,.2f}",
+        "Max drawdown (%)": "{:.2f}%",
+        "Profit factor": "{:.3f}",
+        "Transaksi": "{:.0f}",
+        "Win rate (%)": "{:.1f}%",
+        "Total swap": "${:,.2f}",
+        "Biaya spread": "${:,.2f}",
+        "Biaya slippage": "${:,.2f}",
+    }
+    st.markdown("**Peringkat Selection 2024**")
+    st.dataframe(
+        ranking.style.format(ranking_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Atribusi Manajemen Exit terhadap Control**")
+    st.dataframe(
+        payload["exit_attribution"].style.format(
+            {
+                "Common entry": "{:.0f}",
+                "Managed exits": "{:.0f}",
+                "BE exits": "{:.0f}",
+                "Trailing exits": "{:.0f}",
+                "Hazard exits": "{:.0f}",
+                "Saved loss": "${:,.2f}",
+                "Sacrificed profit": "${:,.2f}",
+                "Net exit benefit": "${:,.2f}",
+                "Median MFE captured (%)": "{:.1f}%",
+                "Total profit giveback": "${:,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Ringkasan Alasan Exit**")
+    st.dataframe(
+        payload["exit_reason_summary"].style.format(
+            {
+                "Jumlah": "{:.0f}",
+                "Total net P/L": "${:,.2f}",
+                "Rata-rata net P/L": "${:,.2f}",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Gerbang Kelulusan**")
+    st.dataframe(payload["decisions"], use_container_width=True, hide_index=True)
+
+    with st.expander("Metodologi, periode, fold, risiko, dan stress"):
+        for key, value in payload["methodology"].items():
+            if key != "Name":
+                st.caption(f"**{key}:** {value}")
+        st.markdown("**Validasi Ekonomi per Periode**")
+        st.dataframe(
+            payload["period_validation"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Historical Reference 2026H1**")
+        st.dataframe(
+            payload["historical_reference"].style.format(
+                metric_formats, na_rep="-"
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        for key in (
+            "folds",
+            "monte_carlo_summary",
+            "profit_concentration",
+            "stress_summary",
+            "state_audit",
+            "model_1h_selection",
+            "model_3h_selection",
+        ):
+            st.dataframe(
+                payload[key].style.format(precision=3, na_rep="-"),
+                use_container_width=True,
+                hide_index=True,
+            )
+        st.markdown("**Referensi Peringkat v4**")
+        st.dataframe(
+            payload["v4_reference"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Data**")
+        st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
+
+
 def _render_model_comparison_tab(payload) -> None:
     st.subheader("Komparasi Model Mesin")
     st.caption(
-        "Ranking 26 eksperimen menggunakan kerangka skor yang sama. Hasil ini membandingkan "
+        "Ranking 27 eksperimen menggunakan kerangka skor yang sama. Hasil ini membandingkan "
         "bukti eksperimen yang sudah tersimpan dan tidak menjalankan ulang backtest."
     )
     if payload is None:
@@ -6467,6 +6646,7 @@ def render_simulation(
         sideways_specialist_v2_tab,
         sideways_specialist_v3_tab,
         sideways_specialist_v4_tab,
+        sideways_specialist_v5_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -6497,6 +6677,7 @@ def render_simulation(
             "v1 Sideways Specialist v2",
             "v1 Sideways Specialist v3",
             "v1 Sideways Specialist v4",
+            "v1 Sideways Specialist v5",
         ]
     )
     with optimizer_tab:
@@ -6619,6 +6800,12 @@ def render_simulation(
         _render_v1_sideways_specialist_v4_tab(
             load_precomputed_v1_sideways_specialist_v4(
                 V1_SIDEWAYS_SPECIALIST_V4_VERSION
+            )
+        )
+    with sideways_specialist_v5_tab:
+        _render_v1_sideways_specialist_v5_tab(
+            load_precomputed_v1_sideways_specialist_v5(
+                V1_SIDEWAYS_SPECIALIST_V5_VERSION
             )
         )
 
