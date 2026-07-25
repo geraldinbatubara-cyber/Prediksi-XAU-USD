@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 
-MODEL_COMPARISON_VERSION = "optimizer-v1-model-comparison-30-experiments-v3"
+MODEL_COMPARISON_VERSION = "optimizer-v1-model-comparison-31-experiments-v4"
 
 
 @dataclass(frozen=True)
@@ -263,6 +263,17 @@ EXPERIMENTS = (
         candidate="Warning 5-7 / Exit 8",
         result_key="v5d",
         note="Hazard severity menekan DD development tetapi merusak reference 2026H1.",
+    ),
+    ExperimentSpec(
+        "Sideways Specialist v6",
+        "Sideways Specialist",
+        "v1_sideways_specialist_v6.pkl.b64",
+        "ranking",
+        candidate="Persistence 2xM15",
+        note=(
+            "Fusion terbaik memperbaiki PF development, tetapi belum memperbaiki "
+            "reference 2026H1 dan tidak dipromosikan."
+        ),
     ),
 )
 
