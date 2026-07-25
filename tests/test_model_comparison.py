@@ -8,11 +8,11 @@ from gold_forecast.model_comparison import EXPERIMENTS, build_model_comparison
 PRECOMPUTED = Path("data/precomputed")
 
 
-def test_comparison_contains_all_26_experiments() -> None:
+def test_comparison_contains_all_27_experiments() -> None:
     payload = build_model_comparison(PRECOMPUTED)
 
-    assert len(EXPERIMENTS) == 26
-    assert payload["experiment_count"] == 26
+    assert len(EXPERIMENTS) == 27
+    assert payload["experiment_count"] == 27
     assert payload["group_count"] == 5
     assert set(payload["master"]["Eksperimen"]) == {item.name for item in EXPERIMENTS}
 
