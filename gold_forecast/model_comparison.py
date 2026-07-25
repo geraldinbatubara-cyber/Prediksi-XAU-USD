@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 
-MODEL_COMPARISON_VERSION = "optimizer-v1-model-comparison-27-experiments-v2"
+MODEL_COMPARISON_VERSION = "optimizer-v1-model-comparison-30-experiments-v3"
 
 
 @dataclass(frozen=True)
@@ -237,6 +237,33 @@ EXPERIMENTS = (
             "belum lulus reference 2026H1."
         ),
     ),
+    ExperimentSpec(
+        "Sideways Specialist v5B",
+        "Sideways Specialist",
+        "v1_sideways_specialist_v5_extensions.pkl.b64",
+        "ranking",
+        candidate="M15 BE 1R",
+        result_key="v5b",
+        note="Exit timing terisolasi; M1-close tidak mengungguli evaluasi M15.",
+    ),
+    ExperimentSpec(
+        "Sideways Specialist v5C",
+        "Sideways Specialist",
+        "v1_sideways_specialist_v5_extensions.pkl.b64",
+        "ranking",
+        candidate="ATR Trail 70% TP",
+        result_key="v5c",
+        note="Trailing feasible aktif, tetapi belum bertahan pada reference 2026H1.",
+    ),
+    ExperimentSpec(
+        "Sideways Specialist v5D",
+        "Sideways Specialist",
+        "v1_sideways_specialist_v5_extensions.pkl.b64",
+        "ranking",
+        candidate="Warning 5-7 / Exit 8",
+        result_key="v5d",
+        note="Hazard severity menekan DD development tetapi merusak reference 2026H1.",
+    ),
 )
 
 
@@ -448,6 +475,7 @@ def _augment_period_metrics(
 
 
 def _raw_metrics(spec: ExperimentSpec, payload: dict[str, Any]) -> dict[str, float]:
+    evidence_payload = payload
     if spec.source == "tuple":
         result = payload["v1"][int(spec.result_key)]
         metrics = _summary_metrics(result.summary)
@@ -455,14 +483,16 @@ def _raw_metrics(spec: ExperimentSpec, payload: dict[str, Any]) -> dict[str, flo
         result = payload[spec.result_key]
         metrics = _summary_metrics(result.summary)
     elif spec.source == "ranking":
-        row = _matching_row(payload.get("ranking"), spec.candidate)
+        if spec.result_key:
+            evidence_payload = payload[spec.result_key]
+        row = _matching_row(evidence_payload.get("ranking"), spec.candidate)
         metrics = _ranking_metrics(row)
     elif spec.source == "tables":
         metrics = _table_metrics(payload, spec.candidate)
     else:
         raise ValueError(f"Unknown comparison source: {spec.source}")
 
-    _augment_period_metrics(metrics, payload, spec.candidate)
+    _augment_period_metrics(metrics, evidence_payload, spec.candidate)
     if spec.name == "Optimizer v1 Robustness Test":
         summary = payload["summary"]
         metrics["mc_loss"] = _lookup(
