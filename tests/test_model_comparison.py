@@ -8,11 +8,11 @@ from gold_forecast.model_comparison import EXPERIMENTS, build_model_comparison
 PRECOMPUTED = Path("data/precomputed")
 
 
-def test_comparison_contains_all_31_experiments() -> None:
+def test_comparison_contains_all_32_experiments() -> None:
     payload = build_model_comparison(PRECOMPUTED)
 
-    assert len(EXPERIMENTS) == 31
-    assert payload["experiment_count"] == 31
+    assert len(EXPERIMENTS) == 32
+    assert payload["experiment_count"] == 32
     assert payload["group_count"] == 5
     assert set(payload["master"]["Eksperimen"]) == {item.name for item in EXPERIMENTS}
 
@@ -21,7 +21,7 @@ def test_scores_are_bounded_and_ranked() -> None:
     master = build_model_comparison(PRECOMPUTED)["master"]
 
     assert master["Skor Total"].between(0, 100).all()
-    assert master["Peringkat"].tolist() == list(range(1, 32))
+    assert master["Peringkat"].tolist() == list(range(1, 33))
     assert master["Skor Total"].is_monotonic_decreasing
     assert pd.to_numeric(master["Growth OOS (%)"], errors="coerce").notna().all()
 
