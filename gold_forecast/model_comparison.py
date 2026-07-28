@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 
-MODEL_COMPARISON_VERSION = "optimizer-v1-model-comparison-31-experiments-v4"
+MODEL_COMPARISON_VERSION = "optimizer-v1-model-comparison-32-experiments-v5"
 
 
 @dataclass(frozen=True)
@@ -273,6 +273,17 @@ EXPERIMENTS = (
         note=(
             "Fusion terbaik memperbaiki PF development, tetapi belum memperbaiki "
             "reference 2026H1 dan tidak dipromosikan."
+        ),
+    ),
+    ExperimentSpec(
+        "Sideways Specialist v7",
+        "Sideways Specialist",
+        "v1_sideways_specialist_v7.pkl.b64",
+        "ranking",
+        candidate="MTF Regime Gate",
+        note=(
+            "Native M15 memperbaiki pemisahan timeframe, tetapi hard gate menahan "
+            "hanya 30% sinyal dan belum mengungguli kontrol v6."
         ),
     ),
 )
