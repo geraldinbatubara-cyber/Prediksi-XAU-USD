@@ -8319,7 +8319,9 @@ def render_live_trading(
         st.caption(
             "BUY Specialist v4 hanya dapat membuka BUY. Regime BEARISH dan "
             "SIDEWAYS selalu diblokir; TRANSITION tetap harus lolos classifier "
-            "Adaptive dan konfirmasi M15 sesuai kontrak eksperimen v4."
+            "Adaptive dan konfirmasi M15 sesuai kontrak eksperimen v4. "
+            "Regime dan probabilitas di atas adalah observasi terbaru; entry tetap "
+            "menunggu kandidat Fixed Delay yang sah."
         )
 
     if (
@@ -8337,6 +8339,24 @@ def render_live_trading(
             st.info(f"**{delay_status}** | {delay_detail}")
         delay_frame = pd.DataFrame(
             [
+                {"Parameter": "Kode diagnosis", "Nilai": fixed_delay_state.get("Kode diagnosis", "-")},
+                {"Parameter": "Status candle harian terbaru", "Nilai": fixed_delay_state.get("Status sinyal harian", "-")},
+                {"Parameter": "Interpretasi candle harian", "Nilai": fixed_delay_state.get("Interpretasi sinyal harian", "-")},
+                {
+                    "Parameter": "Jumlah sinyal v1 sejak aktivasi",
+                    "Nilai": fixed_delay_state.get("Jumlah sinyal harian sejak aktivasi", "-"),
+                },
+                {
+                    "Parameter": "Sinyal harian terakhir",
+                    "Nilai": _format_date(fixed_delay_state.get("Sinyal harian terakhir")),
+                },
+                {
+                    "Parameter": "Cakupan candle M1 MT5",
+                    "Nilai": (
+                        f"{_format_utc_timestamp_wit(fixed_delay_state.get('Cakupan M1 mulai'))} s.d. "
+                        f"{_format_utc_timestamp_wit(fixed_delay_state.get('Cakupan M1 akhir'))}"
+                    ),
+                },
                 {
                     "Parameter": "Waktu sinyal Balanced Entry",
                     "Nilai": _format_utc_timestamp_wit(fixed_delay_state.get("Waktu sinyal awal")),
