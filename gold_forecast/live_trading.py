@@ -1003,6 +1003,38 @@ def _prepare_live_broker_m1(broker_bars: pd.DataFrame | None) -> pd.DataFrame:
     return frame[numeric].dropna().loc[~frame.index.duplicated(keep="last")]
 
 
+def _fixed_delay_daily_diagnostics(
+    gold_ohlc: pd.DataFrame,
+    data: pd.DataFrame,
+    params: dict[str, object],
+    activation_utc: pd.Timestamp,
+    now_utc: pd.Timestamp,
+) -> dict[str, object]:
+    waiting = _signal_waiting_state(gold_ohlc, params)
+    predictions = _indicator_predictions(
+        gold_ohlc,
+        str(params["Mode"]),
+        int(params["Fast MA"]),
+        int(params["Slow MA"]),
+        int(params["Momentum hari"]),
+        float(params["Threshold entry (%)"]),
+        test_start=activation_utc.normalize(),
+        test_end=now_utc.normalize(),
+    )
+    latest_signal = predictions.index.max() if not predictions.empty else pd.NaT
+    return {
+        "Status sinyal harian": waiting.get("Status sinyal", "-"),
+        "Interpretasi sinyal harian": waiting.get("Interpretasi", "-"),
+        "Tanggal evaluasi harian": waiting.get("Tanggal evaluasi", pd.NaT),
+        "Jumlah sinyal harian sejak aktivasi": int(len(predictions)),
+        "Sinyal harian terakhir": latest_signal,
+        "Cakupan M1 mulai": data.index.min() if not data.empty else pd.NaT,
+        "Cakupan M1 akhir": data.index.max() if not data.empty else pd.NaT,
+        "Checklist BUY harian": waiting.get("Checklist BUY", []),
+        "Checklist SELL harian": waiting.get("Checklist SELL", []),
+    }
+
+
 def _fixed_delay_live_signal(
     gold_ohlc: pd.DataFrame,
     broker_bars: pd.DataFrame | None,
@@ -1028,6 +1060,10 @@ def _fixed_delay_live_signal(
     if data.empty:
         return None, empty_state
 
+    diagnostics = _fixed_delay_daily_diagnostics(
+        gold_ohlc, data, params, activation_utc, now_utc
+    )
+
     raw = _entry_signals_for_period(
         data,
         gold_ohlc,
@@ -1036,17 +1072,35 @@ def _fixed_delay_live_signal(
         now_utc,
     )
     if raw.empty:
+        has_daily_signal = diagnostics["Jumlah sinyal harian sejak aktivasi"] > 0
         return None, {
             **empty_state,
-            "Status": "MENUNGGU SINYAL HARIAN",
-            "Detail": "Belum ada sinyal v1 baru setelah aktivasi Fixed Delay.",
+            **diagnostics,
+            "Status": (
+                "MENUNGGU PEMETAAN M1"
+                if has_daily_signal
+                else "MENUNGGU SINYAL HARIAN"
+            ),
+            "Detail": (
+                "Sinyal harian v1 tersedia, tetapi tidak memiliki candle M1 sesudah candle harian "
+                "dalam cakupan feed saat ini; entry retrospektif tidak dilakukan."
+                if has_daily_signal
+                else "Syarat BUY/SELL v1 pada candle harian selesai belum lengkap."
+            ),
+            "Kode diagnosis": (
+                "DAILY_SIGNAL_OUTSIDE_M1_COVERAGE"
+                if has_daily_signal
+                else "NO_DAILY_V1_SIGNAL"
+            ),
         }
     raw = raw.loc[raw.index >= activation_utc]
     if raw.empty:
         return None, {
             **empty_state,
+            **diagnostics,
             "Status": "MENUNGGU SINYAL HARIAN",
-            "Detail": "Belum ada sinyal v1 baru setelah aktivasi Fixed Delay.",
+            "Detail": "Sinyal yang dapat dipetakan ke M1 terjadi sebelum waktu aktivasi strategi.",
+            "Kode diagnosis": "SIGNAL_BEFORE_ACTIVATION",
         }
 
     features = _entry_features(data)
@@ -1069,6 +1123,7 @@ def _fixed_delay_live_signal(
         last_audit = audit.iloc[-1] if not audit.empty else pd.Series(dtype=object)
         return None, {
             **empty_state,
+            **diagnostics,
             "Status": "MENUNGGU BALANCED ENTRY",
             "Detail": str(last_audit.get("Alasan", "Alignment H1 atau conviction belum lolos.")),
             "Waktu sinyal awal": last_audit.get("Waktu sinyal awal", pd.NaT),
@@ -1081,6 +1136,7 @@ def _fixed_delay_live_signal(
     if location >= len(data.index):
         return None, {
             **empty_state,
+            **diagnostics,
             "Status": "TUNGGU 5 MENIT",
             "Detail": "Balanced Entry lolos; menunggu candle konfirmasi lima menit.",
             "Waktu sinyal awal": signal_time,
@@ -1091,6 +1147,7 @@ def _fixed_delay_live_signal(
     if confirmation_time > confirmation_due + pd.Timedelta(minutes=5):
         return None, {
             **empty_state,
+            **diagnostics,
             "Status": "BATAL DATA M1",
             "Detail": "Candle konfirmasi tidak tersedia dalam toleransi lima menit.",
             "Waktu sinyal awal": signal_time,
@@ -1113,6 +1170,7 @@ def _fixed_delay_live_signal(
     spread_ok = spread_points <= FIXED_DELAY_SPREAD_LIMIT_POINTS
     accepted = not barrier_hit and spread_ok
     state = {
+        **diagnostics,
         "Status": "ENTRY" if accepted else "BATAL BARRIER" if barrier_hit else "BATAL SPREAD",
         "Detail": (
             "Delay lima menit selesai; seluruh validasi entry lolos."
@@ -1145,6 +1203,60 @@ def _fixed_delay_live_signal(
             }
         )
     return output, state
+
+
+def _buy_specialist_observation(
+    data: pd.DataFrame,
+    model_bundle: dict[str, object],
+    evaluation_time: pd.Timestamp,
+) -> dict[str, object] | None:
+    classifier = _buy_specialist_classifier_frame(data, model_bundle)
+    usable = classifier.loc[:evaluation_time].dropna(
+        subset=list(model_bundle.get("feature_columns", FEATURE_COLUMNS))
+    )
+    if usable.empty:
+        return None
+
+    latest = usable.tail(1)
+    raw = _raw_model_probabilities(
+        model_bundle["estimators"], latest
+    )["Hierarchical Ensemble"]
+    probability = _apply_calibration(raw, model_bundle["calibrators"]).iloc[0]
+    thresholds = model_bundle["thresholds"]
+    direction_confidence = float(probability["direction_confidence"])
+    classifier_buy = bool(
+        float(probability["trend"]) >= float(thresholds.moderate_trend)
+        and direction_confidence >= float(thresholds.moderate_direction)
+        and float(probability["up"]) >= 0.50
+    )
+
+    entry_features = _entry_features(data)
+    m15_row = entry_features.reindex(
+        pd.DatetimeIndex([evaluation_time]), method="ffill"
+    )
+    m15_buy = False
+    if not m15_row.empty:
+        values = m15_row.iloc[0]
+        required = ["price", "m15_fast", "m15_slow", "m15_momentum"]
+        if all(pd.notna(values.get(column)) for column in required):
+            m15_buy = bool(
+                float(values["price"]) > float(values["m15_fast"])
+                > float(values["m15_slow"])
+                and float(values["m15_momentum"]) > 0
+            )
+
+    regime = _buy_specialist_regime(
+        model_bundle, data, evaluation_time, latest.iloc[0]
+    )
+    return {
+        "Evaluation time": evaluation_time,
+        "P(trend)": float(probability["trend"]),
+        "P(BUY)": float(probability["up"]),
+        "Direction confidence": direction_confidence,
+        "Classifier BUY": classifier_buy,
+        "M15 alignment": m15_buy,
+        "Regime": regime,
+    }
 
 
 def _buy_specialist_v4_signal(
@@ -1188,6 +1300,12 @@ def _buy_specialist_v4_signal(
         )
         return None, state
 
+    live_observation = _buy_specialist_observation(
+        data, model_bundle, pd.Timestamp(data.index.max())
+    )
+    if live_observation is not None:
+        state.update(live_observation)
+
     fixed_signal, fixed_state = _fixed_delay_live_signal(
         gold_ohlc, broker_bars, params, now, start_date
     )
@@ -1209,14 +1327,13 @@ def _buy_specialist_v4_signal(
         )
         return None, state
 
-    classifier = _buy_specialist_classifier_frame(data, model_bundle)
     confirmation_time = pd.Timestamp(
         fixed_state.get("Waktu konfirmasi", data.index.max())
     )
-    usable = classifier.loc[:confirmation_time].dropna(
-        subset=list(model_bundle.get("feature_columns", FEATURE_COLUMNS))
+    observation = _buy_specialist_observation(
+        data, model_bundle, confirmation_time
     )
-    if usable.empty:
+    if observation is None:
         state.update(
             {
                 "Status": "MENUNGGU WARM-UP MODEL",
@@ -1225,36 +1342,14 @@ def _buy_specialist_v4_signal(
         )
         return None, state
 
-    latest = usable.tail(1)
-    raw = _raw_model_probabilities(
-        model_bundle["estimators"], latest
-    )["Hierarchical Ensemble"]
-    probability = _apply_calibration(raw, model_bundle["calibrators"]).iloc[0]
-    thresholds = model_bundle["thresholds"]
-    direction_confidence = float(probability["direction_confidence"])
-    classifier_buy = bool(
-        float(probability["trend"]) >= float(thresholds.moderate_trend)
-        and direction_confidence >= float(thresholds.moderate_direction)
-        and float(probability["up"]) >= 0.50
-    )
-    entry_features = _entry_features(data)
-    m15_row = entry_features.reindex(
-        pd.DatetimeIndex([confirmation_time]), method="ffill"
-    )
-    m15_buy = False
-    if not m15_row.empty:
-        values = m15_row.iloc[0]
-        required = ["price", "m15_fast", "m15_slow", "m15_momentum"]
-        if all(pd.notna(values.get(column)) for column in required):
-            m15_buy = bool(
-                float(values["price"]) > float(values["m15_fast"])
-                > float(values["m15_slow"])
-                and float(values["m15_momentum"]) > 0
-            )
-
-    regime = _buy_specialist_regime(
-        model_bundle, data, confirmation_time, latest.iloc[0]
-    )
+    probability = {
+        "trend": observation["P(trend)"],
+        "up": observation["P(BUY)"],
+    }
+    direction_confidence = float(observation["Direction confidence"])
+    classifier_buy = bool(observation["Classifier BUY"])
+    m15_buy = bool(observation["M15 alignment"])
+    regime = str(observation["Regime"])
     defense_ok = regime not in {"BEARISH", "SIDEWAYS"}
     pause_until = _buy_specialist_loss_pause_until(ledger)
     now_naive = now.tz_convert("UTC").tz_localize(None)
