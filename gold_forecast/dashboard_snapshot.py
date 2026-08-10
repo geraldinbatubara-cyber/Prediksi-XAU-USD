@@ -26,8 +26,13 @@ def build_dashboard_snapshot(
         "version": DASHBOARD_SNAPSHOT_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "market_last_date": pd.Timestamp(market.index.max()).isoformat(),
-        "model_1": train_and_forecast(market["gold"]),
-        "model_2": train_model_v2(market),
+        "market_last_price": float(market["gold"].iloc[-1]),
+        "market_training_min": float(market["gold"].min()),
+        "market_training_max": float(market["gold"].max()),
+        "model_1": train_and_forecast(
+            market["gold"], evaluate_walk_forward=True
+        ),
+        "model_2": train_model_v2(market, evaluate_walk_forward=True),
         "direction_model": train_direction_model(market),
         "v1_leaderboard": v1_leaderboard.head(1).copy(),
     }

@@ -16,6 +16,7 @@ class ModelV2Result:
     metrics: dict[str, float]
     horizon_metrics: pd.DataFrame
     feature_count: int
+    walk_forward_metrics: dict[str, float] | None = None
 
 
 def _market_features(market: pd.DataFrame) -> pd.DataFrame:
@@ -62,7 +63,46 @@ def _metrics(actual: pd.Series, predicted: pd.Series, current: pd.Series) -> dic
     }
 
 
-def train_model_v2(market: pd.DataFrame) -> ModelV2Result:
+def _walk_forward_metrics(
+    clean_features: pd.DataFrame,
+    gold: pd.Series,
+    folds: int = 4,
+) -> dict[str, float]:
+    dataset = clean_features.copy()
+    dataset["target_return"] = gold.shift(-1) / gold - 1
+    dataset = dataset.dropna()
+    split = int(len(dataset) * 0.8)
+    chunks = [
+        chunk
+        for chunk in np.array_split(np.arange(split, len(dataset)), folds)
+        if len(chunk)
+    ]
+    feature_names = list(clean_features.columns)
+    predictions = []
+    actuals = []
+    currents = []
+    for chunk in chunks:
+        train = dataset.iloc[: int(chunk[0])]
+        test = dataset.iloc[chunk]
+        estimator = _estimator()
+        estimator.fit(train[feature_names], train["target_return"])
+        current = gold.reindex(test.index)
+        predicted_return = pd.Series(
+            estimator.predict(test[feature_names]), index=test.index
+        )
+        predictions.append(current * (1 + predicted_return))
+        actuals.append(current * (1 + test["target_return"]))
+        currents.append(current)
+    metrics = _metrics(
+        pd.concat(actuals), pd.concat(predictions), pd.concat(currents)
+    )
+    return {**metrics, "Fold": float(len(chunks))}
+
+
+def train_model_v2(
+    market: pd.DataFrame,
+    evaluate_walk_forward: bool = False,
+) -> ModelV2Result:
     features = _market_features(market)
     gold = market["gold"]
     clean_features = features.dropna()
@@ -115,9 +155,15 @@ def train_model_v2(market: pd.DataFrame) -> ModelV2Result:
     actual_all = pd.concat(all_actual, ignore_index=True)
     predicted_all = pd.concat(all_predicted, ignore_index=True)
     current_all = pd.concat(all_current, ignore_index=True)
+    walk_forward = (
+        _walk_forward_metrics(clean_features, gold)
+        if evaluate_walk_forward
+        else None
+    )
     return ModelV2Result(
         forecast=pd.DataFrame(forecasts).set_index("Tanggal"),
         metrics=_metrics(actual_all, predicted_all, current_all),
         horizon_metrics=pd.DataFrame(horizon_rows).set_index("Horizon"),
         feature_count=len(clean_features.columns),
+        walk_forward_metrics=walk_forward,
     )

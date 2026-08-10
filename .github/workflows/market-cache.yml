@@ -36,9 +36,23 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Update market cache
-        run: python scripts/update_market_cache.py
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            python scripts/update_market_cache.py && break
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "Market update failed; retrying in 60 seconds ($attempt/3)."
+            sleep 60
+          done
       - name: Build dashboard snapshot
-        run: python scripts/update_dashboard_snapshot.py
+        shell: bash
+        run: |
+          for attempt in 1 2; do
+            python scripts/update_dashboard_snapshot.py && break
+            if [ "$attempt" -eq 2 ]; then exit 1; fi
+            echo "Snapshot build failed; retrying in 30 seconds ($attempt/2)."
+            sleep 30
+          done
       - name: Commit market cache and dashboard snapshot
         shell: bash
         run: |

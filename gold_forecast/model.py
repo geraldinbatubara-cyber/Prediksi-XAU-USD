@@ -13,6 +13,7 @@ LAGS = (1, 2, 3, 5, 10, 20)
 class ForecastResult:
     forecast: pd.DataFrame
     metrics: dict[str, float]
+    walk_forward_metrics: dict[str, float] | None = None
 
 
 def _features(close: pd.Series) -> pd.DataFrame:
@@ -52,7 +53,47 @@ class RidgeRegressor:
         return design @ self.coefficients
 
 
-def train_and_forecast(close: pd.Series, horizon: int = 7) -> ForecastResult:
+def _walk_forward_metrics(
+    dataset: pd.DataFrame,
+    feature_names: list[str],
+    close: pd.Series,
+    folds: int = 4,
+) -> dict[str, float]:
+    split = int(len(dataset) * 0.8)
+    test_positions = np.arange(split, len(dataset))
+    chunks = [chunk for chunk in np.array_split(test_positions, folds) if len(chunk)]
+    predictions = []
+    actuals = []
+    currents = []
+    for chunk in chunks:
+        train = dataset.iloc[: int(chunk[0])]
+        test = dataset.iloc[chunk]
+        estimator = RidgeRegressor(alpha=10.0)
+        estimator.fit(train[feature_names], train["target"])
+        predictions.append(
+            pd.Series(estimator.predict(test[feature_names]), index=test.index)
+        )
+        actuals.append(test["target"])
+        currents.append(close.reindex(test.index))
+    predicted = pd.concat(predictions)
+    actual = pd.concat(actuals)
+    current = pd.concat(currents)
+    return {
+        "MAE": float(np.mean(np.abs(actual - predicted))),
+        "RMSE": float(np.sqrt(np.mean((actual - predicted) ** 2))),
+        "MAPE": float(np.mean(np.abs((actual - predicted) / actual)) * 100),
+        "Akurasi arah": float(
+            ((actual > current) == (predicted > current)).mean() * 100
+        ),
+        "Fold": float(len(chunks)),
+    }
+
+
+def train_and_forecast(
+    close: pd.Series,
+    horizon: int = 7,
+    evaluate_walk_forward: bool = False,
+) -> ForecastResult:
     features = _features(close)
     dataset = features.copy()
     dataset["target"] = close.shift(-1)
@@ -96,4 +137,11 @@ def train_and_forecast(close: pd.Series, horizon: int = 7) -> ForecastResult:
         )
         history.loc[next_date] = point
 
-    return ForecastResult(pd.DataFrame(rows).set_index("Tanggal"), metrics)
+    walk_forward = (
+        _walk_forward_metrics(dataset, feature_names, close)
+        if evaluate_walk_forward
+        else None
+    )
+    return ForecastResult(
+        pd.DataFrame(rows).set_index("Tanggal"), metrics, walk_forward
+    )

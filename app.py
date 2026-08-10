@@ -893,6 +893,40 @@ def render_optimizer_v1_dashboard(
     )
 
 
+def _forecast_guard(
+    source_date: object,
+    current_date: object,
+    current_price: float,
+    forecast_row: pd.Series,
+) -> dict[str, object]:
+    source = pd.Timestamp(source_date).normalize()
+    current = pd.Timestamp(current_date).normalize()
+    stale = source != current
+    lower = float(forecast_row.get("Batas bawah", np.nan))
+    upper = float(forecast_row.get("Batas atas", np.nan))
+    outside_interval = (
+        pd.notna(lower)
+        and pd.notna(upper)
+        and not lower <= current_price <= upper
+    )
+    if stale:
+        code = "STALE_SNAPSHOT"
+        label = "Snapshot model tertinggal"
+    elif outside_interval:
+        code = "OUT_OF_DISTRIBUTION"
+        label = "Harga di luar interval model"
+    else:
+        code = "VALID"
+        label = "Layak dibaca"
+    return {
+        "code": code,
+        "label": label,
+        "usable": code == "VALID",
+        "outside_interval": outside_interval,
+        "age_days": max((current - source).days, 0),
+    }
+
+
 def render_dashboard(
     market: pd.DataFrame,
     data_fetched_at: pd.Timestamp,
@@ -903,6 +937,8 @@ def render_dashboard(
     gold_ohlc: pd.DataFrame,
     optimization_v1_leaderboard: pd.DataFrame,
     snapshot_generated_at: str,
+    snapshot_market_date: object,
+    snapshot_market_price: object,
 ) -> None:
     gold = market["gold"]
     latest = float(gold.iloc[-1])
@@ -925,6 +961,23 @@ def render_dashboard(
     m2_tomorrow, m2_day_seven = model_2.forecast.iloc[0], model_2.forecast.iloc[-1]
     signal_1 = build_signal(market, model_1.forecast)
     signal_2 = build_signal(market, model_2.forecast)
+    guard_1 = _forecast_guard(
+        snapshot_market_date, gold.index.max(), latest, m1_tomorrow
+    )
+    guard_2 = _forecast_guard(
+        snapshot_market_date, gold.index.max(), latest, m2_tomorrow
+    )
+    snapshot_reference = (
+        np.nan if snapshot_market_price is None else float(snapshot_market_price)
+    )
+
+    if not guard_1["usable"] or not guard_2["usable"]:
+        st.error(
+            "**Forecast Model 1/2 tidak boleh dipakai sebagai sinyal aktif.** "
+            f"Model dilatih sampai **{_format_date(snapshot_market_date)}**, sedangkan data dashboard "
+            f"sampai **{market_last_date}**. Status: Model 1 **{guard_1['label']}**, "
+            f"Model 2 **{guard_2['label']}**. Angka forecast tetap ditampilkan hanya untuk audit."
+        )
 
     st.subheader("Perbandingan Prediksi Antar Model")
     col1, col2, col3 = st.columns(3)
@@ -932,14 +985,32 @@ def render_dashboard(
         st.markdown("**Model 1 - Harga Historis**")
         st.metric("Estimasi besok", f"${m1_tomorrow['Estimasi']:,.2f}", f"{m1_tomorrow['Estimasi'] - latest:+,.2f}")
         st.metric("Estimasi hari ke-7", f"${m1_day_seven['Estimasi']:,.2f}", f"{m1_day_seven['Estimasi'] - latest:+,.2f}")
-        st.metric("Sinyal", signal_1.label, f"Confidence {signal_1.confidence:.0f}%")
-        st.caption("Regresi ridge berbasis riwayat harga emas.")
+        st.metric(
+            "Sinyal",
+            signal_1.label if guard_1["usable"] else "TIDAK VALID",
+            f"Status: {guard_1['label']}",
+        )
+        st.caption(
+            "Regresi ridge berbasis riwayat harga emas. "
+            f"Data model: {_format_date(snapshot_market_date)} | "
+            f"Referensi: {'-' if pd.isna(snapshot_reference) else f'${snapshot_reference:,.2f}'} | "
+            f"Sinyal mentah: {signal_1.label} ({signal_1.confidence:.0f}%)."
+        )
     with col2:
         st.markdown("**Model 2 - Lintas Pasar**")
         st.metric("Estimasi besok", f"${m2_tomorrow['Estimasi']:,.2f}", f"{m2_tomorrow['Estimasi'] - latest:+,.2f}")
         st.metric("Estimasi hari ke-7", f"${m2_day_seven['Estimasi']:,.2f}", f"{m2_day_seven['Estimasi'] - latest:+,.2f}")
-        st.metric("Sinyal", signal_2.label, f"Confidence {signal_2.confidence:.0f}%")
-        st.caption("Gradient boosting memakai emas dan faktor lintas pasar.")
+        st.metric(
+            "Sinyal",
+            signal_2.label if guard_2["usable"] else "TIDAK VALID",
+            f"Status: {guard_2['label']}",
+        )
+        st.caption(
+            "Gradient boosting memakai emas dan faktor lintas pasar. "
+            f"Data model: {_format_date(snapshot_market_date)} | "
+            f"Referensi: {'-' if pd.isna(snapshot_reference) else f'${snapshot_reference:,.2f}'} | "
+            f"Sinyal mentah: {signal_2.label} ({signal_2.confidence:.0f}%)."
+        )
     with col3:
         signal_direction = str(v1_prediction["direction"])
         signal_label = signal_direction if signal_direction in {"BUY", "SELL"} else "WAIT"
@@ -966,18 +1037,22 @@ def render_dashboard(
             {
                 "Model": "Model 1 - Harga Historis",
                 "Output utama": f"${m1_tomorrow['Estimasi']:,.2f}",
-                "Arah / Sinyal": signal_1.label,
+                "Arah / Sinyal": signal_1.label if guard_1["usable"] else "TIDAK VALID",
+                "Status kalibrasi": guard_1["label"],
+                "Data model": _format_date(snapshot_market_date),
                 "Perubahan vs terakhir": m1_tomorrow["Estimasi"] - latest,
-                "Confidence / Expected": f"{signal_1.confidence:.0f}%",
+                "Confidence / Expected": f"{signal_1.confidence:.0f}%" if guard_1["usable"] else "-",
                 "MAE T+1": model_1.metrics.get("MAE", pd.NA),
                 "Akurasi arah T+1": model_1.metrics.get("Akurasi arah", pd.NA),
             },
             {
                 "Model": "Model 2 - Lintas Pasar",
                 "Output utama": f"${m2_tomorrow['Estimasi']:,.2f}",
-                "Arah / Sinyal": signal_2.label,
+                "Arah / Sinyal": signal_2.label if guard_2["usable"] else "TIDAK VALID",
+                "Status kalibrasi": guard_2["label"],
+                "Data model": _format_date(snapshot_market_date),
                 "Perubahan vs terakhir": m2_tomorrow["Estimasi"] - latest,
-                "Confidence / Expected": f"{signal_2.confidence:.0f}%",
+                "Confidence / Expected": f"{signal_2.confidence:.0f}%" if guard_2["usable"] else "-",
                 "MAE T+1": model_2.horizon_metrics.loc[1, "MAE"],
                 "Akurasi arah T+1": model_2.horizon_metrics.loc[1, "Akurasi arah"],
             },
@@ -985,6 +1060,8 @@ def render_dashboard(
                 "Model": "Model 3 - Optimizer v1 Baseline",
                 "Output utama": f"${float(v1_prediction['prediction']):,.2f}",
                 "Arah / Sinyal": signal_label,
+                "Status kalibrasi": "Rule strategi, bukan forecast harga",
+                "Data model": _format_date(v1_prediction.get("latest_date")),
                 "Perubahan vs terakhir": float(v1_prediction["prediction"]) - latest,
                 "Confidence / Expected": f"{float(v1_prediction['expected_change_pct']):+.2f}%",
                 "MAE T+1": pd.NA,
@@ -1021,6 +1098,39 @@ def render_dashboard(
         st.success(f"Pada backtest T+1, MAE Model 2 lebih rendah {mae_improvement:.1f}% dibanding Model 1.")
     else:
         st.warning("Pada backtest terbaru, Model 2 belum mengalahkan MAE Model 1.")
+
+    walk_1 = getattr(model_1, "walk_forward_metrics", None)
+    walk_2 = getattr(model_2, "walk_forward_metrics", None)
+    st.subheader("Validasi Walk-Forward Forecast T+1")
+    if walk_1 and walk_2:
+        walk_frame = pd.DataFrame(
+            [
+                {"Model": "Model 1", **walk_1},
+                {"Model": "Model 2", **walk_2},
+            ]
+        )
+        st.dataframe(
+            walk_frame.style.format(
+                {
+                    "MAE": "${:,.2f}",
+                    "RMSE": "${:,.2f}",
+                    "MAPE": "{:.2f}%",
+                    "Akurasi arah": "{:.1f}%",
+                    "Fold": "{:.0f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Walk-forward memakai empat fold expanding-window pada 20% periode terbaru. "
+            "Setiap fold hanya dilatih memakai data yang sudah tersedia sebelum periode ujinya."
+        )
+    else:
+        st.warning(
+            "Hasil walk-forward belum ada pada snapshot lama. Hasil akan muncul setelah workflow "
+            "snapshot harian berikutnya selesai."
+        )
 
     st.subheader("Model Arah Berbasis Confidence")
     direction_latest = direction_model.latest_probabilities.copy()
@@ -9402,6 +9512,8 @@ if page == "Dashboard":
         gold_ohlc,
         v1_leaderboard,
         dashboard_snapshot["generated_at_utc"],
+        dashboard_snapshot.get("market_last_date", market.index.max()),
+        dashboard_snapshot.get("market_last_price"),
     )
 
 elif page == "Simulasi":
