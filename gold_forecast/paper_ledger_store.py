@@ -18,6 +18,9 @@ _STATUS = {
     "mode": "CSV fallback",
     "last_error": "",
     "last_sync_utc": "",
+    "decision_mode": "Not checked",
+    "decision_last_error": "",
+    "decision_last_sync_utc": "",
 }
 
 _STRATEGY_BY_FILENAME = {
@@ -169,6 +172,78 @@ def save_persistent_manual_exits(strategy_id: str, frame: pd.DataFrame) -> bool:
         records,
         events,
     )
+
+
+def save_persistent_decision_snapshot(
+    strategy_id: str,
+    snapshot: dict[str, object],
+) -> bool:
+    if not _write_ready() or not snapshot:
+        _STATUS["decision_mode"] = "Unavailable"
+        _STATUS["decision_last_error"] = "Supabase write key belum tersedia."
+        return False
+    payload = _clean_mapping(snapshot)
+    evaluation_key = str(payload.get("evaluation_key") or "").strip()
+    decision_code = str(payload.get("decision_code") or "UNKNOWN").strip()
+    if not evaluation_key:
+        _STATUS["decision_mode"] = "Invalid snapshot"
+        _STATUS["decision_last_error"] = "evaluation_key kosong."
+        return False
+
+    now = pd.Timestamp.now(tz="UTC").isoformat()
+    record = {
+        "strategy_id": strategy_id,
+        "evaluation_key": evaluation_key,
+        "decision_code": decision_code,
+        "payload": payload,
+        "updated_at": now,
+    }
+    event_identity = {
+        "strategy_id": strategy_id,
+        "evaluation_key": evaluation_key,
+        "decision_code": decision_code,
+        "active_signal_date": payload.get("active_signal_date"),
+        "active_signal_direction": payload.get("active_signal_direction"),
+        "trigger_status": payload.get("trigger_status"),
+    }
+    canonical = json.dumps(event_identity, sort_keys=True, separators=(",", ":"))
+    event = {
+        "event_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "strategy_id": strategy_id,
+        "evaluation_key": evaluation_key,
+        "decision_code": decision_code,
+        "payload": payload,
+        "created_at": now,
+    }
+    try:
+        _request_json(
+            _CONFIG["base_url"],
+            _CONFIG["write_key"],
+            "paper_decision_snapshots",
+            method="POST",
+            query={"on_conflict": "strategy_id,evaluation_key"},
+            payload=[record],
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
+        _request_json(
+            _CONFIG["base_url"],
+            _CONFIG["write_key"],
+            "paper_decision_events",
+            method="POST",
+            query={"on_conflict": "event_hash"},
+            payload=[event],
+            prefer="resolution=ignore-duplicates,return=minimal",
+        )
+        _STATUS["decision_mode"] = "Supabase persistent"
+        _STATUS["decision_last_error"] = ""
+        _STATUS["decision_last_sync_utc"] = now
+        return True
+    except Exception as exc:
+        # Decision audit is additive; a missing audit table must never downgrade
+        # the already-working position ledger to CSV fallback.
+        _STATUS["decision_mode"] = "Schema/update required"
+        _STATUS["decision_last_error"] = str(exc)[:300]
+        return False
 
 
 def merge_ledger_frames(

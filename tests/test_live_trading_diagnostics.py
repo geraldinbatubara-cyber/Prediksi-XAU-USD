@@ -70,3 +70,45 @@ def test_buy_specialist_keeps_observation_when_fixed_delay_waits(monkeypatch):
     assert state["Regime"] == "BULLISH"
     assert state["P(trend)"] == 0.82
     assert state["P(BUY)"] == 0.76
+
+
+def test_historical_signal_is_not_active_on_newer_daily_candle():
+    historical = {
+        "signal_date": pd.Timestamp("2026-07-29"),
+        "arah": "SELL",
+    }
+    assert (
+        live_trading._signal_for_latest_evaluation(
+            historical, pd.Timestamp("2026-08-09")
+        )
+        is None
+    )
+    active = live_trading._signal_for_latest_evaluation(
+        historical, pd.Timestamp("2026-07-29")
+    )
+    assert active == historical
+    assert active is not historical
+
+
+def test_decision_code_reports_no_new_signal_instead_of_old_signal():
+    code = live_trading._decision_code(
+        None,
+        {"signal_date": pd.Timestamp("2026-07-29"), "arah": "SELL"},
+        {"Status trigger": "Menunggu sinyal Optimizer"},
+        daily_data_stale=False,
+        quote_configured=True,
+        quote_fresh=True,
+    )
+    assert code == "NO_NEW_SIGNAL"
+
+
+def test_stale_daily_data_has_priority_in_decision_code():
+    code = live_trading._decision_code(
+        None,
+        None,
+        {"Status trigger": "Menunggu sinyal Optimizer"},
+        daily_data_stale=True,
+        quote_configured=True,
+        quote_fresh=False,
+    )
+    assert code == "DATA_STALE"

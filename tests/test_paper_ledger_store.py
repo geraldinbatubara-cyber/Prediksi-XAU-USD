@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pandas as pd
 
+import gold_forecast.paper_ledger_store as paper_store
+
 from gold_forecast.paper_ledger_store import (
     load_recovery_manual_exits,
     load_recovery_positions,
@@ -98,3 +100,48 @@ def test_recovered_position_uses_contract_barrier_not_late_quote():
     assert closed.iloc[0]["exit_price"] == 4039.0
     assert closed.iloc[0]["gross_pl"] == -10.0
     assert "pemulihan ledger" in closed.iloc[0]["exit_reason"]
+
+
+def test_decision_snapshot_writes_snapshot_and_immutable_event(monkeypatch):
+    requests = []
+    monkeypatch.setattr(
+        paper_store,
+        "_request_json",
+        lambda *args, **kwargs: requests.append((args, kwargs)) or [],
+    )
+    paper_store.configure_paper_ledger_store(
+        "https://example.supabase.co", "read-key", "write-key"
+    )
+    saved = paper_store.save_persistent_decision_snapshot(
+        "baseline_v1",
+        {
+            "evaluation_key": "2026-08-09",
+            "decision_code": "NO_NEW_SIGNAL",
+            "daily_data_date": pd.Timestamp("2026-08-09"),
+        },
+    )
+    assert saved is True
+    assert [call[0][2] for call in requests] == [
+        "paper_decision_snapshots",
+        "paper_decision_events",
+    ]
+    assert paper_store.paper_ledger_store_status()["decision_mode"] == "Supabase persistent"
+
+
+def test_decision_audit_failure_does_not_downgrade_position_ledger(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("audit table missing")
+
+    monkeypatch.setattr(paper_store, "_request_json", fail)
+    paper_store.configure_paper_ledger_store(
+        "https://example.supabase.co", "read-key", "write-key"
+    )
+    assert paper_store.paper_ledger_store_status()["mode"] == "Supabase persistent"
+    saved = paper_store.save_persistent_decision_snapshot(
+        "baseline_v1",
+        {"evaluation_key": "2026-08-09", "decision_code": "NO_NEW_SIGNAL"},
+    )
+    status = paper_store.paper_ledger_store_status()
+    assert saved is False
+    assert status["mode"] == "Supabase persistent"
+    assert status["decision_mode"] == "Schema/update required"

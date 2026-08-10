@@ -8105,6 +8105,25 @@ def _build_live_strategy_frame(params: dict[str, object], leaderboard: pd.DataFr
     return pd.DataFrame(rows)
 
 
+_DECISION_LABELS = {
+    "DATA_STALE": "Data harian stale",
+    "BROKER_QUOTE_STALE": "Quote broker stale",
+    "NO_NEW_SIGNAL": "Tidak ada sinyal baru",
+    "NO_SIGNAL_HISTORY": "Belum ada riwayat sinyal",
+    "READY_TO_ENTER": "Siap entry",
+    "ALREADY_EXECUTED": "Sinyal sudah dieksekusi",
+    "POSITION_LIMIT": "Batas posisi tercapai",
+    "FILTER_BLOCKED": "Diblokir filter strategi",
+    "SESSION_CLOSED": "Di luar sesi entry",
+    "FILTER_PENDING": "Menunggu syarat eksekusi",
+}
+
+
+def _decision_label(code: object) -> str:
+    value = str(code or "UNKNOWN")
+    return _DECISION_LABELS.get(value, value.replace("_", " ").title())
+
+
 def render_live_trading(
     gold_ohlc: pd.DataFrame,
     optimization_leaderboard: pd.DataFrame,
@@ -8139,6 +8158,9 @@ def render_live_trading(
     summary = live["summary"]
     params = live["params"]
     signal = live["signal"]
+    historical_signal = live.get("historical_signal")
+    decision = live.get("decision_snapshot", {})
+    decision_persisted = bool(live.get("decision_persisted"))
     waiting_state = live["waiting_state"]
     trigger_state = live["trigger_state"]
     fixed_delay_state = live.get("fixed_delay_state")
@@ -8210,16 +8232,67 @@ def render_live_trading(
         strategy_frame = _build_live_strategy_frame(params, optimization_leaderboard, title)
         st.dataframe(strategy_frame, use_container_width=True, hide_index=True)
 
-    st.markdown("**Sinyal Strategi Saat Ini**")
+    st.markdown("**Ringkasan Keputusan Terbaru**")
+    decision_code = str(decision.get("decision_code", "UNKNOWN"))
+    decision_message = (
+        f"**{_decision_label(decision_code)}** (`{decision_code}`) | "
+        f"{decision.get('trigger_note') or decision.get('market_interpretation') or '-'}"
+    )
+    if decision_code == "READY_TO_ENTER":
+        st.success(decision_message)
+    elif decision_code in {"DATA_STALE", "BROKER_QUOTE_STALE", "FILTER_BLOCKED"}:
+        st.error(decision_message)
+    elif decision_code in {"ALREADY_EXECUTED", "POSITION_LIMIT", "SESSION_CLOSED"}:
+        st.warning(decision_message)
+    else:
+        st.info(decision_message)
+
+    clock_market, clock_daily, clock_signal = st.columns(3)
+    clock_market.metric(
+        "Waktu pasar MT5",
+        _format_utc_timestamp_wit(decision.get("broker_timestamp")),
+        "Quote eksekusi",
+    )
+    clock_daily.metric(
+        "Candle harian dievaluasi",
+        _format_date(decision.get("daily_data_date")),
+        "Dasar sinyal resmi",
+    )
+    clock_signal.metric(
+        "Sinyal valid historis terakhir",
+        _format_date(decision.get("historical_signal_date")),
+        str(decision.get("historical_signal_direction") or "Tidak ada"),
+    )
+    st.caption(
+        "Ketiga waktu di atas memiliki fungsi berbeda. Quote MT5 memperbarui harga eksekusi; "
+        "candle harian selesai memperbarui evaluasi strategi; sinyal historis hanya referensi. "
+        "Evaluasi sinyal berikutnya dilakukan setelah candle harian berikutnya selesai dan tersedia."
+    )
+    if decision_persisted:
+        st.caption("Audit keputusan terbaru sudah tersimpan persisten di Supabase.")
+    else:
+        st.warning(
+            "Audit keputusan belum tersimpan di Supabase. Jalankan versi terbaru "
+            "`supabase/paper_trading.sql`. Ledger posisi tetap disimpan melalui tabel terpisah."
+        )
+
+    st.markdown("**Keputusan Sinyal Terbaru**")
     if signal is None:
         st.info(
-            "Belum ada sinyal optimizer yang memenuhi threshold dari data terbaru. "
-            f"Status sekarang: **{waiting_state['Status sinyal']}**."
+            "Candle harian terbaru **tidak menghasilkan sinyal entry baru**. "
+            f"Status market: **{waiting_state['Status sinyal']}**."
         )
+        if historical_signal is not None:
+            st.caption(
+                "Referensi historis, bukan instruksi aktif: sinyal "
+                f"**{historical_signal['arah']}** tanggal "
+                f"**{pd.Timestamp(historical_signal['signal_date']).strftime('%d %b %Y')}**. "
+                "Sinyal lama tidak dibuka ulang hanya karena harga pasar sekarang bergerak searah."
+            )
     else:
         signal_direction = signal["arah"]
         signal_message = (
-            f"Sinyal terakhir **{signal_direction}** pada **{pd.Timestamp(signal['signal_date']).strftime('%d %b %Y')}** "
+            f"Sinyal aktif **{signal_direction}** pada **{pd.Timestamp(signal['signal_date']).strftime('%d %b %Y')}** "
             f"dengan prediksi **${signal['prediction']:,.2f}**, harga referensi **${signal['reference_price']:,.2f}**, "
             f"expected change **{signal['expected_change_pct']:+.2f}%**."
         )
@@ -8275,6 +8348,55 @@ def render_live_trading(
     trigger_checklist = pd.DataFrame(trigger_state["Checklist"])
     if not trigger_checklist.empty:
         st.dataframe(trigger_checklist, use_container_width=True, hide_index=True)
+
+    st.markdown("**Mengapa Sistem Trading atau Tidak Trading?**")
+    buy_checks = waiting_state.get("Checklist BUY", [])
+    sell_checks = waiting_state.get("Checklist SELL", [])
+    buy_passed = sum(bool(item.get("Lolos")) for item in buy_checks)
+    sell_passed = sum(bool(item.get("Lolos")) for item in sell_checks)
+    reason_rows = [
+        {
+            "Lapisan keputusan": "Data harian",
+            "Status": "LOLOS" if not summary.get("Daily data stale") else "BLOKIR",
+            "Keterangan": f"Candle selesai: {_format_date(summary.get('Daily data date'))}",
+        },
+        {
+            "Lapisan keputusan": "Quote broker",
+            "Status": "LOLOS" if summary.get("Broker quote fresh") else "BLOKIR",
+            "Keterangan": f"Usia quote {float(summary.get('Broker quote age minutes') or 0.0):.1f} menit",
+        },
+        {
+            "Lapisan keputusan": "Struktur BUY harian",
+            "Status": "LOLOS" if buy_checks and buy_passed == len(buy_checks) else "MENUNGGU",
+            "Keterangan": f"{buy_passed}/{len(buy_checks)} syarat terpenuhi",
+        },
+        {
+            "Lapisan keputusan": "Struktur SELL harian",
+            "Status": "LOLOS" if sell_checks and sell_passed == len(sell_checks) else "MENUNGGU",
+            "Keterangan": f"{sell_passed}/{len(sell_checks)} syarat terpenuhi",
+        },
+        {
+            "Lapisan keputusan": "Sinyal aktif candle terbaru",
+            "Status": "LOLOS" if signal is not None else "TIDAK ADA",
+            "Keterangan": (
+                f"{signal['arah']} {_format_date(signal['signal_date'])}"
+                if signal is not None
+                else "Sinyal historis tidak dianggap sinyal aktif"
+            ),
+        },
+        {
+            "Lapisan keputusan": "Eksekusi akhir",
+            "Status": _decision_label(decision_code).upper(),
+            "Keterangan": str(trigger_state.get("Catatan", "-")),
+        },
+    ]
+    st.dataframe(pd.DataFrame(reason_rows), use_container_width=True, hide_index=True)
+    if signal is None:
+        st.caption(
+            "Kesimpulan: pergerakan harga saja tidak cukup untuk entry. Sistem tidak mengejar harga; "
+            "struktur MA, momentum, candle harian terbaru, sesi, quote broker, dan slot posisi harus "
+            "memenuhi kontrak strategi pada evaluasi yang sama."
+        )
     st.caption(
         "Catatan pembelajaran: Strategi Terbaik Optimizer memakai sinyal harian. "
         "Posisi baru dibuka hanya ketika arah sinyal melewati threshold, sesi trading aktif, slot posisi tersedia, "

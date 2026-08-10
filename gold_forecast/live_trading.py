@@ -12,6 +12,7 @@ from gold_forecast.paper_ledger_store import (
     load_recovery_manual_exits,
     load_recovery_positions,
     merge_ledger_frames,
+    save_persistent_decision_snapshot,
     save_persistent_manual_exits,
     save_persistent_positions,
     strategy_id_for_path,
@@ -300,6 +301,98 @@ def _current_optimizer_signal(
         "reference_price": reference_price,
         "expected_change_pct": expected_change_pct,
         "arah": direction,
+    }
+
+
+def _signal_for_latest_evaluation(
+    historical_signal: dict[str, object] | None,
+    daily_data_date: pd.Timestamp,
+) -> dict[str, object] | None:
+    if historical_signal is None or pd.isna(daily_data_date):
+        return None
+    signal_date = pd.Timestamp(historical_signal["signal_date"]).normalize()
+    evaluation_date = pd.Timestamp(daily_data_date).normalize()
+    return historical_signal.copy() if signal_date == evaluation_date else None
+
+
+def _decision_code(
+    signal: dict[str, object] | None,
+    historical_signal: dict[str, object] | None,
+    trigger_state: dict[str, object],
+    *,
+    daily_data_stale: bool,
+    quote_configured: bool,
+    quote_fresh: bool,
+) -> str:
+    if daily_data_stale:
+        return "DATA_STALE"
+    if quote_configured and not quote_fresh:
+        return "BROKER_QUOTE_STALE"
+    if signal is None:
+        return "NO_NEW_SIGNAL" if historical_signal is not None else "NO_SIGNAL_HISTORY"
+    status = str(trigger_state.get("Status trigger", ""))
+    if status.startswith("Siap buka"):
+        return "READY_TO_ENTER"
+    if status == "Sinyal sudah dieksekusi/dicatat":
+        return "ALREADY_EXECUTED"
+    if status.startswith("Slot"):
+        return "POSITION_LIMIT"
+    if status.startswith("BATAL") or status == "CANCELLED":
+        return "FILTER_BLOCKED"
+    if status == "Menunggu jam trading":
+        return "SESSION_CLOSED"
+    return "FILTER_PENDING"
+
+
+def _build_decision_snapshot(
+    strategy_id: str,
+    now_wit: pd.Timestamp,
+    daily_data_date: pd.Timestamp,
+    signal: dict[str, object] | None,
+    historical_signal: dict[str, object] | None,
+    waiting_state: dict[str, object],
+    trigger_state: dict[str, object],
+    params: dict[str, object],
+    quote_state: dict[str, object],
+    daily_data_stale: bool,
+) -> dict[str, object]:
+    evaluation_date = (
+        pd.Timestamp(daily_data_date).normalize()
+        if pd.notna(daily_data_date)
+        else now_wit.tz_localize(None).normalize()
+    )
+    code = _decision_code(
+        signal,
+        historical_signal,
+        trigger_state,
+        daily_data_stale=daily_data_stale,
+        quote_configured=bool(quote_state.get("configured")),
+        quote_fresh=bool(quote_state.get("fresh")),
+    )
+    return {
+        "evaluation_key": evaluation_date.strftime("%Y-%m-%d"),
+        "strategy_id": strategy_id,
+        "decision_code": code,
+        "evaluated_at_wit": now_wit,
+        "daily_data_date": daily_data_date,
+        "broker_timestamp": quote_state.get("timestamp"),
+        "broker_quote_age_minutes": quote_state.get("age_minutes"),
+        "active_signal_date": signal.get("signal_date") if signal else None,
+        "active_signal_direction": signal.get("arah") if signal else None,
+        "historical_signal_date": historical_signal.get("signal_date") if historical_signal else None,
+        "historical_signal_direction": historical_signal.get("arah") if historical_signal else None,
+        "trigger_status": trigger_state.get("Status trigger"),
+        "trigger_note": trigger_state.get("Catatan"),
+        "market_status": waiting_state.get("Status sinyal"),
+        "market_interpretation": waiting_state.get("Interpretasi"),
+        "buy_gate": waiting_state.get("Checklist BUY", []),
+        "sell_gate": waiting_state.get("Checklist SELL", []),
+        "strategy_version": str(params.get("Strategi", "-")),
+        "mode": str(params.get("Mode", "-")),
+        "fast_ma": params.get("Fast MA"),
+        "slow_ma": params.get("Slow MA"),
+        "momentum_days": params.get("Momentum hari"),
+        "threshold_entry_pct": params.get("Threshold entry (%)"),
     }
 
 
@@ -1601,6 +1694,12 @@ def run_live_trading_update(
     )
     fixed_delay_state = None
     specialist_state = None
+    historical_signal = _current_optimizer_signal(
+        usable_gold,
+        params,
+        now_wit,
+        start_time_wit.tz_localize(None).normalize(),
+    )
     if entry_strategy == "buy_specialist_v4":
         signal, specialist_state = _buy_specialist_v4_signal(
             usable_gold,
@@ -1621,11 +1720,8 @@ def run_live_trading_update(
             start_time_wit,
         )
     else:
-        signal = _current_optimizer_signal(
-            usable_gold,
-            params,
-            now_wit,
-            start_time_wit.tz_localize(None).normalize(),
+        signal = _signal_for_latest_evaluation(
+            historical_signal, daily_data_date
         )
         if signal is not None:
             signal["source"] = "Optimizer penuh"
@@ -1655,6 +1751,22 @@ def run_live_trading_update(
     )
     trigger_state = _optimizer_trigger_state(ledger, signal, params, entry_allowed, archive_note)
     save_live_ledger(ledger, path)
+
+    decision_snapshot = _build_decision_snapshot(
+        strategy_id_for_path(path),
+        now_wit,
+        daily_data_date,
+        signal,
+        historical_signal,
+        waiting_state,
+        trigger_state,
+        params,
+        quote_state,
+        daily_data_stale,
+    )
+    decision_persisted = save_persistent_decision_snapshot(
+        strategy_id_for_path(path), decision_snapshot
+    )
 
     open_positions = ledger[ledger["status"].eq("OPEN")].copy()
     closed_positions = ledger[ledger["status"].eq("CLOSED")].copy()
@@ -1704,6 +1816,9 @@ def run_live_trading_update(
         "summary": summary,
         "params": params,
         "signal": signal,
+        "historical_signal": historical_signal,
+        "decision_snapshot": decision_snapshot,
+        "decision_persisted": decision_persisted,
         "waiting_state": waiting_state,
         "trigger_state": trigger_state,
         "fixed_delay_state": fixed_delay_state,
