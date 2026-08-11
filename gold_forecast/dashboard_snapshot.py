@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 
 from gold_forecast.direction_model import train_direction_model
+from gold_forecast.forecast_validity import completed_daily_frame
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
 from gold_forecast.model_v2 import _market_features
@@ -23,10 +24,15 @@ def build_dashboard_snapshot(
     market: pd.DataFrame,
     v1_leaderboard: pd.DataFrame,
 ) -> dict[str, Any]:
+    generated_at = datetime.now(timezone.utc)
+    completed_market = completed_daily_frame(market, generated_at)
+    if completed_market.empty:
+        raise ValueError("Tidak ada candle harian selesai untuk membangun snapshot.")
+    market = completed_market
     complete_features = _market_features(market).dropna()
     return {
         "version": DASHBOARD_SNAPSHOT_VERSION,
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "generated_at_utc": generated_at.isoformat(),
         "market_last_date": pd.Timestamp(market.index.max()).isoformat(),
         "market_last_price": float(market["gold"].iloc[-1]),
         "market_training_min": float(market["gold"].min()),

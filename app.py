@@ -27,6 +27,7 @@ from gold_forecast.dashboard_snapshot import (
     DASHBOARD_SNAPSHOT_VERSION,
     load_dashboard_snapshot,
 )
+from gold_forecast.forecast_validity import completed_daily_frame, forecast_guard
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
 from gold_forecast import live_trading as live_trading_module
 from gold_forecast.live_trading import (
@@ -894,40 +895,6 @@ def render_optimizer_v1_dashboard(
     )
 
 
-def _forecast_guard(
-    source_date: object,
-    current_date: object,
-    current_price: float,
-    forecast_row: pd.Series,
-) -> dict[str, object]:
-    source = pd.Timestamp(source_date).normalize()
-    current = pd.Timestamp(current_date).normalize()
-    stale = source != current
-    lower = float(forecast_row.get("Batas bawah", np.nan))
-    upper = float(forecast_row.get("Batas atas", np.nan))
-    outside_interval = (
-        pd.notna(lower)
-        and pd.notna(upper)
-        and not lower <= current_price <= upper
-    )
-    if stale:
-        code = "STALE_SNAPSHOT"
-        label = "Snapshot model tertinggal"
-    elif outside_interval:
-        code = "OUT_OF_DISTRIBUTION"
-        label = "Harga di luar interval model"
-    else:
-        code = "VALID"
-        label = "Layak dibaca"
-    return {
-        "code": code,
-        "label": label,
-        "usable": code == "VALID",
-        "outside_interval": outside_interval,
-        "age_days": max((current - source).days, 0),
-    }
-
-
 def render_dashboard(
     market: pd.DataFrame,
     data_fetched_at: pd.Timestamp,
@@ -944,8 +911,16 @@ def render_dashboard(
 ) -> None:
     gold = market["gold"]
     latest = float(gold.iloc[-1])
-    previous = float(gold.iloc[-2])
-    market_last_date = pd.Timestamp(gold.index.max()).strftime("%d %b %Y")
+    live_market_date = pd.Timestamp(gold.index.max()).normalize()
+    completed_market = completed_daily_frame(market, data_fetched_at)
+    if completed_market.empty:
+        completed_market = market.copy()
+    completed_gold = completed_market["gold"].dropna()
+    completed_date = pd.Timestamp(completed_gold.index.max()).normalize()
+    completed_price = float(completed_gold.iloc[-1])
+    market_last_date = live_market_date.strftime("%d %b %Y")
+    completed_date_label = completed_date.strftime("%d %b %Y")
+    has_provisional_row = live_market_date > completed_date
     fetched_label = data_fetched_at.strftime("%d %b %Y %H:%M:%S WIT")
     v1_prediction = _optimizer_v1_latest_prediction(gold_ohlc, optimization_v1_leaderboard)
     v1_params = v1_prediction["params"]
@@ -955,19 +930,21 @@ def render_dashboard(
         generated_at = generated_at.tz_localize("UTC")
     snapshot_label = generated_at.tz_convert(WIT).strftime("%d %b %Y %H:%M:%S WIT")
     st.info(
-        f"Data pasar terakhir: **{market_last_date}** | Data diambil dashboard: **{fetched_label}** | "
+        f"Candle harian selesai: **{completed_date_label}** | "
+        f"Data pasar terbaru: **{market_last_date}**"
+        f"{' (provisional)' if has_provisional_row else ''} | Data diambil dashboard: **{fetched_label}** | "
         f"Snapshot model dibuat: **{snapshot_label}**"
     )
 
     m1_tomorrow, m1_day_seven = model_1.forecast.iloc[0], model_1.forecast.iloc[-1]
     m2_tomorrow, m2_day_seven = model_2.forecast.iloc[0], model_2.forecast.iloc[-1]
-    signal_1 = build_signal(market, model_1.forecast)
-    signal_2 = build_signal(market, model_2.forecast)
-    guard_1 = _forecast_guard(
-        snapshot_market_date, gold.index.max(), latest, m1_tomorrow
+    signal_1 = build_signal(completed_market, model_1.forecast)
+    signal_2 = build_signal(completed_market, model_2.forecast)
+    guard_1 = forecast_guard(
+        snapshot_market_date, completed_date, completed_price, m1_tomorrow
     )
-    guard_2 = _forecast_guard(
-        snapshot_feature_date, gold.index.max(), latest, m2_tomorrow
+    guard_2 = forecast_guard(
+        snapshot_feature_date, completed_date, completed_price, m2_tomorrow
     )
     snapshot_reference = (
         np.nan if snapshot_market_price is None else float(snapshot_market_price)
@@ -978,16 +955,23 @@ def render_dashboard(
             "**Forecast Model 1/2 tidak boleh dipakai sebagai sinyal aktif.** "
             f"Model 1 memakai data sampai **{_format_date(snapshot_market_date)}** dan Model 2 sampai "
             f"**{_format_date(snapshot_feature_date)}**, sedangkan data dashboard "
-            f"sampai **{market_last_date}**. Status: Model 1 **{guard_1['label']}**, "
+            f"memiliki candle selesai sampai **{completed_date_label}**. Status: Model 1 **{guard_1['label']}**, "
             f"Model 2 **{guard_2['label']}**. Angka forecast tetap ditampilkan hanya untuk audit."
+        )
+
+    if has_provisional_row:
+        st.caption(
+            f"Harga GC=F tanggal {market_last_date} masih provisional dan hanya menjadi referensi tampilan. "
+            f"Validitas serta sinyal Model 1/2 memakai candle selesai {completed_date_label} "
+            f"pada ${completed_price:,.2f}."
         )
 
     st.subheader("Perbandingan Prediksi Antar Model")
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("**Model 1 - Harga Historis**")
-        st.metric("Estimasi besok", f"${m1_tomorrow['Estimasi']:,.2f}", f"{m1_tomorrow['Estimasi'] - latest:+,.2f}")
-        st.metric("Estimasi hari ke-7", f"${m1_day_seven['Estimasi']:,.2f}", f"{m1_day_seven['Estimasi'] - latest:+,.2f}")
+        st.metric("Estimasi besok", f"${m1_tomorrow['Estimasi']:,.2f}", f"{m1_tomorrow['Estimasi'] - completed_price:+,.2f}")
+        st.metric("Estimasi hari ke-7", f"${m1_day_seven['Estimasi']:,.2f}", f"{m1_day_seven['Estimasi'] - completed_price:+,.2f}")
         st.metric(
             "Sinyal",
             signal_1.label if guard_1["usable"] else "TIDAK VALID",
@@ -1001,8 +985,8 @@ def render_dashboard(
         )
     with col2:
         st.markdown("**Model 2 - Lintas Pasar**")
-        st.metric("Estimasi besok", f"${m2_tomorrow['Estimasi']:,.2f}", f"{m2_tomorrow['Estimasi'] - latest:+,.2f}")
-        st.metric("Estimasi hari ke-7", f"${m2_day_seven['Estimasi']:,.2f}", f"{m2_day_seven['Estimasi'] - latest:+,.2f}")
+        st.metric("Estimasi besok", f"${m2_tomorrow['Estimasi']:,.2f}", f"{m2_tomorrow['Estimasi'] - completed_price:+,.2f}")
+        st.metric("Estimasi hari ke-7", f"${m2_day_seven['Estimasi']:,.2f}", f"{m2_day_seven['Estimasi'] - completed_price:+,.2f}")
         st.metric(
             "Sinyal",
             signal_2.label if guard_2["usable"] else "TIDAK VALID",
@@ -1043,7 +1027,7 @@ def render_dashboard(
                 "Arah / Sinyal": signal_1.label if guard_1["usable"] else "TIDAK VALID",
                 "Status kalibrasi": guard_1["label"],
                 "Data model": _format_date(snapshot_market_date),
-                "Perubahan vs terakhir": m1_tomorrow["Estimasi"] - latest,
+                "Perubahan vs candle selesai": m1_tomorrow["Estimasi"] - completed_price,
                 "Confidence / Expected": f"{signal_1.confidence:.0f}%" if guard_1["usable"] else "-",
                 "MAE T+1": model_1.metrics.get("MAE", pd.NA),
                 "Akurasi arah T+1": model_1.metrics.get("Akurasi arah", pd.NA),
@@ -1054,7 +1038,7 @@ def render_dashboard(
                 "Arah / Sinyal": signal_2.label if guard_2["usable"] else "TIDAK VALID",
                 "Status kalibrasi": guard_2["label"],
                 "Data model": _format_date(snapshot_feature_date),
-                "Perubahan vs terakhir": m2_tomorrow["Estimasi"] - latest,
+                "Perubahan vs candle selesai": m2_tomorrow["Estimasi"] - completed_price,
                 "Confidence / Expected": f"{signal_2.confidence:.0f}%" if guard_2["usable"] else "-",
                 "MAE T+1": model_2.horizon_metrics.loc[1, "MAE"],
                 "Akurasi arah T+1": model_2.horizon_metrics.loc[1, "Akurasi arah"],
@@ -1065,7 +1049,7 @@ def render_dashboard(
                 "Arah / Sinyal": signal_label,
                 "Status kalibrasi": "Rule strategi, bukan forecast harga",
                 "Data model": _format_date(v1_prediction.get("latest_date")),
-                "Perubahan vs terakhir": float(v1_prediction["prediction"]) - latest,
+                "Perubahan vs candle selesai": float(v1_prediction["prediction"]) - latest,
                 "Confidence / Expected": f"{float(v1_prediction['expected_change_pct']):+.2f}%",
                 "MAE T+1": pd.NA,
                 "Akurasi arah T+1": pd.NA,
@@ -1075,7 +1059,7 @@ def render_dashboard(
     st.dataframe(
         comparison.style.format(
             {
-                "Perubahan vs terakhir": "${:+,.2f}",
+                "Perubahan vs candle selesai": "${:+,.2f}",
                 "MAE T+1": "${:,.2f}",
                 "Akurasi arah T+1": "{:.1f}%",
             },
