@@ -940,6 +940,7 @@ def render_dashboard(
     snapshot_generated_at: str,
     snapshot_market_date: object,
     snapshot_market_price: object,
+    snapshot_feature_date: object,
 ) -> None:
     gold = market["gold"]
     latest = float(gold.iloc[-1])
@@ -966,7 +967,7 @@ def render_dashboard(
         snapshot_market_date, gold.index.max(), latest, m1_tomorrow
     )
     guard_2 = _forecast_guard(
-        snapshot_market_date, gold.index.max(), latest, m2_tomorrow
+        snapshot_feature_date, gold.index.max(), latest, m2_tomorrow
     )
     snapshot_reference = (
         np.nan if snapshot_market_price is None else float(snapshot_market_price)
@@ -975,7 +976,8 @@ def render_dashboard(
     if not guard_1["usable"] or not guard_2["usable"]:
         st.error(
             "**Forecast Model 1/2 tidak boleh dipakai sebagai sinyal aktif.** "
-            f"Model dilatih sampai **{_format_date(snapshot_market_date)}**, sedangkan data dashboard "
+            f"Model 1 memakai data sampai **{_format_date(snapshot_market_date)}** dan Model 2 sampai "
+            f"**{_format_date(snapshot_feature_date)}**, sedangkan data dashboard "
             f"sampai **{market_last_date}**. Status: Model 1 **{guard_1['label']}**, "
             f"Model 2 **{guard_2['label']}**. Angka forecast tetap ditampilkan hanya untuk audit."
         )
@@ -1008,7 +1010,7 @@ def render_dashboard(
         )
         st.caption(
             "Gradient boosting memakai emas dan faktor lintas pasar. "
-            f"Data model: {_format_date(snapshot_market_date)} | "
+            f"Data model: {_format_date(snapshot_feature_date)} | "
             f"Referensi: {'-' if pd.isna(snapshot_reference) else f'${snapshot_reference:,.2f}'} | "
             f"Sinyal mentah: {signal_2.label} ({signal_2.confidence:.0f}%)."
         )
@@ -1051,7 +1053,7 @@ def render_dashboard(
                 "Output utama": f"${m2_tomorrow['Estimasi']:,.2f}",
                 "Arah / Sinyal": signal_2.label if guard_2["usable"] else "TIDAK VALID",
                 "Status kalibrasi": guard_2["label"],
-                "Data model": _format_date(snapshot_market_date),
+                "Data model": _format_date(snapshot_feature_date),
                 "Perubahan vs terakhir": m2_tomorrow["Estimasi"] - latest,
                 "Confidence / Expected": f"{signal_2.confidence:.0f}%" if guard_2["usable"] else "-",
                 "MAE T+1": model_2.horizon_metrics.loc[1, "MAE"],
@@ -9515,6 +9517,10 @@ if page == "Dashboard":
         dashboard_snapshot["generated_at_utc"],
         dashboard_snapshot.get("market_last_date", market.index.max()),
         dashboard_snapshot.get("market_last_price"),
+        dashboard_snapshot.get(
+            "market_feature_last_date",
+            dashboard_snapshot.get("market_last_date", market.index.max()),
+        ),
     )
 
 elif page == "Simulasi":

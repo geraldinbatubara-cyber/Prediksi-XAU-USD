@@ -24,7 +24,7 @@ from gold_forecast.strategy_optimizer import run_optimized_strategy
 def main() -> None:
     started_at = time.perf_counter()
     market = load_market_data()
-    if len(market) < 650:
+    if len(market) < 360:
         print("Cache 2025+ belum cukup untuk training; mengambil riwayat 5 tahun hanya untuk snapshot model.")
         market = _download_market_data("5y")
     v1_leaderboard = load_v1_params()

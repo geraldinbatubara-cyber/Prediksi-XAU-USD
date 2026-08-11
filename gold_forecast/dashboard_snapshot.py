@@ -11,6 +11,7 @@ import pandas as pd
 from gold_forecast.direction_model import train_direction_model
 from gold_forecast.model import train_and_forecast
 from gold_forecast.model_v2 import train_model_v2
+from gold_forecast.model_v2 import _market_features
 
 
 DASHBOARD_SNAPSHOT_VERSION = "dashboard-snapshot-v2-v1-only"
@@ -22,6 +23,7 @@ def build_dashboard_snapshot(
     market: pd.DataFrame,
     v1_leaderboard: pd.DataFrame,
 ) -> dict[str, Any]:
+    complete_features = _market_features(market).dropna()
     return {
         "version": DASHBOARD_SNAPSHOT_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -29,6 +31,11 @@ def build_dashboard_snapshot(
         "market_last_price": float(market["gold"].iloc[-1]),
         "market_training_min": float(market["gold"].min()),
         "market_training_max": float(market["gold"].max()),
+        "market_feature_last_date": (
+            pd.Timestamp(complete_features.index.max()).isoformat()
+            if not complete_features.empty
+            else None
+        ),
         "model_1": train_and_forecast(
             market["gold"], evaluate_walk_forward=True
         ),

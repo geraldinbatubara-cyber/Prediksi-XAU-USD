@@ -38,3 +38,12 @@ def test_model_2_walk_forward_is_optional_and_precomputed(monkeypatch):
     assert result.walk_forward_metrics is not None
     assert result.walk_forward_metrics["Fold"] == 4.0
     assert 0 <= result.walk_forward_metrics["Akurasi arah"] <= 100
+
+
+def test_model_2_ignores_unavailable_cross_market_factor(monkeypatch):
+    monkeypatch.setattr(model_v2, "_estimator", lambda: DummyRegressor())
+    market = _market(400)
+    market["unavailable_factor"] = np.nan
+    result = model_v2.train_model_v2(market)
+    assert len(result.forecast) == 7
+    assert result.feature_count > 0

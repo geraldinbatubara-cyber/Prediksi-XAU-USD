@@ -30,15 +30,19 @@ def _market_features(market: pd.DataFrame) -> pd.DataFrame:
     features["gold_range_20"] = gold.rolling(20).max() / gold.rolling(20).min() - 1
 
     for column in market.columns.drop("gold"):
-        values = market[column]
+        values = market[column].ffill(limit=5)
+        if values.notna().sum() < 120:
+            continue
         features[f"{column}_return_1d"] = values.pct_change()
         features[f"{column}_return_5d"] = values.pct_change(5)
         features[f"{column}_ma_20"] = values / values.rolling(20).mean() - 1
         features[f"{column}_vol_10"] = values.pct_change().rolling(10).std()
 
-    features["gold_dollar_corr_20"] = gold.pct_change().rolling(20).corr(
-        market.get("dollar", gold).pct_change()
-    )
+    dollar = market.get("dollar")
+    if dollar is not None and dollar.notna().sum() >= 120:
+        features["gold_dollar_corr_20"] = gold.pct_change().rolling(20).corr(
+            dollar.ffill(limit=5).pct_change()
+        )
     features["weekday"] = market.index.dayofweek
     return features.replace([np.inf, -np.inf], np.nan)
 
@@ -106,8 +110,8 @@ def train_model_v2(
     features = _market_features(market)
     gold = market["gold"]
     clean_features = features.dropna()
-    if len(clean_features) < 500:
-        raise ValueError("Model 2 memerlukan minimal 500 observasi lintas pasar.")
+    if len(clean_features) < 300:
+        raise ValueError("Model 2 memerlukan minimal 300 observasi lintas pasar.")
 
     latest_features = clean_features.iloc[[-1]]
     forecasts: list[dict[str, float | pd.Timestamp]] = []

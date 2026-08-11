@@ -41,8 +41,8 @@ def _direction(probability_up: float, threshold: float) -> str:
 def train_direction_model(market: pd.DataFrame) -> DirectionModelResult:
     features = _market_features(market).dropna()
     gold = market["gold"]
-    if len(features) < 500:
-        raise ValueError("Model arah memerlukan minimal 500 observasi lintas pasar.")
+    if len(features) < 300:
+        raise ValueError("Model arah memerlukan minimal 300 observasi lintas pasar.")
 
     feature_names = list(features.columns)
     latest_features = features.iloc[[-1]]
