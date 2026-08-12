@@ -121,6 +121,12 @@ V1_DIRECTIONAL_SPECIALIZATION_VERSION = "optimizer-v1-directional-specialization
 V1_DIRECTIONAL_SPECIALIZATION_PATH = Path(
     "data/precomputed/v1_directional_specialization.pkl.b64"
 )
+V1_BUY_CONTINUATION_VERSION = (
+    "optimizer-v1-buy-specialist-bullish-continuation-2022-2026h1-v4.1"
+)
+V1_BUY_CONTINUATION_PATH = Path(
+    "data/precomputed/v1_buy_continuation.pkl.b64"
+)
 V1_SELL_SPECIALIST_VERSION = (
     "optimizer-v1-directional-specialist-sell-2022-2026h1-v5"
 )
@@ -504,6 +510,23 @@ def load_precomputed_v1_directional_specialization(backtest_version: str):
         saved = pickle.loads(
             base64.b64decode(
                 V1_DIRECTIONAL_SPECIALIZATION_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_buy_continuation(backtest_version: str):
+    if not V1_BUY_CONTINUATION_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                V1_BUY_CONTINUATION_PATH.read_text(encoding="ascii")
             )
         )
         if saved.get("version") == backtest_version:
@@ -5351,6 +5374,129 @@ def _render_v1_directional_specialization_tab(payload) -> None:
         st.dataframe(payload["data_audit"], use_container_width=True, hide_index=True)
 
 
+def _render_v1_buy_continuation_tab(payload) -> None:
+    st.subheader("BUY Specialist v4.1 - Bullish Continuation")
+    if payload is None:
+        st.warning("Hasil BUY Specialist v4.1 belum tersedia pada artefak precomputed.")
+        return
+
+    ranking = payload["ranking"]
+    winner = ranking.iloc[0]
+    continuation = ranking[ranking["Kandidat"].ne("BUY Specialist v4 Control")]
+    best_continuation = continuation.iloc[0]
+    st.warning(
+        "**Eksperimen offline terisolasi:** BUY Specialist v4 dan ledger paper live "
+        "tidak diubah. v4.1 hanya diuji sebagai kandidat continuation."
+    )
+    st.success(
+        f"**PEMENANG TETAP {winner['Kandidat']}.** Growth development "
+        f"**{winner['Growth development (%)']:+.2f}%**, PF **{winner['PF development']:.3f}**, "
+        f"drawdown **{winner['DD development (%)']:.2f}%**, dan referensi 2026H1 "
+        f"**{winner['Growth 2026H1 (%)']:+.2f}%**."
+    )
+    st.error(
+        f"**v4.1 BELUM DIPROMOSIKAN.** Kandidat continuation terbaik, "
+        f"**{best_continuation['Kandidat']}**, mencatat growth development "
+        f"**{best_continuation['Growth development (%)']:+.2f}%** tetapi berubah menjadi "
+        f"**{best_continuation['Growth 2026H1 (%)']:+.2f}%** pada historical reference 2026H1. "
+        "Continuation menambah peluang, tetapi belum stabil lintas periode."
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Pemenang", winner["Kandidat"])
+    c2.metric("Growth development", f"{winner['Growth development (%)']:+.2f}%")
+    c3.metric("Profit factor", f"{winner['PF development']:.3f}")
+    c4.metric("Drawdown", f"{winner['DD development (%)']:.2f}%")
+    c5.metric("Transaksi", f"{int(winner['Transaksi development'])}")
+
+    ranking_formats = {
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Transaksi development": "{:.0f}",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+        "PF 2026H1": "{:.3f}",
+        "DD 2026H1 (%)": "{:.2f}%",
+        "Transaksi 2026H1": "{:.0f}",
+        "Kriteria lolos": "{:.0f}",
+    }
+    metric_formats = {
+        "Sinyal tersedia": "{:.0f}",
+        "Equity akhir": "${:,.2f}",
+        "Growth (%)": "{:+.2f}%",
+        "Max drawdown": "${:,.2f}",
+        "Max drawdown (%)": "{:.2f}%",
+        "Profit factor": "{:.3f}",
+        "Transaksi": "{:.0f}",
+        "Win rate (%)": "{:.1f}%",
+        "Total swap": "${:,.2f}",
+        "Biaya spread": "${:,.2f}",
+        "Biaya slippage": "${:,.2f}",
+    }
+    st.markdown("**Peringkat Control vs Bullish Continuation**")
+    st.dataframe(
+        ranking.style.format(ranking_formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Gerbang Keputusan**")
+    st.dataframe(payload["decisions"], use_container_width=True, hide_index=True)
+    st.info(
+        "Interpretasi: Pullback dan Combined menaikkan growth development, tetapi drawdown "
+        "melewati 23%. Breakout lebih defensif dan lolos gerbang development, namun rugi "
+        "pada 2026H1. Karena v4 Control tetap unggul pada PF, drawdown, dan stabilitas periode, "
+        "paper live tidak diubah."
+    )
+
+    with st.expander("Detail funnel, fold, regime, biaya, dan metodologi"):
+        st.markdown("**Funnel Continuation**")
+        st.dataframe(payload["gate_audit"], use_container_width=True, hide_index=True)
+        st.dataframe(payload["delay_audit"], use_container_width=True, hide_index=True)
+        st.markdown("**Development 2022-2025**")
+        st.dataframe(
+            payload["development"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Historical Reference 2026H1**")
+        st.dataframe(
+            payload["historical_reference"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Validasi Periode dan Fold**")
+        st.dataframe(
+            payload["period_validation"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.dataframe(
+            payload["folds"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Audit Ekonomi per Regime**")
+        st.dataframe(
+            payload["regime_economic_audit"].style.format(metric_formats, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Monte Carlo**")
+        st.dataframe(
+            payload["monte_carlo_summary"].style.format(precision=3, na_rep="-"),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.markdown("**Kontrak Eksperimen**")
+        st.dataframe(
+            pd.DataFrame(
+                [{"Parameter": key, "Nilai": value} for key, value in payload["methodology"].items()]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def _render_v1_sell_specialist_tab(payload) -> None:
     st.subheader("v1 Directional Specialists Lab v5 - SELL Specialist")
     if payload is None:
@@ -7138,6 +7284,7 @@ def render_simulation(
         trend_regime_fusion_v1_tab,
         regime_classifier_v3_tab,
         directional_specialization_v4_tab,
+        buy_continuation_v41_tab,
         sell_specialist_v5_tab,
         sell_specialist_v6_tab,
         sell_specialist_v7_tab,
@@ -7174,6 +7321,7 @@ def render_simulation(
             "v1 Trend-Regime Fusion",
             "v1 Regime Classifier v3",
             "v1 Directional Specialization v4",
+            "BUY Specialist v4.1 Continuation",
             "v1 SELL Specialist v5",
             "v1 SELL Specialist v6",
             "v1 SELL Specialist v7",
@@ -7269,6 +7417,12 @@ def render_simulation(
         _render_v1_directional_specialization_tab(
             load_precomputed_v1_directional_specialization(
                 V1_DIRECTIONAL_SPECIALIZATION_VERSION
+            )
+        )
+    with buy_continuation_v41_tab:
+        _render_v1_buy_continuation_tab(
+            load_precomputed_v1_buy_continuation(
+                V1_BUY_CONTINUATION_VERSION
             )
         )
     with sell_specialist_v5_tab:
