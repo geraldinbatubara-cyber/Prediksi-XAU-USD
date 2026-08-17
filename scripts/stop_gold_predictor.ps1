@@ -25,9 +25,9 @@ try {
         $notificationInfo = if ($savedNotificationPid) {
             Get-CimInstance Win32_Process -Filter "ProcessId = $savedNotificationPid" -ErrorAction SilentlyContinue
         }
-        if ($notificationInfo -and $notificationInfo.CommandLine -like "*whatsapp_notifications.py*") {
+        if ($notificationInfo -and $notificationInfo.CommandLine -like "*email_notifications.py*") {
             Stop-Process -Id $savedNotificationPid -ErrorAction Stop
-            $stopped += "notifikasi WhatsApp"
+            $stopped += "notifikasi email"
         }
         Remove-Item -LiteralPath $notificationPidPath -Force -ErrorAction SilentlyContinue
     }

@@ -25,7 +25,7 @@ try {
     }
     $pythonPath = Join-Path $config.project_root ".venv\Scripts\python.exe"
     $bridgePath = Join-Path $config.project_root "scripts\mt5_data_bridge.py"
-    $notificationPath = Join-Path $config.project_root "gold_forecast\whatsapp_notifications.py"
+    $notificationPath = Join-Path $config.project_root "gold_forecast\email_notifications.py"
     if (-not (Test-Path -LiteralPath $pythonPath)) {
         throw "Python virtual environment tidak ditemukan: $pythonPath"
     }
@@ -86,9 +86,9 @@ try {
     }
 
     $notificationConfigured = (
-        $config.PSObject.Properties.Name -contains "whatsapp_access_token" -and
-        $config.PSObject.Properties.Name -contains "whatsapp_phone_number_id" -and
-        $config.PSObject.Properties.Name -contains "whatsapp_recipient"
+        $config.PSObject.Properties.Name -contains "email_app_password" -and
+        $config.PSObject.Properties.Name -contains "email_sender" -and
+        $config.PSObject.Properties.Name -contains "email_recipient"
     )
     $notificationRunning = $false
     if (Test-Path -LiteralPath $notificationPidPath) {
@@ -96,7 +96,7 @@ try {
         $savedNotificationProcess = if ($savedNotificationPid) {
             Get-CimInstance Win32_Process -Filter "ProcessId = $savedNotificationPid" -ErrorAction SilentlyContinue
         }
-        if ($savedNotificationProcess -and $savedNotificationProcess.CommandLine -like "*whatsapp_notifications.py*") {
+        if ($savedNotificationProcess -and $savedNotificationProcess.CommandLine -like "*email_notifications.py*") {
             $notificationRunning = $true
         } else {
             Remove-Item -LiteralPath $notificationPidPath -Force -ErrorAction SilentlyContinue
@@ -106,16 +106,15 @@ try {
     if ($notificationConfigured -and -not $notificationRunning) {
         $secureSupabaseSecret = ConvertTo-SecureString $config.supabase_secret
         $plainSupabaseSecret = [Net.NetworkCredential]::new("", $secureSupabaseSecret).Password
-        $secureWhatsappToken = ConvertTo-SecureString $config.whatsapp_access_token
-        $plainWhatsappToken = [Net.NetworkCredential]::new("", $secureWhatsappToken).Password
+        $secureEmailPassword = ConvertTo-SecureString $config.email_app_password
+        $plainEmailPassword = [Net.NetworkCredential]::new("", $secureEmailPassword).Password
         $env:SUPABASE_URL = [string]$config.supabase_url
         $env:SUPABASE_SERVICE_ROLE_KEY = $plainSupabaseSecret
-        $env:WHATSAPP_ACCESS_TOKEN = $plainWhatsappToken
-        $env:WHATSAPP_PHONE_NUMBER_ID = [string]$config.whatsapp_phone_number_id
-        $env:WHATSAPP_RECIPIENT = [string]$config.whatsapp_recipient
-        $env:WHATSAPP_TEMPLATE_NAME = [string]$config.whatsapp_template_name
-        $env:WHATSAPP_TEMPLATE_LANGUAGE = [string]$config.whatsapp_template_language
-        $env:WHATSAPP_GRAPH_VERSION = [string]$config.whatsapp_graph_version
+        $env:EMAIL_APP_PASSWORD = $plainEmailPassword
+        $env:EMAIL_SENDER = [string]$config.email_sender
+        $env:EMAIL_RECIPIENT = [string]$config.email_recipient
+        $env:EMAIL_SMTP_HOST = [string]$config.email_smtp_host
+        $env:EMAIL_SMTP_PORT = [string]$config.email_smtp_port
         $notificationInterval = if ($config.notification_interval_seconds) {
             [int]$config.notification_interval_seconds
         } else {
@@ -138,24 +137,24 @@ try {
             -RedirectStandardError $notificationStderr `
             -PassThru
         $notificationProcess.Id | Set-Content -LiteralPath $notificationPidPath -Encoding ASCII
-        Remove-Item Env:WHATSAPP_ACCESS_TOKEN -ErrorAction SilentlyContinue
+        Remove-Item Env:EMAIL_APP_PASSWORD -ErrorAction SilentlyContinue
         Remove-Item Env:SUPABASE_SERVICE_ROLE_KEY -ErrorAction SilentlyContinue
-        Remove-Variable plainSupabaseSecret, secureSupabaseSecret, plainWhatsappToken, secureWhatsappToken -ErrorAction SilentlyContinue
+        Remove-Variable plainSupabaseSecret, secureSupabaseSecret, plainEmailPassword, secureEmailPassword -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
         if ($notificationProcess.HasExited) {
             $errorDetail = Get-Content -LiteralPath $notificationStderr -Raw -ErrorAction SilentlyContinue
-            throw "Dispatcher WhatsApp gagal berjalan. $errorDetail"
+            throw "Dispatcher email gagal berjalan. $errorDetail"
         }
         $notificationRunning = $true
     }
 
     Start-Process $dashboardUrl | Out-Null
     $notificationStatus = if ($notificationRunning) {
-        "Notifikasi WhatsApp aktif."
+        "Notifikasi email aktif."
     } elseif ($notificationConfigured) {
-        "Notifikasi WhatsApp belum aktif."
+        "Notifikasi email belum aktif."
     } else {
-        "Notifikasi WhatsApp belum dikonfigurasi."
+        "Notifikasi email belum dikonfigurasi."
     }
     Show-LauncherMessage "MT5 dan bridge aktif. $notificationStatus Dashboard dibuka di browser."
 } catch {
