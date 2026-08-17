@@ -1,4 +1,4 @@
-# Notifikasi WhatsApp Paper Live Trading
+# Notifikasi Email Paper Live Trading
 
 Notifikasi dikirim untuk dua perubahan posisi yang tersimpan di Supabase:
 
@@ -9,31 +9,31 @@ Notifikasi dikirim untuk dua perubahan posisi yang tersimpan di Supabase:
 Notifikasi lama tidak dibuat ulang. Kunci unik `strategy_id + position_id + event`
 mencegah pesan ganda ketika Streamlit melakukan rerun.
 
-## Persiapan Meta
+## Persiapan Gmail
 
-Siapkan WhatsApp Cloud API pada akun Meta Business:
+Siapkan akun Gmail pengirim:
 
-1. Phone Number ID.
-2. Permanent access token.
-3. Nomor penerima dalam format kode negara tanpa tanda `+`.
-4. Template pesan approved dengan satu parameter body untuk notifikasi yang
-   dimulai oleh aplikasi. Pesan text tanpa template hanya cocok untuk pengujian
-   dalam conversation window WhatsApp.
+1. Aktifkan Verifikasi 2 Langkah pada akun Google.
+2. Buat App Password khusus untuk Gold Predictor.
+3. Tentukan alamat email penerima; alamat pengirim dan penerima boleh sama.
 
-Jangan menyimpan access token di GitHub, Streamlit Secrets, atau file `.env`.
+Jangan memakai password utama Gmail. App Password disimpan terenkripsi oleh
+Windows dan tidak disimpan di repository.
 
 ## Aktivasi
 
 1. Buka Supabase SQL Editor dan jalankan seluruh isi
-   `supabase/whatsapp_notifications.sql`.
+   `supabase/whatsapp_notifications.sql` jika tabel antrean belum tersedia.
+   Nama file SQL lama dipertahankan agar instalasi Supabase yang sudah berjalan
+   tidak perlu diubah.
 2. Dari PowerShell proyek, jalankan:
 
    ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_whatsapp_notifications.ps1
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_email_notifications.ps1
    ```
 
 3. Klik `STOP Gold Predictor`, lalu klik `START Gold Predictor`.
-4. Popup START harus menampilkan `Notifikasi WhatsApp aktif`.
+4. Popup START harus menampilkan `Notifikasi email aktif`.
 
 Log dispatcher tersimpan di:
 

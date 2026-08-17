@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+from email.message import EmailMessage
 import json
 import os
+import smtplib
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
@@ -66,9 +68,9 @@ def run_dispatcher(*, once: bool = False, interval_seconds: int = 30) -> None:
         try:
             processed = dispatch_pending(config)
             if processed:
-                print(f"WhatsApp notifications processed: {processed}", flush=True)
+                print(f"Email notifications processed: {processed}", flush=True)
         except Exception as exc:
-            print(f"WARNING WhatsApp dispatcher: {exc}", flush=True)
+            print(f"WARNING email dispatcher: {exc}", flush=True)
         if once:
             return
         time.sleep(max(10, interval_seconds))
@@ -93,7 +95,7 @@ def dispatch_pending(config: dict[str, str]) -> int:
         if not _claim(config, notification_id, str(row.get("status"))):
             continue
         try:
-            provider_id = _send_whatsapp(config, format_notification(row))
+            provider_id = _send_email(config, row, format_notification(row))
             _update_outbox(
                 config,
                 notification_id,
@@ -151,46 +153,28 @@ def _update_outbox(config: dict[str, str], notification_id: object, payload: dic
     )
 
 
-def _send_whatsapp(config: dict[str, str], message: str) -> str:
-    url = (
-        f"{config['graph_url'].rstrip('/')}/{config['graph_version']}/"
-        f"{config['phone_number_id']}/messages"
-    )
-    template_name = config.get("template_name", "").strip()
-    if template_name:
-        body = {
-            "messaging_product": "whatsapp",
-            "to": config["recipient"],
-            "type": "template",
-            "template": {
-                "name": template_name,
-                "language": {"code": config["template_language"]},
-                "components": [
-                    {
-                        "type": "body",
-                        "parameters": [{"type": "text", "text": message[:1024]}],
-                    }
-                ],
-            },
-        }
-    else:
-        body = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": config["recipient"],
-            "type": "text",
-            "text": {"preview_url": False, "body": message[:4096]},
-        }
-    response = _json_request(
-        url,
-        method="POST",
-        headers={"Authorization": f"Bearer {config['access_token']}"},
-        payload=body,
-    )
-    messages = response.get("messages", []) if isinstance(response, dict) else []
-    if not messages or not messages[0].get("id"):
-        raise RuntimeError("WhatsApp API tidak mengembalikan message id.")
-    return str(messages[0]["id"])
+def _send_email(config: dict[str, str], row: dict, message: str) -> str:
+    notification_type = str(row.get("notification_type") or "UPDATE").upper()
+    strategy_id = str(row.get("strategy_id") or "-")
+    strategy = STRATEGY_LABELS.get(strategy_id, strategy_id.replace("_", " ").title())
+    email = EmailMessage()
+    email["From"] = config["sender"]
+    email["To"] = config["recipient"]
+    email["Subject"] = f"Gold Predictor | {notification_type} | {strategy}"
+    email.set_content(message)
+
+    try:
+        with smtplib.SMTP(config["smtp_host"], int(config["smtp_port"]), timeout=20) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(config["sender"], config["app_password"])
+            refused = smtp.send_message(email)
+    except (smtplib.SMTPException, OSError) as exc:
+        raise RuntimeError("Email SMTP tidak dapat dikirim.") from exc
+    if refused:
+        raise RuntimeError("Server SMTP menolak alamat penerima.")
+    return str(email["Message-ID"] or f"smtp:{row.get('notification_id')}")
 
 
 def _supabase_request(
@@ -242,17 +226,15 @@ def _load_config() -> dict[str, str]:
     config = {
         "supabase_url": os.getenv("SUPABASE_URL", "").strip(),
         "supabase_key": os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip(),
-        "access_token": os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip(),
-        "phone_number_id": os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip(),
-        "recipient": os.getenv("WHATSAPP_RECIPIENT", "").strip().replace("+", ""),
-        "template_name": os.getenv("WHATSAPP_TEMPLATE_NAME", "").strip(),
-        "template_language": os.getenv("WHATSAPP_TEMPLATE_LANGUAGE", "id").strip(),
-        "graph_url": os.getenv("WHATSAPP_GRAPH_URL", "https://graph.facebook.com").strip(),
-        "graph_version": os.getenv("WHATSAPP_GRAPH_VERSION", "v23.0").strip(),
+        "sender": os.getenv("EMAIL_SENDER", "").strip(),
+        "recipient": os.getenv("EMAIL_RECIPIENT", "").strip(),
+        "app_password": os.getenv("EMAIL_APP_PASSWORD", "").strip().replace(" ", ""),
+        "smtp_host": os.getenv("EMAIL_SMTP_HOST", "smtp.gmail.com").strip(),
+        "smtp_port": os.getenv("EMAIL_SMTP_PORT", "587").strip(),
     }
     missing = [
         key
-        for key in ("supabase_url", "supabase_key", "access_token", "phone_number_id", "recipient")
+        for key in ("supabase_url", "supabase_key", "sender", "recipient", "app_password")
         if not config[key]
     ]
     if missing:
@@ -293,7 +275,7 @@ def _display(value: object) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Gold Predictor WhatsApp dispatcher")
+    parser = argparse.ArgumentParser(description="Gold Predictor email dispatcher")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--interval", type=int, default=30)
     args = parser.parse_args()

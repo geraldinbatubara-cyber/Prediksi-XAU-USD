@@ -1,4 +1,4 @@
-from gold_forecast.whatsapp_notifications import format_notification
+from gold_forecast.email_notifications import format_notification
 
 
 def test_formats_entry_notification_with_targets():
