@@ -23,6 +23,10 @@ def test_strategy_paths_are_isolated():
         strategy_id_for_path(Path("data/live_trading_buy_specialist_v4.csv"))
         == "buy_specialist_v4"
     )
+    assert (
+        strategy_id_for_path(Path("data/live_trading_sideways_moderate.csv"))
+        == "sideways_moderate_regime"
+    )
 
 
 def test_merge_keeps_newest_state_without_duplicate_position():
