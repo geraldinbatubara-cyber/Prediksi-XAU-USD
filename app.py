@@ -7937,7 +7937,6 @@ def _render_manual_exit_comparison(
     optimizer_current_total = 0.0
     optimizer_closed_total = 0.0
     human_total = 0.0
-    paired_optimizer_total = 0.0
     for _, row in trade_rows.iterrows():
         position_id = int(pd.to_numeric(row["position_id"], errors="coerce"))
         direction = str(row["arah"])
@@ -7973,7 +7972,6 @@ def _render_manual_exit_comparison(
             manual_net = float(pd.to_numeric(manual_row.get("manual_net_pl", 0.0), errors="coerce") or 0.0)
             manual_label = f"{manual_row.get('manual_result_label', 'Manual')} ({manual_net:+,.2f})"
             human_total += manual_net
-            paired_optimizer_total += optimizer_net
 
         rows.append(
             {
@@ -7991,12 +7989,12 @@ def _render_manual_exit_comparison(
             }
         )
 
-    paired_delta = human_total - paired_optimizer_total
+    total_delta = human_total - optimizer_current_total
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Net Optimizer saat ini", f"${optimizer_current_total:+,.2f}")
     m2.metric("Net Optimizer closed", f"${optimizer_closed_total:+,.2f}")
     m3.metric("Net Manusia tercatat", f"${human_total:+,.2f}")
-    m4.metric("Selisih posisi yang sama", f"${paired_delta:+,.2f}")
+    m4.metric("Selisih Net Manusia vs Optimizer", f"${total_delta:+,.2f}")
 
     comparison_frame = pd.DataFrame(rows)
     money_columns = [
