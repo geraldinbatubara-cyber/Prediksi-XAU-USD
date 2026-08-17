@@ -105,7 +105,7 @@ def moderate_regime_live_signal(data, bundle, activation_utc, now_utc):
 
     features, h1, m15 = _regime_features(data)
     expanded = _expanded_range_frame(_range_quality_frame(features, h1))
-    opportunities = _mean_reversion_opportunities(
+    opportunities = _safe_live_opportunities(
         data, expanded, m15, float(bundle["spread_limit"])
     )
     if opportunities.empty:
@@ -261,3 +261,12 @@ def _augment_live_opportunities(opportunities, frame):
     output["session_cos"] = np.cos(2 * np.pi * hour / 24)
     output["direction_code"] = np.where(output["direction"].eq("BUY"), 1.0, -1.0)
     return output.replace([np.inf, -np.inf], np.nan)
+
+
+def _safe_live_opportunities(data, expanded, m15, spread_limit):
+    try:
+        return _mean_reversion_opportunities(data, expanded, m15, spread_limit)
+    except RuntimeError as exc:
+        if str(exc) != "Range detector tidak menghasilkan opportunity.":
+            raise
+        return pd.DataFrame()
