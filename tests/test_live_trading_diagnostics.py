@@ -112,3 +112,73 @@ def test_stale_daily_data_has_priority_in_decision_code():
         quote_fresh=False,
     )
     assert code == "DATA_STALE"
+
+
+def test_intraday_signals_keep_timestamp_and_dynamic_barriers():
+    params = {
+        **_params(),
+        "Max BUY": 2,
+        "Max SELL": 2,
+        "Max Total": 2,
+    }
+    now = pd.Timestamp("2026-08-17 12:00:00", tz="Asia/Jayapura")
+    base = {
+        "prediction": 4006.4,
+        "reference_price": 4000.0,
+        "expected_change_pct": 0.16,
+        "arah": "BUY",
+        "source": "Moderate Regime Sideways v9",
+        "tp_usd": 8.0,
+        "sl_usd": 6.0,
+        "intraday_signal": True,
+    }
+    first = live_trading._maybe_open_position(
+        live_trading._empty_ledger(),
+        {**base, "signal_date": pd.Timestamp("2026-08-17 03:00:00")},
+        params,
+        now,
+        True,
+        "Aktif",
+        broker_ask=4000.2,
+    )
+    second = live_trading._maybe_open_position(
+        first,
+        {**base, "signal_date": pd.Timestamp("2026-08-17 03:15:00")},
+        params,
+        now,
+        True,
+        "Aktif",
+        broker_ask=4000.4,
+    )
+    assert len(second) == 2
+    assert second["signal_date"].tolist() == [
+        "2026-08-17 03:00:00",
+        "2026-08-17 03:15:00",
+    ]
+    assert second.iloc[0]["tp_usd"] == 8.0
+    assert second.iloc[0]["cl_usd"] == 6.0
+
+
+def test_moderate_regime_closes_at_twelve_hour_time_stop():
+    row = {
+        column: "" for column in live_trading.LIVE_COLUMNS
+    }
+    row.update(
+        {
+            "position_id": 1,
+            "status": "OPEN",
+            "arah": "BUY",
+            "lot": 0.01,
+            "entry_time_wit": "2026-08-17 08:00:00 WIT",
+            "entry_price": 4000.0,
+            "swap": 0.0,
+        }
+    )
+    closed = live_trading._close_time_stop_positions_quote(
+        pd.DataFrame([row], columns=live_trading.LIVE_COLUMNS),
+        4003.0,
+        4003.2,
+        pd.Timestamp("2026-08-17 20:01:00", tz="Asia/Jayapura"),
+    )
+    assert closed.iloc[0]["status"] == "CLOSED"
+    assert closed.iloc[0]["exit_reason"] == "Time stop 12 jam"
