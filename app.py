@@ -9259,6 +9259,9 @@ def render_live_trading(
         "tp_usd": "${:,.2f}",
         "cl_usd": "${:,.2f}",
         "entry_price": "${:,.2f}",
+        "active_sl_price": "${:,.2f}",
+        "peak_floating_usd": "${:+,.2f}",
+        "atr_m15": "${:,.2f}",
         "exit_price": "${:,.2f}",
         "gross_pl": "${:+,.2f}",
         "swap": "${:+,.2f}",
@@ -9320,6 +9323,18 @@ def render_live_trading(
             "floating_pl",
             "catatan",
         ]
+        if entry_strategy == "sideways_moderate":
+            protection_columns = [
+                "protection_mode",
+                "active_sl_price",
+                "peak_floating_usd",
+                "break_even_activated",
+                "trailing_activated",
+                "atr_m15",
+                "protection_updated_wit",
+            ]
+            insert_at = open_columns.index("swap")
+            open_columns[insert_at:insert_at] = protection_columns
         open_table = open_display[[column for column in open_columns if column in open_display.columns]]
         st.dataframe(
             open_table.style.format(
@@ -10227,7 +10242,9 @@ elif page == "Live Trading":
                 "Kandidat paper live eksperimental dari Sideways v9. Entry BUY/SELL hanya "
                 "ketika expanded sideways regime, lokasi boundary, rejection candle, dan "
                 "extreme breakout hazard veto lolos. TP dinamis USD 5-15, SL dinamis "
-                "USD 5-12, time stop 12 jam, lot 0.01, dan maksimum satu posisi. Kandidat ini belum lulus "
+                "USD 5-12, break-even +1R, ATR trailing mulai 70% TP dengan jarak "
+                "1.5 ATR M15, time stop 12 jam, lot 0.01, dan maksimum satu posisi. "
+                "Kandidat ini belum lulus "
                 "seluruh kriteria lab sehingga tidak digunakan untuk uang riil."
             ),
             broker_quote=broker_quote,

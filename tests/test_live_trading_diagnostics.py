@@ -185,6 +185,102 @@ def test_moderate_regime_closes_at_twelve_hour_time_stop():
     assert closed.iloc[0]["exit_reason"] == "Time stop 12 jam"
 
 
+def _moderate_open_position(*, tp_usd=10.0, cl_usd=5.0, direction="BUY"):
+    row = {column: "" for column in live_trading.LIVE_COLUMNS}
+    row.update(
+        {
+            "position_id": 1,
+            "status": "OPEN",
+            "arah": direction,
+            "lot": 0.01,
+            "entry_time_wit": "2026-08-17 09:00:00 WIT",
+            "entry_price": 4000.0,
+            "tp_usd": tp_usd,
+            "cl_usd": cl_usd,
+            "swap": 0.0,
+            "protection_mode": "Initial SL",
+        }
+    )
+    return pd.DataFrame([row], columns=live_trading.LIVE_COLUMNS)
+
+
+def _moderate_broker_path(peak=4008.0, finish=4006.0):
+    timestamps = pd.date_range("2026-08-17 00:00:00", periods=120, freq="min", tz="UTC")
+    first = np.linspace(4000.0, peak, 60)
+    second = np.linspace(peak, finish, 60)
+    close = np.concatenate([first, second])
+    return pd.DataFrame(
+        {
+            "timestamp_utc": timestamps,
+            "open": close,
+            "high": close + 0.20,
+            "low": close - 0.20,
+            "close": close,
+            "spread_points": 10.0,
+        }
+    )
+
+
+def test_moderate_regime_activates_break_even_at_one_r():
+    managed = live_trading._manage_moderate_exit_protection(
+        _moderate_open_position(tp_usd=15.0, cl_usd=5.0),
+        _moderate_broker_path(peak=4006.0, finish=4005.5),
+        bid=4005.5,
+        ask=4005.7,
+        now=pd.Timestamp("2026-08-17 11:00:00", tz="Asia/Jayapura"),
+    )
+    row = managed.iloc[0]
+    assert bool(row["break_even_activated"])
+    assert not bool(row["trailing_activated"])
+    assert row["protection_mode"] == "Break-even"
+    assert row["active_sl_price"] == 4000.0
+
+
+def test_moderate_regime_activates_and_closes_at_atr_trailing():
+    managed = live_trading._manage_moderate_exit_protection(
+        _moderate_open_position(tp_usd=10.0, cl_usd=5.0),
+        _moderate_broker_path(),
+        bid=4006.0,
+        ask=4006.2,
+        now=pd.Timestamp("2026-08-17 11:00:00", tz="Asia/Jayapura"),
+    )
+    row = managed.iloc[0]
+    assert bool(row["break_even_activated"])
+    assert bool(row["trailing_activated"])
+    assert row["protection_mode"] == "ATR trailing"
+    assert row["active_sl_price"] > 4000.0
+    closed = live_trading._close_hit_positions_quote(
+        managed,
+        bid=float(row["active_sl_price"]) - 0.01,
+        ask=float(row["active_sl_price"]) + 0.19,
+        now=pd.Timestamp("2026-08-17 11:01:00", tz="Asia/Jayapura"),
+    )
+    assert closed.iloc[0]["status"] == "CLOSED"
+    assert closed.iloc[0]["exit_reason"] == "ATR trailing tersentuh"
+
+
+def test_moderate_regime_sell_uses_ask_side_atr_trailing():
+    managed = live_trading._manage_moderate_exit_protection(
+        _moderate_open_position(direction="SELL"),
+        _moderate_broker_path(peak=3992.0, finish=3994.0),
+        bid=3994.0,
+        ask=3994.2,
+        now=pd.Timestamp("2026-08-17 11:00:00", tz="Asia/Jayapura"),
+    )
+    row = managed.iloc[0]
+    assert bool(row["trailing_activated"])
+    assert row["protection_mode"] == "ATR trailing"
+    assert row["active_sl_price"] < 4000.0
+    closed = live_trading._close_hit_positions_quote(
+        managed,
+        bid=float(row["active_sl_price"]) - 0.21,
+        ask=float(row["active_sl_price"]) + 0.01,
+        now=pd.Timestamp("2026-08-17 11:01:00", tz="Asia/Jayapura"),
+    )
+    assert closed.iloc[0]["status"] == "CLOSED"
+    assert closed.iloc[0]["exit_reason"] == "ATR trailing tersentuh"
+
+
 def test_moderate_regime_treats_no_opportunity_as_waiting(monkeypatch):
     def no_opportunity(*args, **kwargs):
         raise RuntimeError("Range detector tidak menghasilkan opportunity.")

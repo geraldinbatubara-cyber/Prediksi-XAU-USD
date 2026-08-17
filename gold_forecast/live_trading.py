@@ -19,7 +19,9 @@ from gold_forecast.paper_ledger_store import (
 )
 from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT
 from gold_forecast.sideways_moderate_live import moderate_regime_live_signal
+from gold_forecast.exact_broker_oos import POINT_SIZE
 from gold_forecast.strategy_optimizer import _indicator_predictions, _rsi
+from gold_forecast.v1_sideways_specialist_v5 import _m15_atr
 from gold_forecast.v1_risk_control import _entry_signals_for_period
 from gold_forecast.v1_regime_classifier import (
     FEATURE_COLUMNS,
@@ -91,6 +93,13 @@ LIVE_COLUMNS = [
     "gross_pl",
     "swap",
     "net_pl",
+    "protection_mode",
+    "active_sl_price",
+    "peak_floating_usd",
+    "break_even_activated",
+    "trailing_activated",
+    "atr_m15",
+    "protection_updated_wit",
     "last_update_wit",
     "catatan",
 ]
@@ -103,6 +112,8 @@ LIVE_TEXT_COLUMNS = [
     "last_swap_date",
     "exit_time_wit",
     "exit_reason",
+    "protection_mode",
+    "protection_updated_wit",
     "last_update_wit",
     "catatan",
 ]
@@ -819,19 +830,30 @@ def _close_hit_positions_quote(
         tp_points = float(row["tp_usd"]) / units
         cl_points = float(row["cl_usd"]) / units
         direction = str(row["arah"])
+        initial_cl_price = (
+            entry_price - cl_points if direction == "BUY" else entry_price + cl_points
+        )
+        stored_sl = pd.to_numeric(row.get("active_sl_price"), errors="coerce")
+        cl_price = float(stored_sl) if pd.notna(stored_sl) else initial_cl_price
+        protection_mode = str(row.get("protection_mode", "Initial SL") or "Initial SL")
 
         if direction == "BUY":
             executable_price = bid
             hit_tp = executable_price >= entry_price + tp_points
-            hit_cl = executable_price <= entry_price - cl_points
+            hit_cl = executable_price <= cl_price
         else:
             executable_price = ask
             hit_tp = executable_price <= entry_price - tp_points
-            hit_cl = executable_price >= entry_price + cl_points
+            hit_cl = executable_price >= cl_price
         if not hit_tp and not hit_cl:
             continue
 
-        exit_reason = "CL tersentuh" if hit_cl else "TP tersentuh"
+        if hit_cl and protection_mode == "ATR trailing":
+            exit_reason = "ATR trailing tersentuh"
+        elif hit_cl and protection_mode == "Break-even":
+            exit_reason = "Break-even tersentuh"
+        else:
+            exit_reason = "CL tersentuh" if hit_cl else "TP tersentuh"
         if "Dipulihkan dari observasi pengguna" in str(row.get("catatan", "")):
             if direction == "BUY":
                 executable_price = (
@@ -890,6 +912,129 @@ def _close_time_stop_positions_quote(
     return ledger
 
 
+def _manage_moderate_exit_protection(
+    ledger: pd.DataFrame,
+    broker_bars: pd.DataFrame | None,
+    bid: float,
+    ask: float,
+    now: pd.Timestamp,
+) -> pd.DataFrame:
+    if ledger.empty:
+        return ledger
+    data = _prepare_live_broker_m1(broker_bars)
+    if data.empty:
+        return ledger
+    now_utc = now.tz_convert("UTC").tz_localize(None)
+    completed = data.loc[data.index < now_utc.floor("15min")]
+    if completed.empty:
+        return ledger
+    atr = _m15_atr(completed).dropna()
+    if atr.empty:
+        return ledger
+    latest_m15 = pd.Timestamp(atr.index[-1])
+    atr_value = float(atr.iloc[-1])
+    m15 = completed.resample("15min").agg(
+        {"Close": "last", "SpreadPoints": "last"}
+    ).dropna()
+    if latest_m15 not in m15.index:
+        return ledger
+    m15_bid_close = float(m15.loc[latest_m15, "Close"])
+    m15_ask_close = m15_bid_close + float(
+        m15.loc[latest_m15, "SpreadPoints"]
+    ) * POINT_SIZE
+
+    for index, row in ledger[ledger["status"].eq("OPEN")].iterrows():
+        entry_price = float(row["entry_price"])
+        lot = float(row["lot"])
+        units = lot * CONTRACT_OUNCES_PER_LOT
+        direction = str(row["arah"])
+        initial_sl_usd = float(row["cl_usd"])
+        tp_usd = float(row["tp_usd"])
+        initial_sl_price = (
+            entry_price - initial_sl_usd / units
+            if direction == "BUY"
+            else entry_price + initial_sl_usd / units
+        )
+        stored_sl = pd.to_numeric(row.get("active_sl_price"), errors="coerce")
+        active_sl = float(stored_sl) if pd.notna(stored_sl) else initial_sl_price
+        stored_peak = pd.to_numeric(row.get("peak_floating_usd"), errors="coerce")
+        peak = max(float(stored_peak) if pd.notna(stored_peak) else 0.0, 0.0)
+
+        entered = pd.to_datetime(
+            str(row.get("entry_time_wit", "")).replace(" WIT", ""),
+            errors="coerce",
+        )
+        path = completed
+        if pd.notna(entered):
+            entered_utc = (
+                pd.Timestamp(entered)
+                .tz_localize(WIT)
+                .tz_convert("UTC")
+                .tz_localize(None)
+            )
+            path = completed.loc[completed.index >= entered_utc]
+        if direction == "BUY":
+            current_favorable = (float(bid) - entry_price) * units
+            historical_favorable = (
+                (float(path["High"].max()) - entry_price) * units
+                if not path.empty
+                else current_favorable
+            )
+        else:
+            current_favorable = (entry_price - float(ask)) * units
+            historical_favorable = (
+                (
+                    entry_price
+                    - float((path["Low"] + path["SpreadPoints"] * POINT_SIZE).min())
+                )
+                * units
+                if not path.empty
+                else current_favorable
+            )
+        peak = max(peak, current_favorable, historical_favorable, 0.0)
+
+        mode = str(row.get("protection_mode", "Initial SL") or "Initial SL")
+        break_even = str(row.get("break_even_activated", False)).lower() == "true"
+        trailing = str(row.get("trailing_activated", False)).lower() == "true"
+        if peak >= initial_sl_usd:
+            if direction == "BUY" and entry_price > active_sl:
+                active_sl = entry_price
+                mode = "Break-even"
+            elif direction == "SELL" and entry_price < active_sl:
+                active_sl = entry_price
+                mode = "Break-even"
+            break_even = True
+
+        if peak >= 0.70 * tp_usd:
+            candidate_sl = (
+                m15_bid_close - 1.5 * atr_value
+                if direction == "BUY"
+                else m15_ask_close + 1.5 * atr_value
+            )
+            if direction == "BUY" and candidate_sl > active_sl:
+                active_sl = candidate_sl
+                mode = "ATR trailing"
+                trailing = True
+            elif direction == "SELL" and candidate_sl < active_sl:
+                active_sl = candidate_sl
+                mode = "ATR trailing"
+                trailing = True
+
+        ledger.loc[index, "protection_mode"] = mode
+        ledger.loc[index, "active_sl_price"] = active_sl
+        ledger.loc[index, "peak_floating_usd"] = peak
+        ledger.loc[index, "break_even_activated"] = break_even
+        ledger.loc[index, "trailing_activated"] = trailing
+        ledger.loc[index, "atr_m15"] = atr_value
+        ledger.loc[index, "protection_updated_wit"] = now.strftime(
+            "%Y-%m-%d %H:%M:%S WIT"
+        )
+        ledger.loc[index, "last_update_wit"] = now.strftime(
+            "%Y-%m-%d %H:%M:%S WIT"
+        )
+    return ledger
+
+
 def _maybe_open_position(
     ledger: pd.DataFrame,
     signal: dict[str, object] | None,
@@ -944,6 +1089,7 @@ def _maybe_open_position(
     elif can_open and direction == "SELL" and broker_bid is not None:
         entry_price = float(broker_bid)
 
+    protection_enabled = params.get("Trailing activation") == "70% TP"
     new_row = {
         "position_id": next_id,
         "signal_date": signal_date,
@@ -966,6 +1112,23 @@ def _maybe_open_position(
         "gross_pl": 0.0,
         "swap": 0.0,
         "net_pl": 0.0,
+        "protection_mode": "Initial SL" if protection_enabled else "",
+        "active_sl_price": (
+            entry_price - float(signal.get("sl_usd", params["SL (USD)"]))
+            / (LIVE_LOT_SIZE * CONTRACT_OUNCES_PER_LOT)
+            if protection_enabled and can_open and direction == "BUY"
+            else (
+                entry_price + float(signal.get("sl_usd", params["SL (USD)"]))
+                / (LIVE_LOT_SIZE * CONTRACT_OUNCES_PER_LOT)
+                if protection_enabled and can_open and direction == "SELL"
+                else np.nan
+            )
+        ),
+        "peak_floating_usd": 0.0,
+        "break_even_activated": False,
+        "trailing_activated": False,
+        "atr_m15": np.nan,
+        "protection_updated_wit": "",
         "last_update_wit": now.strftime("%Y-%m-%d %H:%M:%S WIT"),
         "catatan": note,
     }
@@ -1702,6 +1865,9 @@ def run_live_trading_update(
                 "Max BUY": 1,
                 "Max SELL": 1,
                 "Max Total": 1,
+                "Break-even": "+1R",
+                "Trailing activation": "70% TP",
+                "Trailing distance": "1.5 ATR M15",
             }
         )
 
@@ -1733,6 +1899,14 @@ def run_live_trading_update(
         latest_candle = usable_gold.iloc[-1]
         if quote_state["fresh"]:
             latest_price = float(quote_state["mid"])
+            if entry_strategy == "sideways_moderate":
+                ledger = _manage_moderate_exit_protection(
+                    ledger,
+                    broker_bars,
+                    float(quote_state["bid"]),
+                    float(quote_state["ask"]),
+                    now_wit,
+                )
             ledger = _close_hit_positions_quote(
                 ledger,
                 float(quote_state["bid"]),
