@@ -197,6 +197,12 @@ V1_SIDEWAYS_SPECIALIST_V8_VERSION = (
 V1_SIDEWAYS_SPECIALIST_V8_PATH = Path(
     "data/precomputed/v1_sideways_specialist_v8.pkl.b64"
 )
+V1_SIDEWAYS_SPECIALIST_V9_VERSION = (
+    "optimizer-v1-sideways-specialist-opportunity-expansion-2022-2026h1-v9"
+)
+V1_SIDEWAYS_SPECIALIST_V9_PATH = Path(
+    "data/precomputed/v1_sideways_specialist_v9.pkl.b64"
+)
 BUY_SPECIALIST_V4_LIVE_VERSION = "buy-specialist-v4-live-inference-2026-07-24-v1"
 BUY_SPECIALIST_V4_LIVE_PATH = Path(
     "data/precomputed/buy_specialist_v4_live.pkl.b64"
@@ -737,6 +743,23 @@ def load_precomputed_v1_sideways_specialist_v8(backtest_version: str):
         saved = pickle.loads(
             base64.b64decode(
                 V1_SIDEWAYS_SPECIALIST_V8_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == backtest_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_precomputed_v1_sideways_specialist_v9(backtest_version: str):
+    if not V1_SIDEWAYS_SPECIALIST_V9_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                V1_SIDEWAYS_SPECIALIST_V9_PATH.read_text(encoding="ascii")
             )
         )
         if saved.get("version") == backtest_version:
@@ -7238,6 +7261,116 @@ def _render_v1_sideways_specialist_v8_tab(payload) -> None:
                 )
 
 
+def _render_v1_sideways_specialist_v9_tab(payload) -> None:
+    st.subheader("v1 Sideways Specialist v9 - Opportunity Expansion Lab")
+    if payload is None:
+        st.warning("Hasil Sideways Specialist v9 belum tersedia.")
+        return
+
+    ranking = payload["ranking"].copy()
+    winner_name = payload["winner"] or str(ranking.iloc[0]["Kandidat"])
+    winner = ranking.loc[ranking["Kandidat"].eq(winner_name)].iloc[0]
+    moderate = ranking.loc[ranking["Kandidat"].eq("Moderate Regime")].iloc[0]
+    st.warning(
+        "**Eksperimen kelonggaran terkontrol:** regime diperluas menjadi minimal "
+        "2/5 bukti dan persistensi satu M15. Hazard ekstrem tetap menjadi veto. "
+        "BUY Specialist v4 dan ledger paper live tidak disentuh."
+    )
+    st.error(
+        "**BELUM LULUS.** Opportunity Expansion Full memimpin selection 2024, "
+        "tetapi PF development dan drawdown belum memenuhi batas. Moderate Regime "
+        f"lebih stabil lintas periode dengan growth development "
+        f"**{moderate['Growth development (%)']:+.2f}%**, locked 2025 "
+        f"**{moderate['Growth locked 2025 (%)']:+.2f}%**, dan 2026H1 "
+        f"**{moderate['Growth 2026H1 (%)']:+.2f}%**, tetapi PF development baru "
+        f"**{moderate['PF development']:.3f}**."
+    )
+    st.info(
+        "Kelonggaran berhasil membuktikan bahwa peluang tambahan memang ada: "
+        "Moderate Regime menambah transaksi lebih dari 12 kali dengan marginal PF "
+        "di atas 1.10. Tantangan berikutnya adalah memperbaiki kualitas exit/risk, "
+        "bukan memperketat entry kembali hingga transaksinya hilang."
+    )
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Pemenang selection", str(winner["Kandidat"]))
+    c2.metric("Growth development", f"{winner['Growth development (%)']:+.2f}%")
+    c3.metric("Profit factor", f"{winner['PF development']:.3f}")
+    c4.metric("Max drawdown", f"{winner['DD development (%)']:.2f}%")
+    c5.metric("Locked 2025", f"{winner['Growth locked 2025 (%)']:+.2f}%")
+    c6.metric("Reference 2026H1", f"{winner['Growth 2026H1 (%)']:+.2f}%")
+
+    formats = {
+        "Selection score 2024": "{:.3f}",
+        "Growth selection 2024 (%)": "{:+.2f}%",
+        "PF selection 2024": "{:.3f}",
+        "DD selection 2024 (%)": "{:.2f}%",
+        "Growth development (%)": "{:+.2f}%",
+        "PF development": "{:.3f}",
+        "DD development (%)": "{:.2f}%",
+        "Growth locked 2025 (%)": "{:+.2f}%",
+        "Growth 2026H1 (%)": "{:+.2f}%",
+        "PF 2026H1": "{:.3f}",
+        "Retensi opportunity (%)": "{:.1f}%",
+        "Kenaikan transaksi (%)": "{:+.1f}%",
+        "Marginal PF": "{:.3f}",
+    }
+    st.markdown("**Peringkat Enam Kandidat**")
+    st.dataframe(
+        ranking.style.format(formats, na_rep="-"),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Kualitas Transaksi Tambahan**")
+    st.dataframe(
+        payload["marginal_trade_audit"].style.format(
+            {
+                "Kenaikan transaksi (%)": "{:+.1f}%",
+                "Marginal growth (%)": "{:+.2f}%",
+                "Marginal PF": "{:.3f}",
+                "Marginal win rate (%)": "{:.1f}%",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Funnel Entry BUY/SELL**")
+    st.dataframe(
+        payload["filter_audit"].style.format(
+            {"Retensi opportunity (%)": "{:.1f}%", "Median RR": "{:.3f}"},
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Gerbang Kelulusan**")
+    st.dataframe(payload["decisions"], use_container_width=True, hide_index=True)
+
+    with st.expander("Metodologi, threshold, validasi, dan risiko"):
+        for key, value in payload["methodology"].items():
+            if key != "Name":
+                st.caption(f"**{key}:** {value}")
+        st.json(payload["expansion_thresholds"])
+        for label, key in (
+            ("Validasi Ekonomi per Periode", "period_validation"),
+            ("Historical Reference 2026H1", "historical_reference"),
+            ("Fold", "folds"),
+            ("Monte Carlo", "monte_carlo_summary"),
+            ("Konsentrasi Profit", "profit_concentration"),
+            ("Referensi v8", "v8_reference"),
+            ("Audit Data", "data_audit"),
+        ):
+            frame = payload[key]
+            if isinstance(frame, pd.DataFrame) and not frame.empty:
+                st.markdown(f"**{label}**")
+                st.dataframe(
+                    frame.style.format(precision=3, na_rep="-"),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+
 def _render_model_comparison_tab(payload) -> None:
     st.subheader("Komparasi Model Mesin")
     st.caption(
@@ -7425,6 +7558,7 @@ def render_simulation(
         sideways_specialist_v6_tab,
         sideways_specialist_v7_tab,
         sideways_specialist_v8_tab,
+        sideways_specialist_v9_tab,
     ) = st.tabs(
         [
             "Optimizer v1",
@@ -7463,6 +7597,7 @@ def render_simulation(
             "v1 Sideways Specialist v6",
             "v1 Sideways Specialist v7",
             "v1 Sideways Specialist v8",
+            "v1 Sideways Specialist v9",
         ]
     )
     with optimizer_tab:
@@ -7649,6 +7784,12 @@ def render_simulation(
         _render_v1_sideways_specialist_v8_tab(
             load_precomputed_v1_sideways_specialist_v8(
                 V1_SIDEWAYS_SPECIALIST_V8_VERSION
+            )
+        )
+    with sideways_specialist_v9_tab:
+        _render_v1_sideways_specialist_v9_tab(
+            load_precomputed_v1_sideways_specialist_v9(
+                V1_SIDEWAYS_SPECIALIST_V9_VERSION
             )
         )
 
