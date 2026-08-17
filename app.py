@@ -201,7 +201,7 @@ V1_SIDEWAYS_SPECIALIST_V8_PATH = Path(
     "data/precomputed/v1_sideways_specialist_v8.pkl.b64"
 )
 V1_SIDEWAYS_SPECIALIST_V9_VERSION = (
-    "optimizer-v1-sideways-specialist-opportunity-expansion-2022-2026h1-v9"
+    "optimizer-v1-sideways-specialist-opportunity-expansion-atr-exit-2022-2026h1-v9.1"
 )
 V1_SIDEWAYS_SPECIALIST_V9_PATH = Path(
     "data/precomputed/v1_sideways_specialist_v9.pkl.b64"
@@ -7283,6 +7283,61 @@ def _render_v1_sideways_specialist_v8_tab(payload) -> None:
                 )
 
 
+def _render_atr_trailing_lab(payload) -> None:
+    if "atr_trailing_comparison" not in payload:
+        return
+    st.markdown("### ATR Trailing Exit Lab")
+    atr_comparison = payload["atr_trailing_comparison"]
+    eligible_trailing = atr_comparison.loc[
+        atr_comparison["Lulus vs control"]
+        & atr_comparison["Aktivasi trailing"].ne("Tidak aktif")
+    ].sort_values(
+        ["PF development", "Growth development (%)"],
+        ascending=False,
+    )
+    st.caption(
+        "Entry Moderate Regime identik untuk seluruh kandidat. Hanya aturan exit "
+        "yang berubah; 2026H1 tidak digunakan untuk memilih konfigurasi."
+    )
+    if not eligible_trailing.empty:
+        atr_leader = eligible_trailing.iloc[0]
+        st.warning(
+            f"**Kandidat terbaik sementara: {atr_leader['Kandidat']}.** "
+            f"Growth development {atr_leader['Growth development (%)']:+.2f}%, "
+            f"PF {atr_leader['PF development']:.3f}, dan drawdown "
+            f"{atr_leader['DD development (%)']:.2f}%. Belum diterapkan ke paper "
+            "live karena PF masih di bawah gerbang 1.30."
+        )
+    st.dataframe(
+        atr_comparison.style.format(
+            {
+                "Growth development (%)": "{:+.2f}%",
+                "PF development": "{:.3f}",
+                "DD development (%)": "{:.2f}%",
+                "Rata-rata net/trade": "${:+.3f}",
+                "Growth selection 2024 (%)": "{:+.2f}%",
+                "Growth locked 2025 (%)": "{:+.2f}%",
+                "Growth 2026H1 (%)": "{:+.2f}%",
+                "PF 2026H1": "{:.3f}",
+                "DD 2026H1 (%)": "{:.2f}%",
+            },
+            na_rep="-",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("**Distribusi Alasan Exit pada Development 2022-2025**")
+    st.caption(
+        "Jumlah transaksi dapat berubah karena exit lebih cepat membebaskan batas "
+        "satu posisi; sumber opportunity dan aturan entry tetap sama."
+    )
+    st.dataframe(
+        payload["atr_trailing_exit_counts"],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def _render_v1_sideways_specialist_v9_tab(payload) -> None:
     st.subheader("v1 Sideways Specialist v9 - Opportunity Expansion Lab")
     if payload is None:
@@ -7313,6 +7368,7 @@ def _render_v1_sideways_specialist_v9_tab(payload) -> None:
         "di atas 1.10. Tantangan berikutnya adalah memperbaiki kualitas exit/risk, "
         "bukan memperketat entry kembali hingga transaksinya hilang."
     )
+    _render_atr_trailing_lab(payload)
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Pemenang selection", str(winner["Kandidat"]))

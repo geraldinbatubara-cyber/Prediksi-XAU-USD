@@ -13,8 +13,12 @@ from gold_forecast.v1_risk_control import _metric_values
 from gold_forecast.v1_sell_specialist import (
     DEVELOPMENT_END,
     DEVELOPMENT_START,
+    LOCKED_END,
+    LOCKED_START,
     REFERENCE_END,
     REFERENCE_START,
+    SELECTION_END,
+    SELECTION_START,
 )
 from gold_forecast.v1_sideways_defense import _regime_features
 from gold_forecast.v1_sideways_specialist import (
@@ -67,6 +71,23 @@ CANDIDATES = (
     RELAXED_CONFIRMATION,
     WEIGHTED_EVIDENCE,
     FULL_EXPANSION,
+)
+
+ATR_EXIT_POLICIES = (
+    ExitPolicy("Control BE 1R", break_even_r=1.0),
+    ExitPolicy("Trail 1.5R / 1.5 ATR", break_even_r=1.0, trailing_r=1.5),
+    ExitPolicy("Trail 2R / 1.5 ATR", break_even_r=1.0, trailing_r=2.0),
+    ExitPolicy(
+        "Trail 70% TP / 1.5 ATR",
+        break_even_r=1.0,
+        trailing_tp_fraction=0.70,
+    ),
+    ExitPolicy(
+        "Trail 2R / 2 ATR",
+        break_even_r=1.0,
+        trailing_r=2.0,
+        trailing_atr_multiplier=2.0,
+    ),
 )
 
 
@@ -159,6 +180,30 @@ def run_v1_sideways_specialist_v9(
         REFERENCE_START,
         REFERENCE_END,
     )
+    atr_development_results = _simulate_exit_policies(
+        data.loc[DEVELOPMENT_START:DEVELOPMENT_END],
+        signal_map[MODERATE_REGIME],
+        position_states,
+        atr_m15,
+        model_1h,
+        model_3h,
+        DEVELOPMENT_START,
+        DEVELOPMENT_END,
+    )
+    atr_reference_results = _simulate_exit_policies(
+        data.loc[REFERENCE_START:REFERENCE_END],
+        signal_map[MODERATE_REGIME],
+        position_states,
+        atr_m15,
+        model_1h,
+        model_3h,
+        REFERENCE_START,
+        REFERENCE_END,
+    )
+    atr_trailing_comparison = _atr_trailing_comparison(
+        atr_development_results,
+        atr_reference_results,
+    )
     development = _result_table(development_results, signal_map)
     reference = _result_table(reference_results, signal_map)
     periods = _period_validation(development_results, signal_map)
@@ -216,6 +261,10 @@ def run_v1_sideways_specialist_v9(
                 "2025 dan 2026H1 positif, serta Monte Carlo rugi <=10%."
             ),
             "Live trading lock": "BUY Specialist v4 dan ledger paper live tidak diubah.",
+            "ATR trailing lab": (
+                "Entry Moderate Regime dikunci. Control BE 1R dibandingkan dengan "
+                "empat aturan trailing; 2026H1 hanya historical reference."
+            ),
         },
         "expansion_thresholds": thresholds,
         "filter_audit": filter_audit,
@@ -240,6 +289,8 @@ def run_v1_sideways_specialist_v9(
         "classification_locked": classification["locked"],
         "classification_reference": classification["reference"],
         "v8_reference": _reference_table(v8_payload, "ranking"),
+        "atr_trailing_comparison": atr_trailing_comparison,
+        "atr_trailing_exit_counts": _atr_exit_counts(atr_development_results),
     }
 
 
@@ -371,6 +422,121 @@ def _simulate_candidates(data, signal_map, states, atr_m15, model_1h, model_3h, 
         )
         for candidate, signals in signal_map.items()
     }
+
+
+def _simulate_exit_policies(
+    data,
+    signals,
+    states,
+    atr_m15,
+    model_1h,
+    model_3h,
+    start,
+    end,
+):
+    return {
+        policy.name: _simulate_policy(
+            data,
+            signals.loc[start:end],
+            states,
+            atr_m15,
+            policy,
+            model_1h["threshold"],
+            model_3h["threshold"],
+        )
+        for policy in ATR_EXIT_POLICIES
+    }
+
+
+def _atr_trailing_comparison(development_results, reference_results):
+    rows = []
+    control_name = ATR_EXIT_POLICIES[0].name
+    control_metrics = _metric_values(development_results[control_name])
+    for policy in ATR_EXIT_POLICIES:
+        development = _metric_values(development_results[policy.name])
+        selection = _ledger_metric_values(
+            _trades_in_period(
+                development_results[policy.name].trades,
+                SELECTION_START,
+                SELECTION_END,
+            )
+        )
+        locked = _ledger_metric_values(
+            _trades_in_period(
+                development_results[policy.name].trades,
+                LOCKED_START,
+                LOCKED_END,
+            )
+        )
+        reference = _metric_values(reference_results[policy.name])
+        trades = development_results[policy.name].trades
+        average_net = float(trades["Net P/L"].mean()) if not trades.empty else np.nan
+        rows.append(
+            {
+                "Kandidat": policy.name,
+                "Aktivasi trailing": (
+                    f"{policy.trailing_r:g}R"
+                    if policy.trailing_r is not None
+                    else (
+                        f"{policy.trailing_tp_fraction:.0%} TP"
+                        if policy.trailing_tp_fraction is not None
+                        else "Tidak aktif"
+                    )
+                ),
+                "Jarak trailing": (
+                    f"{policy.trailing_atr_multiplier:g} ATR M15"
+                    if policy.trailing_r is not None
+                    or policy.trailing_tp_fraction is not None
+                    else "-"
+                ),
+                "Transaksi development": int(development["Transaksi"]),
+                "Growth development (%)": development["Growth (%)"],
+                "PF development": development["Profit factor"],
+                "DD development (%)": development["Max drawdown (%)"],
+                "Rata-rata net/trade": average_net,
+                "Growth selection 2024 (%)": selection["Growth (%)"],
+                "Growth locked 2025 (%)": locked["Growth (%)"],
+                "Growth 2026H1 (%)": reference["Growth (%)"],
+                "PF 2026H1": reference["Profit factor"],
+                "DD 2026H1 (%)": reference["Max drawdown (%)"],
+                "Trailing aktif": int(trades["Trailing activated"].sum()),
+                "BE aktif": int(trades["BE activated"].sum()),
+                "Menjaga growth control": bool(
+                    development["Growth (%)"] >= control_metrics["Growth (%)"] * 0.95
+                ),
+                "DD membaik": bool(
+                    development["Max drawdown (%)"]
+                    <= control_metrics["Max drawdown (%)"]
+                ),
+                "Locked positif": bool(locked["Growth (%)"] > 0),
+                "Reference positif": bool(reference["Growth (%)"] > 0),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    frame["Lulus vs control"] = (
+        frame["Menjaga growth control"]
+        & frame["DD membaik"]
+        & frame["Locked positif"]
+        & frame["Reference positif"]
+    )
+    return frame
+
+
+def _atr_exit_counts(results):
+    rows = []
+    for candidate, result in results.items():
+        counts = result.trades["Alasan exit"].value_counts()
+        rows.append(
+            {
+                "Kandidat": candidate,
+                "TP tersentuh": int(counts.get("TP tersentuh", 0)),
+                "SL tersentuh": int(counts.get("SL tersentuh", 0)),
+                "Break-even tersentuh": int(counts.get("Break-even tersentuh", 0)),
+                "ATR trailing tersentuh": int(counts.get("ATR trailing tersentuh", 0)),
+                "Time stop": int(counts.get("Time stop", 0)),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _result_table(results, signal_map):

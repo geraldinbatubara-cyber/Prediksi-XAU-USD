@@ -25,7 +25,7 @@ from scripts.build_v1_entry_timing import _load_cached_history
 
 OUTPUT_PATH = PROJECT_ROOT / "data" / "precomputed" / "v1_sideways_specialist_v9.pkl.b64"
 V8_PATH = PROJECT_ROOT / "data" / "precomputed" / "v1_sideways_specialist_v8.pkl.b64"
-VERSION = "optimizer-v1-sideways-specialist-opportunity-expansion-2022-2026h1-v9"
+VERSION = "optimizer-v1-sideways-specialist-opportunity-expansion-atr-exit-2022-2026h1-v9.1"
 
 
 def _load_b64_payload(path: Path):
@@ -72,6 +72,8 @@ def main() -> None:
     )
     OUTPUT_PATH.write_text(base64.b64encode(artifact).decode("ascii"), encoding="ascii")
     print(payload["ranking"].to_string(index=False))
+    print(payload["atr_trailing_comparison"].to_string(index=False))
+    print(payload["atr_trailing_exit_counts"].to_string(index=False))
     print(
         f"Winner={payload['winner']} | passed={payload['winner_passed']} | "
         f"status={payload['selection_status']}"

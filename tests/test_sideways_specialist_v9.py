@@ -1,6 +1,10 @@
 import pandas as pd
 
-from gold_forecast.v1_sideways_specialist_v9 import _expanded_range_frame
+from gold_forecast.v1_sideways_specialist_v9 import (
+    ATR_EXIT_POLICIES,
+    _atr_exit_counts,
+    _expanded_range_frame,
+)
 
 
 def test_expanded_regime_is_looser_than_strict_control():
@@ -50,3 +54,36 @@ def test_expansion_requires_both_range_sides_touched():
     )
     expanded = _expanded_range_frame(strict)
     assert not expanded["range_confirmed"].any()
+
+
+def test_atr_exit_policies_keep_control_and_isolate_trailing_variants():
+    control, *variants = ATR_EXIT_POLICIES
+
+    assert control.break_even_r == 1.0
+    assert control.trailing_r is None
+    assert control.trailing_tp_fraction is None
+    assert len(variants) == 4
+    assert {policy.trailing_atr_multiplier for policy in variants} == {1.5, 2.0}
+
+
+def test_atr_exit_counts_separates_stop_types():
+    class Result:
+        trades = pd.DataFrame(
+            {
+                "Alasan exit": [
+                    "TP tersentuh",
+                    "SL tersentuh",
+                    "Break-even tersentuh",
+                    "ATR trailing tersentuh",
+                    "Time stop",
+                ]
+            }
+        )
+
+    row = _atr_exit_counts({"candidate": Result()}).iloc[0]
+
+    assert row["TP tersentuh"] == 1
+    assert row["SL tersentuh"] == 1
+    assert row["Break-even tersentuh"] == 1
+    assert row["ATR trailing tersentuh"] == 1
+    assert row["Time stop"] == 1

@@ -68,6 +68,7 @@ class ExitPolicy:
     break_even_r: float | None = None
     trailing_r: float | None = None
     trailing_tp_fraction: float | None = None
+    trailing_atr_multiplier: float = 1.5
     hazard_exit_score: int | None = None
     hazard_warning_score: int | None = None
     warning_tighten_r: float | None = None
@@ -536,9 +537,9 @@ def _simulate_policy(
                     atr = float(atr_m15.asof(timestamp))
                     if np.isfinite(atr):
                         candidate_sl = (
-                            bid_close - 1.5 * atr
+                            bid_close - policy.trailing_atr_multiplier * atr
                             if direction == "BUY"
-                            else ask_close + 1.5 * atr
+                            else ask_close + policy.trailing_atr_multiplier * atr
                         )
                         if direction == "BUY" and candidate_sl > active_sl:
                             active_sl = candidate_sl
