@@ -30,13 +30,16 @@ from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
 from gold_forecast import live_trading as live_trading_module
 from gold_forecast.live_trading import (
     LIVE_BUY_SPECIALIST_V4_START,
+    LIVE_SIDEWAYS_MODERATE_START,
     LIVE_INITIAL_EQUITY,
     LIVE_FIXED_DELAY_START,
     LIVE_START_DATE,
     LIVE_MANUAL_EXIT_BUY_SPECIALIST_V4_PATH,
+    LIVE_MANUAL_EXIT_SIDEWAYS_MODERATE_PATH,
     LIVE_MANUAL_EXIT_FIXED_DELAY_PATH,
     LIVE_MANUAL_EXIT_PATH,
     LIVE_TRADING_BUY_SPECIALIST_V4_PATH,
+    LIVE_TRADING_SIDEWAYS_MODERATE_PATH,
     LIVE_TRADING_FIXED_DELAY_PATH,
     LIVE_TRADING_PATH,
     LIVE_TRADING_V10_PATH,
@@ -187,6 +190,8 @@ BUY_SPECIALIST_V4_LIVE_VERSION = "buy-specialist-v4-live-inference-2026-07-24-v1
 BUY_SPECIALIST_V4_LIVE_PATH = Path(
     "data/precomputed/buy_specialist_v4_live.pkl.b64"
 )
+SIDEWAYS_MODERATE_LIVE_VERSION = "sideways-v9-moderate-regime-live-inference-2026-08-17-v1"
+SIDEWAYS_MODERATE_LIVE_PATH = Path("data/precomputed/sideways_moderate_live.pkl.b64")
 MODEL_COMPARISON_PATH = Path("data/precomputed/model_comparison.pkl.b64")
 
 st.set_page_config(page_title="Prediksi XAU/USD", page_icon=":material/monitoring:", layout="wide")
@@ -706,6 +711,23 @@ def load_buy_specialist_v4_live_model(model_version: str):
         saved = pickle.loads(
             base64.b64decode(
                 BUY_SPECIALIST_V4_LIVE_PATH.read_text(encoding="ascii")
+            )
+        )
+        if saved.get("version") == model_version:
+            return saved["payload"]
+    except Exception:
+        return None
+    return None
+
+
+@st.cache_resource
+def load_sideways_moderate_live_model(model_version: str):
+    if not SIDEWAYS_MODERATE_LIVE_PATH.exists():
+        return None
+    try:
+        saved = pickle.loads(
+            base64.b64decode(
+                SIDEWAYS_MODERATE_LIVE_PATH.read_text(encoding="ascii")
             )
         )
         if saved.get("version") == model_version:
@@ -8193,7 +8215,7 @@ def render_live_trading(
 
     daily_date = summary.get("Daily data date")
     expected_daily_date = summary.get("Expected daily data date")
-    if summary.get("Daily data stale"):
+    if summary.get("Daily data stale") and summary.get("Daily data required", True):
         st.error(
             "**DATA HARIAN GC=F STALE.** Candle terakhir "
             f"**{pd.Timestamp(daily_date).strftime('%d %b %Y')}**, sedangkan data selesai yang "
@@ -8203,6 +8225,11 @@ def render_live_trading(
     elif pd.notna(daily_date):
         st.success(
             f"Data harian GC=F aktif sampai **{pd.Timestamp(daily_date).strftime('%d %b %Y')}**."
+        )
+    if not summary.get("Daily data required", True):
+        st.caption(
+            "Moderate Regime memakai candle M1 MT5 sebagai dasar entry. GC=F harian "
+            "ditampilkan sebagai referensi dan tidak memblokir keputusan intraday."
         )
 
     with st.expander("Dokumentasi Strategi Live Trading"):
@@ -8322,6 +8349,37 @@ def render_live_trading(
             "Adaptive dan konfirmasi M15 sesuai kontrak eksperimen v4. "
             "Regime dan probabilitas di atas adalah observasi terbaru; entry tetap "
             "menunggu kandidat Fixed Delay yang sah."
+        )
+
+    if entry_strategy == "sideways_moderate" and specialist_state is not None:
+        st.markdown("**Gerbang Moderate Regime - Sideways v9**")
+        moderate_status = str(specialist_state.get("Status", "MENUNGGU"))
+        moderate_detail = str(specialist_state.get("Detail", "-"))
+        if moderate_status == "SIAP ENTRY":
+            st.success(f"**{moderate_status}** | {moderate_detail}")
+        elif moderate_status.startswith("ABSTAIN"):
+            st.warning(f"**{moderate_status}** | {moderate_detail}")
+        else:
+            st.info(f"**{moderate_status}** | {moderate_detail}")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Opportunity sejak aktivasi", specialist_state.get("Opportunity", 0))
+        m2.metric("Arah setup terbaru", specialist_state.get("Direction", "-"))
+        m3.metric(
+            "P(breakout hazard)",
+            "-"
+            if pd.isna(specialist_state.get("Hazard probability"))
+            else f"{float(specialist_state['Hazard probability']):.1%}",
+        )
+        m4.metric(
+            "Extreme hazard veto",
+            "BLOKIR" if specialist_state.get("Hazard extreme") else "LOLOS",
+        )
+        moderate_checks = pd.DataFrame(specialist_state.get("Checklist", []))
+        if not moderate_checks.empty:
+            st.dataframe(moderate_checks, use_container_width=True, hide_index=True)
+        st.caption(
+            "Model mengevaluasi setup baru pada candle M15 yang telah selesai, memakai "
+            "entry M1 berikutnya, dan menolak setup yang berusia lebih dari lima menit."
         )
 
     if (
@@ -9384,8 +9442,9 @@ elif page == "Live Trading":
         )
 
     st.info(
-        "Tiga strategi paper trading berjalan paralel dengan ledger terpisah: "
-        "**Baseline v1**, **Fixed Delay 5m**, dan **BUY Specialist v4**. "
+        "Empat strategi paper trading berjalan paralel dengan ledger terpisah: "
+        "**Baseline v1**, **Fixed Delay 5m**, **BUY Specialist v4**, dan "
+        "**Moderate Regime**. "
         "Strategi v10 tetap diarsipkan dan tidak dapat membuka posisi baru."
     )
     st.warning(
@@ -9396,8 +9455,11 @@ elif page == "Live Trading":
     buy_specialist_v4_model = load_buy_specialist_v4_live_model(
         BUY_SPECIALIST_V4_LIVE_VERSION
     )
-    baseline_live_tab, fixed_delay_live_tab, buy_specialist_v4_tab = st.tabs(
-        ["Baseline v1", "Fixed Delay 5m", "BUY Specialist v4"]
+    sideways_moderate_model = load_sideways_moderate_live_model(
+        SIDEWAYS_MODERATE_LIVE_VERSION
+    )
+    baseline_live_tab, fixed_delay_live_tab, buy_specialist_v4_tab, sideways_moderate_tab = st.tabs(
+        ["Baseline v1", "Fixed Delay 5m", "BUY Specialist v4", "Moderate Regime"]
     )
     with baseline_live_tab:
         render_live_trading(
@@ -9454,6 +9516,27 @@ elif page == "Live Trading":
             entry_strategy="buy_specialist_v4",
             broker_bars=broker_bars,
             strategy_model_bundle=buy_specialist_v4_model,
+        )
+    with sideways_moderate_tab:
+        render_live_trading(
+            gold_ohlc,
+            optimization_v1_live_leaderboard,
+            title="Moderate Regime - Sideways v9",
+            start_date=LIVE_SIDEWAYS_MODERATE_START,
+            live_path=LIVE_TRADING_SIDEWAYS_MODERATE_PATH,
+            manual_path=LIVE_MANUAL_EXIT_SIDEWAYS_MODERATE_PATH,
+            key_prefix="sideways_moderate",
+            strategy_note=(
+                "Kandidat paper live eksperimental dari Sideways v9. Entry BUY/SELL hanya "
+                "ketika expanded sideways regime, lokasi boundary, rejection candle, dan "
+                "extreme breakout hazard veto lolos. TP dinamis USD 5-15, SL dinamis "
+                "USD 5-12, time stop 12 jam, lot 0.01, dan maksimum satu posisi. Kandidat ini belum lulus "
+                "seluruh kriteria lab sehingga tidak digunakan untuk uang riil."
+            ),
+            broker_quote=broker_quote,
+            entry_strategy="sideways_moderate",
+            broker_bars=broker_bars,
+            strategy_model_bundle=sideways_moderate_model,
         )
 
     archived_v10_ledger = load_live_ledger(LIVE_TRADING_V10_PATH)

@@ -17,6 +17,7 @@ from gold_forecast.paper_ledger_store import (
     strategy_id_for_path,
 )
 from gold_forecast.simulation import CONTRACT_OUNCES_PER_LOT
+from gold_forecast.sideways_moderate_live import moderate_regime_live_signal
 from gold_forecast.strategy_optimizer import _indicator_predictions, _rsi
 from gold_forecast.v1_risk_control import _entry_signals_for_period
 from gold_forecast.v1_regime_classifier import (
@@ -47,11 +48,16 @@ LIVE_TRADING_BUY_SPECIALIST_V4_PATH = Path(
 LIVE_MANUAL_EXIT_BUY_SPECIALIST_V4_PATH = Path(
     "data/live_trading_manual_exits_buy_specialist_v4.csv"
 )
+LIVE_TRADING_SIDEWAYS_MODERATE_PATH = Path("data/live_trading_sideways_moderate.csv")
+LIVE_MANUAL_EXIT_SIDEWAYS_MODERATE_PATH = Path(
+    "data/live_trading_manual_exits_sideways_moderate.csv"
+)
 LIVE_INITIAL_EQUITY = 1000.0
 LIVE_START_DATE = pd.Timestamp("2026-07-15")
 LIVE_V10_START_DATE = pd.Timestamp("2026-07-20")
 LIVE_FIXED_DELAY_START = pd.Timestamp("2026-07-23 22:20:00", tz=WIT)
 LIVE_BUY_SPECIALIST_V4_START = pd.Timestamp("2026-07-24 16:00:00", tz=WIT)
+LIVE_SIDEWAYS_MODERATE_START = pd.Timestamp("2026-08-17 00:00:00", tz=WIT)
 LIVE_LOT_SIZE = 0.01
 LIVE_BUY_SWAP_PER_001_LOT = 0.02
 LIVE_SELL_SWAP_PER_001_LOT = 0.0
@@ -755,6 +761,42 @@ def _close_hit_positions_quote(
     return ledger
 
 
+def _close_time_stop_positions_quote(
+    ledger: pd.DataFrame,
+    bid: float,
+    ask: float,
+    now: pd.Timestamp,
+    time_stop_hours: float = 12.0,
+) -> pd.DataFrame:
+    if ledger.empty:
+        return ledger
+    for index, row in ledger[ledger["status"].eq("OPEN")].iterrows():
+        entered = pd.to_datetime(
+            str(row.get("entry_time_wit", "")).replace(" WIT", ""),
+            errors="coerce",
+        )
+        if pd.isna(entered):
+            continue
+        entered_wit = pd.Timestamp(entered).tz_localize(WIT)
+        if now < entered_wit + pd.Timedelta(hours=time_stop_hours):
+            continue
+        direction = str(row["arah"])
+        executable_price = float(bid if direction == "BUY" else ask)
+        lot = float(row["lot"])
+        gross_pl = _unrealized(
+            direction, float(row["entry_price"]), executable_price, lot
+        )
+        swap = float(pd.to_numeric(row.get("swap", 0.0), errors="coerce") or 0.0)
+        ledger.loc[index, "status"] = "CLOSED"
+        ledger.loc[index, "exit_time_wit"] = now.strftime("%Y-%m-%d %H:%M:%S WIT")
+        ledger.loc[index, "exit_price"] = executable_price
+        ledger.loc[index, "exit_reason"] = "Time stop 12 jam"
+        ledger.loc[index, "gross_pl"] = gross_pl
+        ledger.loc[index, "net_pl"] = gross_pl + swap
+        ledger.loc[index, "last_update_wit"] = now.strftime("%Y-%m-%d %H:%M:%S WIT")
+    return ledger
+
+
 def _maybe_open_position(
     ledger: pd.DataFrame,
     signal: dict[str, object] | None,
@@ -767,7 +809,10 @@ def _maybe_open_position(
 ) -> pd.DataFrame:
     if signal is None:
         return ledger
-    signal_date = pd.Timestamp(signal["signal_date"]).strftime("%Y-%m-%d")
+    intraday_signal = bool(signal.get("intraday_signal", False))
+    signal_date = pd.Timestamp(signal["signal_date"]).strftime(
+        "%Y-%m-%d %H:%M:%S" if intraday_signal else "%Y-%m-%d"
+    )
     existing = ledger[
         ledger["signal_date"].astype(str).str.startswith(signal_date)
         & ledger["arah"].astype(str).eq(str(signal["arah"]))
@@ -817,8 +862,8 @@ def _maybe_open_position(
         "reference_price": float(signal["reference_price"]),
         "expected_change_pct": float(signal["expected_change_pct"]),
         "threshold_entry_pct": float(params["Threshold entry (%)"]),
-        "tp_usd": float(params["TP (USD)"]),
-        "cl_usd": float(params["SL (USD)"]),
+        "tp_usd": float(signal.get("tp_usd", params["TP (USD)"])),
+        "cl_usd": float(signal.get("sl_usd", params["SL (USD)"])),
         "entry_time_wit": now.strftime("%Y-%m-%d %H:%M:%S WIT") if can_open else "",
         "entry_price": entry_price if can_open else np.nan,
         "last_swap_date": now.strftime("%Y-%m-%d") if can_open else "",
@@ -883,7 +928,10 @@ def _optimizer_trigger_state(
         }
 
     direction = str(signal["arah"])
-    signal_date = pd.Timestamp(signal["signal_date"]).strftime("%Y-%m-%d")
+    intraday_signal = bool(signal.get("intraday_signal", False))
+    signal_date = pd.Timestamp(signal["signal_date"]).strftime(
+        "%Y-%m-%d %H:%M:%S" if intraday_signal else "%Y-%m-%d"
+    )
     expected_change_pct = float(signal["expected_change_pct"])
     executed_rows = ledger[
         ledger["signal_date"].astype(str).str.startswith(signal_date)
@@ -1576,12 +1624,24 @@ def run_live_trading_update(
                 "Max Total": 1,
             }
         )
+    elif entry_strategy == "sideways_moderate":
+        params.update(
+            {
+                "Strategi": "Moderate Regime - Sideways v9",
+                "Lot": LIVE_LOT_SIZE,
+                "TP (USD)": 15.0,
+                "SL (USD)": 12.0,
+                "Max BUY": 1,
+                "Max SELL": 1,
+                "Max Total": 1,
+            }
+        )
 
     daily_data_date = usable_gold.index.max().normalize() if not usable_gold.empty else pd.NaT
     expected_anchor = cutoff_date if now_wit.hour >= 7 else cutoff_date - pd.Timedelta(days=1)
     expected_daily_date = (expected_anchor - pd.offsets.BDay(1)).normalize()
     daily_data_stale = pd.isna(daily_data_date) or daily_data_date < expected_daily_date
-    if daily_data_stale:
+    if daily_data_stale and entry_strategy != "sideways_moderate":
         can_trade = False
         available_label = (
             "tidak tersedia"
@@ -1611,6 +1671,13 @@ def run_live_trading_update(
                 float(quote_state["ask"]),
                 now_wit,
             )
+            if entry_strategy == "sideways_moderate":
+                ledger = _close_time_stop_positions_quote(
+                    ledger,
+                    float(quote_state["bid"]),
+                    float(quote_state["ask"]),
+                    now_wit,
+                )
         else:
             latest_price = float(quote_state["mid"]) if quote_state["configured"] else float(latest_candle["Close"])
             if not quote_state["configured"]:
@@ -1637,6 +1704,14 @@ def run_live_trading_update(
             ledger,
         )
         fixed_delay_state = specialist_state.get("Fixed delay")
+    elif entry_strategy == "sideways_moderate":
+        live_m1 = _prepare_live_broker_m1(broker_bars)
+        signal, specialist_state = moderate_regime_live_signal(
+            live_m1,
+            strategy_model_bundle or {},
+            start_time_wit.tz_convert("UTC").tz_localize(None),
+            now_wit.tz_convert("UTC").tz_localize(None),
+        )
     elif entry_strategy == "fixed_delay_5m":
         signal, fixed_delay_state = _fixed_delay_live_signal(
             usable_gold,
@@ -1657,7 +1732,7 @@ def run_live_trading_update(
     entry_allowed = can_trade and allow_new_entries
     archive_note = session_note if allow_new_entries else "Strategi diarsipkan; posisi baru dinonaktifkan."
     if (
-        entry_strategy in {"fixed_delay_5m", "buy_specialist_v4"}
+        entry_strategy in {"fixed_delay_5m", "buy_specialist_v4", "sideways_moderate"}
         and signal is not None
         and bool(signal.get("entry_eligible", True))
         and not entry_allowed
@@ -1720,6 +1795,7 @@ def run_live_trading_update(
         "Daily data date": daily_data_date,
         "Expected daily data date": expected_daily_date,
         "Daily data stale": daily_data_stale,
+        "Daily data required": entry_strategy != "sideways_moderate",
         "Can trade": entry_allowed,
         "Session note": archive_note,
         "Now WIT": now_wit,

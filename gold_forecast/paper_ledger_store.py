@@ -24,6 +24,7 @@ _STRATEGY_BY_FILENAME = {
     "live_trading_optimizer.csv": "baseline_v1",
     "live_trading_fixed_delay_5m.csv": "fixed_delay_5m",
     "live_trading_buy_specialist_v4.csv": "buy_specialist_v4",
+    "live_trading_sideways_moderate.csv": "sideways_moderate_regime",
     "live_trading_optimizer_v10.csv": "optimizer_v10_archived",
 }
 _RECOVERY_POSITION_PATHS = {

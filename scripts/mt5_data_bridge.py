@@ -133,7 +133,7 @@ def _write_snapshot(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bridge read-only MT5 untuk data XAUUSD.")
     parser.add_argument("--symbol", default="XAUUSD", help="Nama simbol persis seperti di Market Watch broker.")
-    parser.add_argument("--bars", type=int, default=3000, help="Jumlah candle M1 yang disalin.")
+    parser.add_argument("--bars", type=int, default=5000, help="Jumlah candle M1 yang disalin.")
     parser.add_argument("--interval", type=int, default=60, help="Interval pembaruan dalam detik.")
     parser.add_argument("--once", action="store_true", help="Ambil satu snapshot lalu berhenti.")
     parser.add_argument(
