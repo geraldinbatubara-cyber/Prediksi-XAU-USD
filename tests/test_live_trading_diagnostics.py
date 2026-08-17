@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 import gold_forecast.live_trading as live_trading
+import gold_forecast.sideways_moderate_live as moderate_live
 
 
 def _daily_uptrend() -> pd.DataFrame:
@@ -182,3 +183,14 @@ def test_moderate_regime_closes_at_twelve_hour_time_stop():
     )
     assert closed.iloc[0]["status"] == "CLOSED"
     assert closed.iloc[0]["exit_reason"] == "Time stop 12 jam"
+
+
+def test_moderate_regime_treats_no_opportunity_as_waiting(monkeypatch):
+    def no_opportunity(*args, **kwargs):
+        raise RuntimeError("Range detector tidak menghasilkan opportunity.")
+
+    monkeypatch.setattr(moderate_live, "_mean_reversion_opportunities", no_opportunity)
+    result = moderate_live._safe_live_opportunities(
+        pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 20.0
+    )
+    assert result.empty
