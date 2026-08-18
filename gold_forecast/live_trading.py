@@ -7,6 +7,7 @@ import pandas as pd
 
 from gold_forecast.monitoring import WIT
 from gold_forecast.paper_ledger_store import (
+    load_historical_max_position_id,
     load_persistent_manual_exits,
     load_persistent_positions,
     load_recovery_manual_exits,
@@ -1044,6 +1045,7 @@ def _maybe_open_position(
     session_note: str,
     broker_bid: float | None = None,
     broker_ask: float | None = None,
+    historical_max_position_id: int = 0,
 ) -> pd.DataFrame:
     if signal is None:
         return ledger
@@ -1079,9 +1081,9 @@ def _maybe_open_position(
         if can_open
         else str(signal.get("event_note", f"Sinyal {source} terdeteksi, belum buka posisi: {session_note}"))
     )
-    next_id = int(pd.to_numeric(ledger["position_id"], errors="coerce").max() + 1) if not ledger.empty else 1
-    if pd.isna(next_id):
-        next_id = 1
+    ledger_max = pd.to_numeric(ledger["position_id"], errors="coerce").max() if not ledger.empty else 0
+    ledger_max = 0 if pd.isna(ledger_max) else int(ledger_max)
+    next_id = max(ledger_max, int(historical_max_position_id or 0)) + 1
 
     entry_price = float(signal["reference_price"])
     if can_open and direction == "BUY" and broker_ask is not None:
@@ -1997,6 +1999,9 @@ def run_live_trading_update(
         archive_note,
         broker_bid=float(quote_state["bid"]) if quote_state["fresh"] else None,
         broker_ask=float(quote_state["ask"]) if quote_state["fresh"] else None,
+        historical_max_position_id=load_historical_max_position_id(
+            strategy_id_for_path(path)
+        ),
     )
     trigger_state = _optimizer_trigger_state(ledger, signal, params, entry_allowed, archive_note)
     save_live_ledger(ledger, path)
