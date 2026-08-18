@@ -70,6 +70,17 @@ def test_merge_keeps_newest_state_without_duplicate_position():
     assert merged.loc[merged["position_id"].eq(5), "status"].iloc[0] == "CLOSED"
 
 
+def test_merge_never_regresses_closed_position_to_newer_signal():
+    persistent = pd.DataFrame(
+        [{"position_id": 7, "status": "SIGNAL", "last_update_wit": "2026-08-17 22:11:00 WIT"}]
+    )
+    local = pd.DataFrame(
+        [{"position_id": 7, "status": "CLOSED", "last_update_wit": "2026-08-05 10:43:25 WIT"}]
+    )
+    merged = merge_ledger_frames(persistent, local, pd.DataFrame(), "position_id")
+    assert merged.iloc[0]["status"] == "CLOSED"
+
+
 def test_recovery_preserves_optimizer_and_manual_observations_separately():
     positions = load_recovery_positions("baseline_v1")
     manual = load_recovery_manual_exits("baseline_v1")

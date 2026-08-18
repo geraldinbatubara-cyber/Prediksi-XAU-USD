@@ -86,6 +86,30 @@ def load_persistent_positions(strategy_id: str) -> pd.DataFrame:
     return _payload_frame(rows)
 
 
+def load_historical_max_position_id(strategy_id: str) -> int:
+    if not _read_ready():
+        return 0
+    try:
+        rows = _request_json(
+            _CONFIG["base_url"],
+            _CONFIG["read_key"],
+            "paper_ledger_events",
+            query={
+                "select": "position_id",
+                "strategy_id": f"eq.{strategy_id}",
+                "position_id": "not.is.null",
+                "order": "position_id.desc",
+                "limit": "1",
+            },
+        )
+        _sync_ok()
+        if isinstance(rows, list) and rows:
+            return _integer(rows[0].get("position_id")) or 0
+    except Exception as exc:
+        _sync_error(exc)
+    return 0
+
+
 def load_persistent_manual_exits(strategy_id: str) -> pd.DataFrame:
     rows = _load_rows(
         "paper_manual_exits",
@@ -188,17 +212,22 @@ def merge_ledger_frames(
         selected[id_column] = numeric_ids.loc[selected.index].astype(int)
         selected["_source_priority"] = priority
         selected["_business_time"] = _business_timestamp(selected)
+        selected["_closed_priority"] = (
+            selected["status"].astype(str).str.upper().eq("CLOSED").astype(int)
+            if "status" in selected.columns
+            else 0
+        )
         frames.append(selected)
     if not frames:
         return pd.DataFrame()
     merged = pd.concat(frames, ignore_index=True, sort=False)
     merged = merged.sort_values(
-        [id_column, "_business_time", "_source_priority"],
+        [id_column, "_closed_priority", "_business_time", "_source_priority"],
         na_position="first",
     )
     merged = merged.drop_duplicates(id_column, keep="last")
     return (
-        merged.drop(columns=["_source_priority", "_business_time"])
+        merged.drop(columns=["_source_priority", "_business_time", "_closed_priority"])
         .sort_values(id_column)
         .reset_index(drop=True)
     )

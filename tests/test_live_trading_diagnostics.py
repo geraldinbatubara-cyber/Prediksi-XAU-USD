@@ -155,6 +155,28 @@ def test_intraday_signals_keep_timestamp_and_dynamic_barriers():
     assert second.iloc[0]["cl_usd"] == 6.0
 
 
+def test_new_position_id_stays_above_historical_event_maximum():
+    signal = {
+        "signal_date": pd.Timestamp("2026-08-18"),
+        "arah": "BUY",
+        "prediction": 4405.0,
+        "reference_price": 4400.0,
+        "expected_change_pct": 0.2,
+        "source": "test",
+    }
+    opened = live_trading._maybe_open_position(
+        live_trading._empty_ledger(),
+        signal,
+        {**_params(), "Max BUY": 1, "Max SELL": 1, "Max Total": 1},
+        pd.Timestamp("2026-08-18 09:00:00", tz="Asia/Jayapura"),
+        True,
+        "Aktif",
+        broker_ask=4400.2,
+        historical_max_position_id=7,
+    )
+    assert opened.iloc[0]["position_id"] == 8
+
+
 def test_moderate_regime_closes_at_twelve_hour_time_stop():
     row = {
         column: "" for column in live_trading.LIVE_COLUMNS
