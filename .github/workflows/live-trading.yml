@@ -24,8 +24,14 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Update live trading ledger
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SYMBOL: XAUUSD
         run: python scripts/live_trading_job.py
       - name: Commit live trading ledger
+        if: always()
         shell: bash
         run: |
           if [ -z "$(git status --porcelain -- data/live_trading_optimizer.csv)" ]; then
