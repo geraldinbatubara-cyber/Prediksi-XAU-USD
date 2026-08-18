@@ -18,7 +18,12 @@ if ($sender -notmatch "^[^@\s]+@[^@\s]+\.[^@\s]+$" -or $recipient -notmatch "^[^
     throw "Alamat email pengirim atau penerima tidak valid."
 }
 $appPassword = Read-Host "Gmail App Password 16 karakter (disimpan terenkripsi)" -AsSecureString
+$plainAppPassword = [Net.NetworkCredential]::new("", $appPassword).Password -replace "\s", ""
+if ($plainAppPassword.Length -ne 16) {
+    throw "App Password tidak tersimpan: input harus tepat 16 karakter setelah spasi dihapus."
+}
 $encryptedAppPassword = ConvertFrom-SecureString -SecureString $appPassword
+Remove-Variable plainAppPassword -ErrorAction SilentlyContinue
 
 $config | Add-Member -NotePropertyName email_sender -NotePropertyValue $sender -Force
 $config | Add-Member -NotePropertyName email_recipient -NotePropertyValue $recipient -Force
