@@ -170,8 +170,14 @@ def _send_email(config: dict[str, str], row: dict, message: str) -> str:
             smtp.ehlo()
             smtp.login(config["sender"], config["app_password"])
             refused = smtp.send_message(email)
+    except smtplib.SMTPAuthenticationError as exc:
+        detail = exc.smtp_error.decode("utf-8", errors="replace") if isinstance(exc.smtp_error, bytes) else str(exc.smtp_error)
+        raise RuntimeError(f"Autentikasi Gmail ditolak (SMTP {exc.smtp_code}): {detail}") from exc
+    except smtplib.SMTPResponseException as exc:
+        detail = exc.smtp_error.decode("utf-8", errors="replace") if isinstance(exc.smtp_error, bytes) else str(exc.smtp_error)
+        raise RuntimeError(f"Server SMTP menolak pengiriman ({exc.smtp_code}): {detail}") from exc
     except (smtplib.SMTPException, OSError) as exc:
-        raise RuntimeError("Email SMTP tidak dapat dikirim.") from exc
+        raise RuntimeError(f"Email SMTP gagal ({type(exc).__name__}): {exc}") from exc
     if refused:
         raise RuntimeError("Server SMTP menolak alamat penerima.")
     return str(email["Message-ID"] or f"smtp:{row.get('notification_id')}")
@@ -277,8 +283,22 @@ def _display(value: object) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Gold Predictor email dispatcher")
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--test-email", action="store_true")
     parser.add_argument("--interval", type=int, default=30)
     args = parser.parse_args()
+    if args.test_email:
+        config = _load_config()
+        provider_id = _send_email(
+            config,
+            {
+                "notification_id": "TEST",
+                "notification_type": "TEST",
+                "strategy_id": "system_test",
+            },
+            "Gold Predictor SMTP test berhasil. Konfigurasi notifikasi email siap digunakan.",
+        )
+        print(f"Test email terkirim: {provider_id}", flush=True)
+        return
     run_dispatcher(once=args.once, interval_seconds=args.interval)
 
 
