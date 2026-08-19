@@ -8481,6 +8481,24 @@ def render_optimizer_signals(gold_ohlc: pd.DataFrame, optimization_leaderboard: 
             )
 
 
+def _ordered_position_display(
+    frame: pd.DataFrame,
+    id_column: str,
+    limit: int | None = None,
+) -> pd.DataFrame:
+    ordered = frame.copy()
+    numeric_id = pd.to_numeric(ordered.get(id_column), errors="coerce")
+    ordered = (
+        ordered.assign(_position_id_numeric=numeric_id)
+        .sort_values("_position_id_numeric", kind="stable", na_position="last")
+        .drop(columns="_position_id_numeric")
+    )
+    if limit is not None:
+        ordered = ordered.tail(limit).copy()
+    ordered.insert(0, "No.", range(1, len(ordered) + 1))
+    return ordered.reset_index(drop=True)
+
+
 def _render_manual_exit_comparison(
     live: dict[str, object],
     live_path=LIVE_TRADING_PATH,
@@ -8578,7 +8596,10 @@ def _render_manual_exit_comparison(
     m3.metric("Net Manusia tercatat", f"${human_total:+,.2f}")
     m4.metric("Selisih Net Manusia vs Optimizer", f"${total_delta:+,.2f}")
 
-    comparison_frame = pd.DataFrame(rows)
+    comparison_frame = _ordered_position_display(
+        pd.DataFrame(rows),
+        "Position ID",
+    )
     money_columns = [
         "Harga Entry",
         "Exit Price Optimizer",
@@ -9284,7 +9305,11 @@ def render_live_trading(
     if signals.empty:
         st.info("Belum ada sinyal live yang tercatat sejak ledger dimulai.")
     else:
-        signal_display = signals[[column for column in signal_columns if column in signals.columns]].tail(50)
+        signal_display = _ordered_position_display(
+            signals[[column for column in signal_columns if column in signals.columns]],
+            "position_id",
+            limit=50,
+        )
         st.dataframe(
             signal_display.style.format(
                 format_columns,
@@ -9362,7 +9387,11 @@ def render_live_trading(
             "swap",
             "net_pl",
         ]
-        closed_table = closed_positions[[column for column in closed_columns if column in closed_positions.columns]].tail(100)
+        closed_table = _ordered_position_display(
+            closed_positions[[column for column in closed_columns if column in closed_positions.columns]],
+            "position_id",
+            limit=100,
+        )
         st.dataframe(
             closed_table.style.format(
                 format_columns,
