@@ -1057,8 +1057,6 @@ def _maybe_open_position(
         ledger["signal_date"].astype(str).str.startswith(signal_date)
         & ledger["arah"].astype(str).eq(str(signal["arah"]))
     ]
-    if not existing.empty:
-        return ledger
 
     buy_count, sell_count = _open_counts(ledger)
     max_buy = int(params.get("Max BUY", LIVE_MAX_BUY))
@@ -1074,6 +1072,22 @@ def _maybe_open_position(
         and open_total < max_total
         and ((direction == "BUY" and buy_count < max_buy) or (direction == "SELL" and sell_count < max_sell))
     )
+    terminal_existing = existing[
+        existing["status"].astype(str).isin(["OPEN", "CLOSED", "CANCELLED"])
+    ]
+    if not terminal_existing.empty:
+        return ledger
+
+    pending_index = None
+    if not existing.empty:
+        pending = existing[
+            existing["status"].astype(str).eq("SIGNAL")
+            & pd.to_numeric(existing["entry_price"], errors="coerce").isna()
+        ]
+        if not can_open or pending.empty:
+            return ledger
+        pending_index = pending.index[-1]
+
     status = "OPEN" if can_open else str(signal.get("record_status", "SIGNAL"))
     source = str(signal.get("source", "Optimizer penuh"))
     note = (
@@ -1083,7 +1097,11 @@ def _maybe_open_position(
     )
     ledger_max = pd.to_numeric(ledger["position_id"], errors="coerce").max() if not ledger.empty else 0
     ledger_max = 0 if pd.isna(ledger_max) else int(ledger_max)
-    next_id = max(ledger_max, int(historical_max_position_id or 0)) + 1
+    next_id = (
+        int(pd.to_numeric(ledger.at[pending_index, "position_id"], errors="coerce"))
+        if pending_index is not None
+        else max(ledger_max, int(historical_max_position_id or 0)) + 1
+    )
 
     entry_price = float(signal["reference_price"])
     if can_open and direction == "BUY" and broker_ask is not None:
@@ -1095,7 +1113,11 @@ def _maybe_open_position(
     new_row = {
         "position_id": next_id,
         "signal_date": signal_date,
-        "detected_at_wit": now.strftime("%Y-%m-%d %H:%M:%S WIT"),
+        "detected_at_wit": (
+            str(ledger.at[pending_index, "detected_at_wit"])
+            if pending_index is not None
+            else now.strftime("%Y-%m-%d %H:%M:%S WIT")
+        ),
         "status": status,
         "arah": direction,
         "lot": LIVE_LOT_SIZE,
@@ -1134,6 +1156,11 @@ def _maybe_open_position(
         "last_update_wit": now.strftime("%Y-%m-%d %H:%M:%S WIT"),
         "catatan": note,
     }
+    if pending_index is not None:
+        for column in LIVE_COLUMNS:
+            ledger.at[pending_index, column] = new_row[column]
+        return ledger
+
     new_frame = pd.DataFrame([new_row], columns=LIVE_COLUMNS)
     if ledger.empty:
         return new_frame
@@ -1191,11 +1218,18 @@ def _optimizer_trigger_state(
         "%Y-%m-%d %H:%M:%S" if intraday_signal else "%Y-%m-%d"
     )
     expected_change_pct = float(signal["expected_change_pct"])
-    executed_rows = ledger[
+    matching_rows = ledger[
         ledger["signal_date"].astype(str).str.startswith(signal_date)
         & ledger["arah"].astype(str).eq(direction)
     ]
+    executed_rows = matching_rows[
+        matching_rows["status"].astype(str).isin(["OPEN", "CLOSED"])
+    ]
+    cancelled_rows = matching_rows[
+        matching_rows["status"].astype(str).eq("CANCELLED")
+    ]
     already_executed = not executed_rows.empty
+    entry_blocked = already_executed or not cancelled_rows.empty
     direction_slot = remaining_buy if direction == "BUY" else remaining_sell if direction == "SELL" else 0
     threshold_ok = (
         (direction == "BUY" and expected_change_pct >= threshold)
@@ -1203,7 +1237,7 @@ def _optimizer_trigger_state(
     )
     slot_ok = direction in {"BUY", "SELL"} and direction_slot > 0 and remaining_total > 0
     entry_eligible = bool(signal.get("entry_eligible", True))
-    can_open_now = direction in {"BUY", "SELL"} and threshold_ok and can_trade and slot_ok and not already_executed
+    can_open_now = direction in {"BUY", "SELL"} and threshold_ok and can_trade and slot_ok and not entry_blocked
 
     if not entry_eligible:
         status = str(signal.get("record_status", "Sinyal dibatalkan"))
@@ -1212,8 +1246,11 @@ def _optimizer_trigger_state(
         status = f"Siap buka {direction}"
         note = "Semua syarat eksekusi terpenuhi."
     elif already_executed:
-        status = "Sinyal sudah dieksekusi/dicatat"
-        note = f"Sinyal {direction} untuk {signal_date} sudah ada di ledger, sehingga tidak dibuka ulang."
+        status = "Sinyal sudah dieksekusi"
+        note = f"Posisi {direction} untuk {signal_date} sudah pernah dibuka, sehingga tidak dibuka ulang."
+    elif not cancelled_rows.empty:
+        status = "Sinyal sudah dibatalkan"
+        note = f"Sinyal {direction} untuk {signal_date} sudah dibatalkan dan tidak dibuka ulang."
     elif direction not in {"BUY", "SELL"} or not threshold_ok:
         status = "Menunggu threshold arah"
         note = f"Expected change {expected_change_pct:+.2f}% belum melewati threshold {threshold:.2f}%."
@@ -1250,9 +1287,9 @@ def _optimizer_trigger_state(
             "Detail": f"Sisa slot total {remaining_total} dari maksimum {max_total}.",
         },
         {
-            "Syarat": "Tanggal dan arah sinyal belum pernah dicatat",
-            "Status": "Lolos" if not already_executed else "Sudah tercatat",
-            "Detail": "Satu sinyal tanggal/arah hanya dicatat sekali agar tidak over-entry.",
+            "Syarat": "Tanggal dan arah belum memiliki transaksi final",
+            "Status": "Lolos" if not entry_blocked else "Sudah final",
+            "Detail": "Baris SIGNAL boleh dicoba ulang; posisi OPEN/CLOSED atau sinyal CANCELLED tidak dibuka ulang.",
         },
     ]
 

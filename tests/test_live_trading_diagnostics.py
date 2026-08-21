@@ -182,6 +182,71 @@ def test_new_position_id_stays_above_historical_event_maximum():
     assert opened.iloc[0]["position_id"] == 8
 
 
+def test_pending_signal_is_promoted_to_open_when_execution_recovers():
+    signal = {
+        "signal_date": pd.Timestamp("2026-08-21"),
+        "arah": "BUY",
+        "prediction": 4610.0,
+        "reference_price": 4600.0,
+        "expected_change_pct": 0.22,
+        "source": "test",
+    }
+    params = {**_params(), "Max BUY": 1, "Max SELL": 1, "Max Total": 1}
+    detected_at = pd.Timestamp("2026-08-21 08:00:00", tz="Asia/Jayapura")
+    pending = live_trading._maybe_open_position(
+        live_trading._empty_ledger(),
+        signal,
+        params,
+        detected_at,
+        False,
+        "Quote broker stale",
+    )
+    assert len(pending) == 1
+    assert pending.iloc[0]["status"] == "SIGNAL"
+    assert pd.isna(pending.iloc[0]["entry_price"])
+
+    opened = live_trading._maybe_open_position(
+        pending,
+        signal,
+        params,
+        detected_at + pd.Timedelta(minutes=5),
+        True,
+        "Aktif",
+        broker_ask=4601.25,
+    )
+    assert len(opened) == 1
+    assert opened.iloc[0]["position_id"] == pending.iloc[0]["position_id"]
+    assert opened.iloc[0]["detected_at_wit"] == pending.iloc[0]["detected_at_wit"]
+    assert opened.iloc[0]["status"] == "OPEN"
+    assert opened.iloc[0]["entry_price"] == 4601.25
+
+
+def test_pending_signal_is_not_reported_as_already_executed():
+    signal = {
+        "signal_date": pd.Timestamp("2026-08-21"),
+        "arah": "BUY",
+        "prediction": 4610.0,
+        "reference_price": 4600.0,
+        "expected_change_pct": 0.22,
+        "source": "test",
+    }
+    params = {**_params(), "Max BUY": 1, "Max SELL": 1, "Max Total": 1}
+    pending = live_trading._maybe_open_position(
+        live_trading._empty_ledger(),
+        signal,
+        params,
+        pd.Timestamp("2026-08-21 08:00:00", tz="Asia/Jayapura"),
+        False,
+        "Quote broker stale",
+    )
+    state = live_trading._optimizer_trigger_state(
+        pending, signal, params, False, "Quote broker stale"
+    )
+    assert not state["Sudah dieksekusi"]
+    assert state["Status trigger"] == "Menunggu jam trading"
+    assert state["Catatan"] == "Quote broker stale"
+
+
 def test_moderate_regime_closes_at_twelve_hour_time_stop():
     row = {
         column: "" for column in live_trading.LIVE_COLUMNS
