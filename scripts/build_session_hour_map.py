@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gold_forecast.session_hour_map import build_session_hour_map
+from gold_forecast.post_entry_audit import build_post_entry_audit
 
 
 START = pd.Timestamp("2025-01-01")
@@ -39,6 +40,7 @@ def main() -> None:
 
     bars, sources = _load_months(args.input_dir)
     result = build_session_hour_map(bars, START, END)
+    post_entry = build_post_entry_audit(bars, START, END)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     result.daily.to_csv(OUTPUT_DIR / "xauusd_session_hour_map.csv", index=False)
     result.hourly_frequency.to_csv(OUTPUT_DIR / "xauusd_session_hour_frequency.csv", index=False)
@@ -54,7 +56,13 @@ def main() -> None:
     (OUTPUT_DIR / "xauusd_session_hour_audit.json").write_text(
         json.dumps(metadata, indent=2), encoding="utf-8"
     )
+    post_entry.paths.to_csv(OUTPUT_DIR / "xauusd_post_0800_paths.csv", index=False)
+    post_entry.summary.to_csv(OUTPUT_DIR / "xauusd_post_0800_summary.csv", index=False)
+    (OUTPUT_DIR / "xauusd_post_0800_audit.json").write_text(
+        json.dumps(post_entry.metadata, indent=2), encoding="utf-8"
+    )
     print(json.dumps(metadata, indent=2))
+    print(json.dumps(post_entry.metadata, indent=2))
 
 
 if __name__ == "__main__":

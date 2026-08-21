@@ -1,0 +1,15 @@
+{
+  "period_start": "2025-01-01",
+  "period_end": "2026-06-30",
+  "entry_definition": "Open candle M1 tepat 08:00 WIT",
+  "monitoring_definition": "Candle M1 mulai 08:00 WIT sampai sebelum 04:00 WIT",
+  "fallback_exit_definition": "Open candle M1 tepat 04:00 WIT",
+  "tp_usd": 25.0,
+  "sl_usd": 10.0,
+  "lot": 0.01,
+  "spread": "SpreadPoints historis dikonversi dengan point size 0.01",
+  "slippage": "Tidak diterapkan karena data slippage historis tidak tersedia",
+  "same_candle_rule": "SL dianggap tersentuh lebih dahulu",
+  "valid_sessions": 360,
+  "unavailable_sessions": 25
+}

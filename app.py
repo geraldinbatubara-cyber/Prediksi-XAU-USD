@@ -141,6 +141,9 @@ SESSION_HOUR_MONTHLY_PATH = Path(
 SESSION_HOUR_AUDIT_PATH = Path(
     "data/precomputed/xauusd_session_hour_audit.json"
 )
+POST_0800_PATHS_PATH = Path("data/precomputed/xauusd_post_0800_paths.csv")
+POST_0800_SUMMARY_PATH = Path("data/precomputed/xauusd_post_0800_summary.csv")
+POST_0800_AUDIT_PATH = Path("data/precomputed/xauusd_post_0800_audit.json")
 V1_SELL_SPECIALIST_VERSION = (
     "optimizer-v1-directional-specialist-sell-2022-2026h1-v5"
 )
@@ -9565,8 +9568,8 @@ def _render_session_hour_map() -> None:
             f"{missing_close} sesi tidak memiliki candle persis 04:00 WIT. Nilainya dibiarkan kosong."
         )
 
-    frequency_tab, monthly_tab, daily_tab = st.tabs(
-        ["Frekuensi Jam", "Pola Bulanan", "Data Harian"]
+    frequency_tab, monthly_tab, daily_tab, post_entry_tab = st.tabs(
+        ["Frekuensi Jam", "Pola Bulanan", "Data Harian", "Audit Setelah 08:00"]
     )
     with frequency_tab:
         figure = go.Figure()
@@ -9644,6 +9647,102 @@ def _render_session_hour_map() -> None:
             file_name=SESSION_HOUR_MAP_PATH.name,
             mime="text/csv",
         )
+
+    with post_entry_tab:
+        post_paths = [POST_0800_PATHS_PATH, POST_0800_SUMMARY_PATH, POST_0800_AUDIT_PATH]
+        if not all(path.exists() for path in post_paths):
+            st.info("Artefak audit jalur harga setelah 08:00 belum tersedia.")
+        else:
+            path_data = pd.read_csv(POST_0800_PATHS_PATH, parse_dates=["Tanggal sesi"])
+            path_summary = pd.read_csv(POST_0800_SUMMARY_PATH)
+            path_metadata = json.loads(POST_0800_AUDIT_PATH.read_text(encoding="utf-8"))
+
+            st.markdown("**Eksperimen Jalur Harga Setelah Entry 08:00 WIT**")
+            st.caption(
+                "Setiap sesi menguji BUY dan SELL sebagai skenario terpisah, bukan sebagai sinyal model. "
+                "Entry memakai harga executable dengan spread historis MT5, TP USD 25, SL USD 10, lot 0.01, "
+                "dan fallback exit pada Open candle 04:00 WIT. Slippage tidak diterapkan karena data historisnya "
+                "tidak tersedia. Jika TP dan SL menyentuh candle yang sama, SL diprioritaskan."
+            )
+            st.warning(
+                "Hasil ini mengukur kelayakan pola waktu, bukan hasil strategi Optimizer. MFE dan MAE hanya "
+                "menggunakan candle mulai 08:00 sampai sebelum 04:00 sehingga tidak memakai High/Low sebelum entry."
+            )
+
+            valid_sessions = int(path_metadata["valid_sessions"])
+            unavailable_sessions = int(path_metadata["unavailable_sessions"])
+            all_period = path_summary.loc[path_summary["Periode"].eq("Seluruh periode")]
+            buy_row = all_period.loc[all_period["Arah"].eq("BUY")].iloc[0]
+            sell_row = all_period.loc[all_period["Arah"].eq("SELL")].iloc[0]
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("Sesi valid", f"{valid_sessions}", f"Tidak tersedia {unavailable_sessions}")
+            p2.metric("BUY TP / SL", f"{int(buy_row['TP'])} / {int(buy_row['SL'])}")
+            p3.metric("SELL TP / SL", f"{int(sell_row['TP'])} / {int(sell_row['SL'])}")
+            p4.metric(
+                "PF BUY / SELL",
+                f"{float(buy_row['Profit factor']):.2f} / {float(sell_row['Profit factor']):.2f}",
+            )
+
+            st.markdown("**Ringkasan Hasil per Periode**")
+            st.dataframe(
+                path_summary.style.format(
+                    {
+                        "Win rate (%)": "{:.1f}%",
+                        "Total P/L (USD)": "${:+,.2f}",
+                        "Rata-rata P/L (USD)": "${:+,.2f}",
+                        "Profit factor": "{:.2f}",
+                        "Rata-rata MFE": "${:,.2f}",
+                        "Rata-rata MAE": "${:,.2f}",
+                    },
+                    na_rep="-",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            outcome_chart = go.Figure()
+            for outcome_column in ["TP", "SL", "Close 04 profit", "Close 04 loss"]:
+                outcome_chart.add_trace(
+                    go.Bar(
+                        x=all_period["Arah"],
+                        y=all_period[outcome_column],
+                        name=outcome_column,
+                    )
+                )
+            outcome_chart.update_layout(
+                title="Distribusi Hasil Seluruh Periode",
+                xaxis_title="Skenario arah",
+                yaxis_title="Jumlah sesi",
+                barmode="group",
+                height=420,
+            )
+            st.plotly_chart(outcome_chart, use_container_width=True)
+
+            if st.checkbox("Tampilkan detail jalur per sesi", value=False, key="post_0800_detail"):
+                detail = path_data.copy()
+                st.dataframe(
+                    detail.style.format(
+                        {
+                            "Entry price": "${:,.2f}",
+                            "Spread entry (USD/oz)": "${:,.2f}",
+                            "TP level": "${:,.2f}",
+                            "SL level": "${:,.2f}",
+                            "Exit price": "${:,.2f}",
+                            "P/L 0.01 lot (USD)": "${:+,.2f}",
+                            "MFE (USD/oz)": "${:,.2f}",
+                            "MAE (USD/oz)": "${:,.2f}",
+                        },
+                        na_rep="-",
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                st.download_button(
+                    "Unduh audit jalur setelah 08:00 CSV",
+                    data=POST_0800_PATHS_PATH.read_bytes(),
+                    file_name=POST_0800_PATHS_PATH.name,
+                    mime="text/csv",
+                )
 
 
 def render_intraday_audit(gold_ohlc: pd.DataFrame) -> None:
