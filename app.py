@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import pickle
 from pathlib import Path
 
@@ -129,6 +130,16 @@ V1_BUY_CONTINUATION_VERSION = (
 )
 V1_BUY_CONTINUATION_PATH = Path(
     "data/precomputed/v1_buy_continuation.pkl.b64"
+)
+SESSION_HOUR_MAP_PATH = Path("data/precomputed/xauusd_session_hour_map.csv")
+SESSION_HOUR_FREQUENCY_PATH = Path(
+    "data/precomputed/xauusd_session_hour_frequency.csv"
+)
+SESSION_HOUR_MONTHLY_PATH = Path(
+    "data/precomputed/xauusd_session_hour_monthly.csv"
+)
+SESSION_HOUR_AUDIT_PATH = Path(
+    "data/precomputed/xauusd_session_hour_audit.json"
 )
 V1_SELL_SPECIALIST_VERSION = (
     "optimizer-v1-directional-specialist-sell-2022-2026h1-v5"
@@ -9514,7 +9525,130 @@ def render_monitoring(title: str, data_path) -> None:
     )
 
 
+def _render_session_hour_map() -> None:
+    required_paths = [
+        SESSION_HOUR_MAP_PATH,
+        SESSION_HOUR_FREQUENCY_PATH,
+        SESSION_HOUR_MONTHLY_PATH,
+        SESSION_HOUR_AUDIT_PATH,
+    ]
+    if not all(path.exists() for path in required_paths):
+        st.info("Artefak pemetaan jam sesi XAUUSD belum tersedia.")
+        return
+
+    daily = pd.read_csv(SESSION_HOUR_MAP_PATH, parse_dates=["Tanggal sesi"])
+    hourly = pd.read_csv(SESSION_HOUR_FREQUENCY_PATH)
+    monthly = pd.read_csv(SESSION_HOUR_MONTHLY_PATH)
+    metadata = json.loads(SESSION_HOUR_AUDIT_PATH.read_text(encoding="utf-8"))
+
+    st.subheader("Pemetaan Jam OHLC Sesi XAUUSD M1")
+    st.caption(
+        "Sumber: MT5 DEMO XAUUSD M1. Sesi dikunci 07:00 WIT sampai sebelum 05:00 WIT hari berikutnya. "
+        "Open +1 Jam adalah Open candle tepat 08:00 WIT; Close -1 Jam adalah Open candle tepat 04:00 WIT. "
+        "Tidak ada interpolasi ketika candle persis tidak tersedia."
+    )
+
+    sessions = int(metadata["sessions"])
+    open_available = int(metadata["open_plus_one_available"])
+    close_available = int(metadata["close_minus_one_available"])
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Sesi terpetakan", f"{sessions:,}")
+    c2.metric("Open 08:00 tersedia", f"{open_available}/{sessions}")
+    c3.metric("Close-1 04:00 tersedia", f"{close_available}/{sessions}")
+    c4.metric("Median cakupan sesi", f"{float(metadata['median_session_coverage_pct']):.1f}%")
+
+    missing_open = sessions - open_available
+    missing_close = sessions - close_available
+    if missing_open or missing_close:
+        st.warning(
+            f"Audit kelengkapan: {missing_open} sesi tidak memiliki candle persis 08:00 WIT dan "
+            f"{missing_close} sesi tidak memiliki candle persis 04:00 WIT. Nilainya dibiarkan kosong."
+        )
+
+    frequency_tab, monthly_tab, daily_tab = st.tabs(
+        ["Frekuensi Jam", "Pola Bulanan", "Data Harian"]
+    )
+    with frequency_tab:
+        figure = go.Figure()
+        figure.add_trace(
+            go.Bar(x=hourly["Jam WIT"], y=hourly["Frekuensi High"], name="High sesi")
+        )
+        figure.add_trace(
+            go.Bar(x=hourly["Jam WIT"], y=hourly["Frekuensi Low"], name="Low sesi")
+        )
+        figure.update_layout(
+            title="Frekuensi Jam Terjadinya High dan Low Sesi",
+            xaxis_title="Jam WIT",
+            yaxis_title="Jumlah sesi",
+            barmode="group",
+            height=430,
+        )
+        figure.update_xaxes(dtick=1)
+        st.plotly_chart(figure, use_container_width=True)
+        st.dataframe(
+            hourly.style.format(
+                {
+                    "Persentase High (%)": "{:.1f}%",
+                    "Persentase Low (%)": "{:.1f}%",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with monthly_tab:
+        months = sorted(monthly["Bulan"].unique())
+        high_pivot = monthly.pivot(index="Bulan", columns="Jam WIT", values="Frekuensi High")
+        low_pivot = monthly.pivot(index="Bulan", columns="Jam WIT", values="Frekuensi Low")
+        all_hours = list(range(24))
+        high_pivot = high_pivot.reindex(index=months, columns=all_hours, fill_value=0).fillna(0)
+        low_pivot = low_pivot.reindex(index=months, columns=all_hours, fill_value=0).fillna(0)
+        for title, pivot in (("High sesi", high_pivot), ("Low sesi", low_pivot)):
+            heatmap = go.Figure(
+                data=go.Heatmap(
+                    z=pivot.to_numpy(),
+                    x=all_hours,
+                    y=months,
+                    colorscale="Blues",
+                    colorbar={"title": "Sesi"},
+                )
+            )
+            heatmap.update_layout(
+                title=f"Peta Bulanan Jam {title}",
+                xaxis_title="Jam WIT",
+                yaxis_title="Bulan",
+                height=520,
+            )
+            heatmap.update_xaxes(dtick=1)
+            st.plotly_chart(heatmap, use_container_width=True)
+
+    with daily_tab:
+        display = daily.copy()
+        st.dataframe(
+            display.style.format(
+                {
+                    "Open +1 Jam (08 WIT)": "${:,.2f}",
+                    "Close -1 Jam (04 WIT)": "${:,.2f}",
+                    "High": "${:,.2f}",
+                    "Low": "${:,.2f}",
+                    "Cakupan sesi (%)": "{:.1f}%",
+                },
+                na_rep="-",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.download_button(
+            "Unduh pemetaan harian CSV",
+            data=SESSION_HOUR_MAP_PATH.read_bytes(),
+            file_name=SESSION_HOUR_MAP_PATH.name,
+            mime="text/csv",
+        )
+
+
 def render_intraday_audit(gold_ohlc: pd.DataFrame) -> None:
+    _render_session_hour_map()
+    st.divider()
     st.subheader("Audit Data Intraday Pihak Ketiga")
     st.warning(
         "Dataset 1-minute XAUUSD ini dicatat sebagai **data pihak ketiga**. "
