@@ -13,7 +13,7 @@ def completed_daily_frame(
     frame: pd.DataFrame,
     as_of: object,
 ) -> pd.DataFrame:
-    """Return daily rows strictly before the current WIT calendar date."""
+    """Return completed weekday rows before the current WIT calendar date."""
     if frame.empty:
         return frame.copy()
 
@@ -28,7 +28,9 @@ def completed_daily_frame(
     if index.tz is not None:
         index = index.tz_convert(WIT).tz_localize(None)
     normalized_index = index.normalize()
-    return frame.loc[normalized_index < current_wit_date].copy()
+    completed = normalized_index < current_wit_date
+    weekday = normalized_index.dayofweek < 5
+    return frame.loc[completed & weekday].copy()
 
 
 def forecast_guard(

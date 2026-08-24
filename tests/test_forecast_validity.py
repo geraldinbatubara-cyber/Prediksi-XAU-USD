@@ -18,6 +18,44 @@ def test_current_wit_daily_row_is_provisional() -> None:
     assert completed["gold"].iloc[-1] == 4486.60
 
 
+def test_weekend_session_row_is_not_treated_as_completed_candle() -> None:
+    market = pd.DataFrame(
+        {"gold": [4680.60, 4666.60]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-23"]),
+    )
+
+    completed = completed_daily_frame(
+        market,
+        pd.Timestamp("2026-08-24 09:35:00", tz="Asia/Jayapura"),
+    )
+
+    assert completed.index.tolist() == [pd.Timestamp("2026-08-21")]
+    assert completed["gold"].iloc[-1] == 4680.60
+
+
+def test_friday_snapshot_remains_valid_when_sunday_row_is_provisional() -> None:
+    market = pd.DataFrame(
+        {"gold": [4680.60, 4666.60]},
+        index=pd.to_datetime(["2026-08-21", "2026-08-23"]),
+    )
+    completed = completed_daily_frame(
+        market,
+        pd.Timestamp("2026-08-24 09:35:00", tz="Asia/Jayapura"),
+    )
+    latest_date = completed.index.max()
+    latest_price = float(completed["gold"].iloc[-1])
+
+    result = forecast_guard(
+        "2026-08-21",
+        latest_date,
+        latest_price,
+        pd.Series({"Batas bawah": 4600.0, "Batas atas": 4750.0}),
+    )
+
+    assert result["code"] == "VALID"
+    assert result["usable"] is True
+
+
 def test_snapshot_matches_latest_completed_candle() -> None:
     forecast = pd.Series({"Batas bawah": 4400.0, "Batas atas": 4550.0})
 
