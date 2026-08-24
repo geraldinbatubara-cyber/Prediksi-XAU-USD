@@ -8525,6 +8525,7 @@ def _render_manual_exit_comparison(
     manual_recorder = getattr(live_trading_module, "record_manual_exit", None)
     manual_exits = manual_loader(manual_path) if manual_loader is not None else pd.DataFrame()
     latest_price = summary["Latest price"]
+    manual_exit_price = latest_price if summary.get("Broker quote fresh") else np.nan
 
     st.markdown("**Perbandingan Optimizer vs Intervensi Manual**")
     st.caption(
@@ -8638,8 +8639,8 @@ def _render_manual_exit_comparison(
     if open_action_rows.empty:
         st.info("Tidak ada posisi terbuka yang menunggu exit manual baru.")
         return
-    if pd.isna(latest_price):
-        st.warning("Harga terbaru belum tersedia, tombol exit manual dinonaktifkan.")
+    if pd.isna(manual_exit_price):
+        st.warning("Bid/ask broker segar belum tersedia, tombol exit manual dinonaktifkan.")
         return
     if manual_recorder is None:
         st.warning("Fungsi exit manual belum siap pada runtime ini. Refresh/redeploy aplikasi, lalu coba lagi.")
@@ -8663,7 +8664,7 @@ def _render_manual_exit_comparison(
         if action_cols[3].button(f"Exit Manual #{position_id}", key=f"{key_prefix}_manual_exit_{position_id}"):
             _, message, success = manual_recorder(
                 position_id,
-                float(latest_price),
+                float(manual_exit_price),
                 live_path=live_path,
                 manual_path=manual_path,
             )
@@ -8831,17 +8832,32 @@ def render_live_trading(
     if pd.notna(summary.get("Latest bid")) and pd.notna(summary.get("Latest ask")):
         quote_status = "AKTIF" if summary.get("Broker quote fresh") else "STALE"
         st.info(
-            f"Feed eksekusi: **{summary.get('Price source', 'MT5 broker')}** | Status: **{quote_status}** | "
+            f"Feed eksekusi: **{summary.get('Broker quote source', 'MT5 broker')}** | Status: **{quote_status}** | "
             f"Bid **${float(summary['Latest bid']):,.2f}** | Ask **${float(summary['Latest ask']):,.2f}** | "
             f"Usia **{float(summary.get('Broker quote age minutes', 0.0)):.1f} menit**"
         )
     else:
         st.warning("Feed bid/ask broker belum tersedia; paper trading masih memakai fallback GC=F harian.")
 
+    if summary.get("Valuation provisional"):
+        st.warning(
+            f"Floating P/L memakai **Close M1 provisional** berusia "
+            f"**{float(summary.get('Valuation age minutes', 0.0)):.1f} menit**. "
+            "Nilai ini hanya untuk mark-to-market; TP/SL dan exit manual tetap menunggu bid/ask segar."
+        )
+    elif not summary.get("Valuation available") and summary["Open BUY"] + summary["Open SELL"] > 0:
+        st.error(
+            "Floating P/L tidak tersedia karena bid/ask dan candle M1 sama-sama stale. "
+            "Aplikasi tidak memakai harga lama untuk menyatakan profit atau loss."
+        )
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Equity live", f"${summary['Equity']:,.2f}", f"{summary['Equity'] - LIVE_INITIAL_EQUITY:+,.2f}")
+    if pd.isna(summary["Equity"]):
+        c1.metric("Equity live", "-")
+    else:
+        c1.metric("Equity live", f"${summary['Equity']:,.2f}", f"{summary['Equity'] - LIVE_INITIAL_EQUITY:+,.2f}")
     c2.metric("Balance live", f"${summary['Balance']:,.2f}")
-    c3.metric("Floating P/L", f"${summary['Floating P/L']:+,.2f}")
+    c3.metric("Floating P/L", "-" if pd.isna(summary["Floating P/L"]) else f"${summary['Floating P/L']:+,.2f}")
     c4.metric("Open posisi", f"{summary['Open BUY'] + summary['Open SELL']}", f"BUY {summary['Open BUY']} | SELL {summary['Open SELL']}")
 
     p1, p2, p3, p4 = st.columns(4)

@@ -33,6 +33,84 @@ def _broker_rows(day: pd.Timestamp) -> pd.DataFrame:
     )
 
 
+def test_broker_valuation_prefers_fresh_bid_ask():
+    now = pd.Timestamp("2026-08-24 12:00:00", tz="Asia/Jayapura")
+    quote = pd.Series(
+        {
+            "bid": 4634.8,
+            "ask": 4635.2,
+            "timestamp_utc": now.tz_convert("UTC"),
+            "received_at_utc": now.tz_convert("UTC"),
+            "source": "MT5 DEMO",
+        }
+    )
+    state = live_trading._broker_valuation_state(
+        live_trading._broker_quote_state(quote, now), None, now
+    )
+    assert state["price"] == 4635.0
+    assert state["buy_price"] == 4634.8
+    assert state["sell_price"] == 4635.2
+    assert not state["provisional"]
+
+
+def test_broker_valuation_falls_back_to_fresh_m1_close():
+    now = pd.Timestamp("2026-08-24 12:00:00", tz="Asia/Jayapura")
+    quote = pd.Series(
+        {
+            "bid": 4608.5,
+            "ask": 4609.1,
+            "timestamp_utc": now.tz_convert("UTC") - pd.Timedelta(hours=4),
+            "received_at_utc": now.tz_convert("UTC") - pd.Timedelta(hours=4),
+            "source": "MT5 DEMO",
+        }
+    )
+    bars = pd.DataFrame(
+        {
+            "timestamp_utc": [now.tz_convert("UTC") - pd.Timedelta(minutes=1)],
+            "open": [4634.0],
+            "high": [4636.0],
+            "low": [4633.0],
+            "close": [4635.0],
+            "spread_points": [30.0],
+        }
+    )
+    state = live_trading._broker_valuation_state(
+        live_trading._broker_quote_state(quote, now), bars, now
+    )
+    assert state["available"]
+    assert state["provisional"]
+    assert state["price"] == 4635.0
+    assert state["source"] == "MT5 Close M1 (provisional)"
+
+
+def test_broker_valuation_rejects_stale_quote_and_stale_m1():
+    now = pd.Timestamp("2026-08-24 12:00:00", tz="Asia/Jayapura")
+    quote = pd.Series(
+        {
+            "bid": 4608.5,
+            "ask": 4609.1,
+            "timestamp_utc": now.tz_convert("UTC") - pd.Timedelta(hours=4),
+            "received_at_utc": now.tz_convert("UTC") - pd.Timedelta(hours=4),
+            "source": "MT5 DEMO",
+        }
+    )
+    bars = pd.DataFrame(
+        {
+            "timestamp_utc": [now.tz_convert("UTC") - pd.Timedelta(minutes=10)],
+            "open": [4608.0],
+            "high": [4610.0],
+            "low": [4607.0],
+            "close": [4608.5],
+            "spread_points": [30.0],
+        }
+    )
+    state = live_trading._broker_valuation_state(
+        live_trading._broker_quote_state(quote, now), bars, now
+    )
+    assert not state["available"]
+    assert pd.isna(state["price"])
+
+
 def test_fixed_delay_distinguishes_daily_signal_outside_m1_coverage():
     daily = _daily_uptrend()
     latest_day = pd.Timestamp(daily.index.max())

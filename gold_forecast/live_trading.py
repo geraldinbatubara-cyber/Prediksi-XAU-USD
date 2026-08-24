@@ -1346,6 +1346,53 @@ def _prepare_live_broker_m1(broker_bars: pd.DataFrame | None) -> pd.DataFrame:
     return frame[numeric].dropna().loc[~frame.index.duplicated(keep="last")]
 
 
+def _broker_valuation_state(
+    quote_state: dict[str, object],
+    broker_bars: pd.DataFrame | None,
+    now: pd.Timestamp,
+) -> dict[str, object]:
+    if bool(quote_state.get("fresh")):
+        return {
+            "available": True,
+            "provisional": False,
+            "price": float(quote_state["mid"]),
+            "buy_price": float(quote_state["bid"]),
+            "sell_price": float(quote_state["ask"]),
+            "timestamp": quote_state.get("timestamp", pd.NaT),
+            "age_minutes": quote_state.get("age_minutes", np.nan),
+            "source": str(quote_state.get("source", "MT5 broker")),
+        }
+
+    bars = _prepare_live_broker_m1(broker_bars)
+    if bars.empty:
+        return {
+            "available": False,
+            "provisional": False,
+            "price": np.nan,
+            "buy_price": np.nan,
+            "sell_price": np.nan,
+            "timestamp": pd.NaT,
+            "age_minutes": np.nan,
+            "source": "Valuasi broker tidak tersedia",
+        }
+
+    timestamp = pd.Timestamp(bars.index.max()).tz_localize("UTC")
+    now_utc = now.tz_convert("UTC")
+    age_minutes = (now_utc - timestamp).total_seconds() / 60
+    price = float(bars.iloc[-1]["Close"])
+    available = bool(price > 0 and -1 <= age_minutes <= 5)
+    return {
+        "available": available,
+        "provisional": available,
+        "price": price if available else np.nan,
+        "buy_price": price if available else np.nan,
+        "sell_price": price if available else np.nan,
+        "timestamp": timestamp,
+        "age_minutes": age_minutes,
+        "source": "MT5 Close M1 (provisional)" if available else "Close M1 stale",
+    }
+
+
 def _fixed_delay_daily_diagnostics(
     gold_ohlc: pd.DataFrame,
     data: pd.DataFrame,
@@ -1927,6 +1974,7 @@ def run_live_trading_update(
         )
 
     quote_state = _broker_quote_state(broker_quote, now_wit)
+    valuation_state = _broker_valuation_state(quote_state, broker_bars, now_wit)
     if quote_state["configured"] and not quote_state["fresh"]:
         can_trade = False
         age = quote_state["age_minutes"]
@@ -1937,7 +1985,6 @@ def run_live_trading_update(
     if not usable_gold.empty:
         latest_candle = usable_gold.iloc[-1]
         if quote_state["fresh"]:
-            latest_price = float(quote_state["mid"])
             if entry_strategy == "sideways_moderate":
                 ledger = _manage_moderate_exit_protection(
                     ledger,
@@ -1960,11 +2007,24 @@ def run_live_trading_update(
                     now_wit,
                 )
         else:
-            latest_price = float(quote_state["mid"]) if quote_state["configured"] else float(latest_candle["Close"])
             if not quote_state["configured"]:
                 ledger = _close_hit_positions(ledger, latest_candle, now_wit)
+    broker_mode = bool(quote_state["configured"] or broker_bars is not None)
+    if valuation_state["available"]:
+        latest_price = float(valuation_state["price"])
+    elif not broker_mode and not usable_gold.empty:
+        latest_price = float(usable_gold.iloc[-1]["Close"])
+        valuation_state = {
+            **valuation_state,
+            "available": True,
+            "price": latest_price,
+            "buy_price": latest_price,
+            "sell_price": latest_price,
+            "timestamp": usable_gold.index.max(),
+            "source": "GC=F harian",
+        }
     else:
-        latest_price = float(quote_state["mid"]) if quote_state["configured"] else np.nan
+        latest_price = np.nan
 
     waiting_state = _signal_waiting_state(
         usable_gold,
@@ -2063,15 +2123,19 @@ def run_live_trading_update(
     closed_positions = ledger[ledger["status"].eq("CLOSED")].copy()
     signal_rows = ledger[ledger["status"].isin(["SIGNAL", "OPEN", "CANCELLED"])].copy()
 
-    if open_positions.empty or pd.isna(latest_price):
+    if open_positions.empty:
         floating_pl = 0.0
+    elif pd.isna(latest_price):
+        floating_pl = np.nan
     else:
         floating_pl = 0.0
         for _, row in open_positions.iterrows():
             direction = str(row["arah"])
-            executable_price = latest_price
-            if quote_state["fresh"]:
-                executable_price = float(quote_state["bid"] if direction == "BUY" else quote_state["ask"])
+            executable_price = float(
+                valuation_state["buy_price"]
+                if direction == "BUY"
+                else valuation_state["sell_price"]
+            )
             floating_pl += _unrealized(direction, float(row["entry_price"]), executable_price, float(row["lot"]))
 
     closed_net = float(pd.to_numeric(closed_positions["net_pl"], errors="coerce").fillna(0.0).sum()) if not closed_positions.empty else 0.0
@@ -2091,10 +2155,14 @@ def run_live_trading_update(
         "Latest price": latest_price,
         "Latest bid": quote_state["bid"],
         "Latest ask": quote_state["ask"],
-        "Price source": quote_state["source"],
+        "Price source": valuation_state["source"],
+        "Broker quote source": quote_state["source"],
         "Broker quote fresh": quote_state["fresh"],
         "Broker quote age minutes": quote_state["age_minutes"],
-        "Latest data date": quote_state["timestamp"] if quote_state["configured"] else (usable_gold.index.max() if not usable_gold.empty else pd.NaT),
+        "Valuation available": valuation_state["available"],
+        "Valuation provisional": valuation_state["provisional"],
+        "Valuation age minutes": valuation_state["age_minutes"],
+        "Latest data date": valuation_state["timestamp"],
         "Daily data date": daily_data_date,
         "Expected daily data date": expected_daily_date,
         "Daily data stale": daily_data_stale,
