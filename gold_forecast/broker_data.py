@@ -9,6 +9,8 @@ import pandas as pd
 
 BROKER_DATA_DIR = Path("data/broker")
 BROKER_BARS_PATH = BROKER_DATA_DIR / "xauusd_m1.csv"
+BROKER_H1_BARS_PATH = BROKER_DATA_DIR / "xauusd_h1.csv"
+BROKER_D1_BARS_PATH = BROKER_DATA_DIR / "xauusd_d1.csv"
 BROKER_QUOTE_PATH = BROKER_DATA_DIR / "latest_quote.csv"
 BAR_COLUMNS = [
     "timestamp_utc",
