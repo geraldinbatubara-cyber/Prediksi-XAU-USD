@@ -71,7 +71,9 @@ def publish_broker_snapshot(
     bars: pd.DataFrame,
     quotes: pd.DataFrame,
     terminal_status: dict[str, object] | None = None,
-) -> None:
+    h1_bars: pd.DataFrame | None = None,
+    d1_bars: pd.DataFrame | None = None,
+) -> list[str]:
     if quotes.empty:
         raise ValueError("Quote broker kosong; tidak ada data yang dikirim ke Supabase.")
 
@@ -90,8 +92,9 @@ def publish_broker_snapshot(
         prefer="resolution=merge-duplicates,return=minimal",
     )
 
+    warnings: list[str] = []
     if bars.empty:
-        return
+        return warnings
     publish_bars = bars.copy()
     publish_bars["source"] = publish_bars["source"].astype(str) + " via Supabase"
     columns = [
@@ -117,6 +120,29 @@ def publish_broker_snapshot(
             prefer="resolution=merge-duplicates,return=minimal",
         )
 
+    for table, timeframe_bars in (
+        ("broker_h1_bars", h1_bars),
+        ("broker_d1_bars", d1_bars),
+    ):
+        if timeframe_bars is None or timeframe_bars.empty:
+            continue
+        publish_frame = timeframe_bars.copy()
+        publish_frame["source"] = publish_frame["source"].astype(str) + " via Supabase"
+        timeframe_records = _records(publish_frame[columns])
+        try:
+            for start in range(0, len(timeframe_records), 500):
+                _request_json(
+                    base_url,
+                    service_role_key,
+                    table,
+                    method="POST",
+                    query={"on_conflict": "symbol,timestamp_utc"},
+                    payload=timeframe_records[start : start + 500],
+                    prefer="resolution=merge-duplicates,return=minimal",
+                )
+        except RuntimeError as exc:
+            warnings.append(str(exc))
+
     if terminal_status:
         _request_json(
             base_url,
@@ -127,6 +153,7 @@ def publish_broker_snapshot(
             payload=[{key: _clean_value(value) for key, value in terminal_status.items()}],
             prefer="resolution=merge-duplicates,return=minimal",
         )
+    return warnings
 
 
 def load_supabase_broker_feed(
@@ -159,6 +186,33 @@ def load_supabase_broker_feed(
     bars = load_broker_bars(pd.DataFrame(bar_rows or []))
     quotes = load_broker_quote(pd.DataFrame(quote_rows or []))
     return apply_broker_clock_offset(bars, quotes)
+
+
+def load_supabase_higher_timeframes(
+    base_url: str,
+    read_key: str,
+    symbol: str = "XAUUSD",
+    h1_limit: int = 500,
+    d1_limit: int = 300,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    frames: list[pd.DataFrame] = []
+    for table, limit in (
+        ("broker_h1_bars", h1_limit),
+        ("broker_d1_bars", d1_limit),
+    ):
+        rows = _request_json(
+            base_url,
+            read_key,
+            table,
+            query={
+                "select": "timestamp_utc,open,high,low,close,tick_volume,spread_points,symbol,source",
+                "symbol": f"eq.{symbol}",
+                "order": "timestamp_utc.desc",
+                "limit": str(max(1, min(int(limit), 1000))),
+            },
+        )
+        frames.append(load_broker_bars(pd.DataFrame(rows or [])))
+    return frames[0], frames[1]
 
 
 def load_supabase_terminal_status(

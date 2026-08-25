@@ -18,6 +18,8 @@ except ImportError:  # pragma: no cover - handled in deployed UI
 from gold_forecast.broker_data import (
     apply_broker_clock_offset,
     BROKER_BARS_PATH,
+    BROKER_D1_BARS_PATH,
+    BROKER_H1_BARS_PATH,
     BROKER_QUOTE_PATH,
     audit_broker_feed,
     load_broker_bars,
@@ -66,7 +68,11 @@ from gold_forecast.paper_ledger_store import (
 )
 from gold_forecast.signals import build_signal
 from gold_forecast import strategy_optimizer as strategy_optimizer_module
-from gold_forecast.supabase_broker import load_supabase_broker_feed
+from gold_forecast.supabase_broker import (
+    load_supabase_broker_feed,
+    load_supabase_higher_timeframes,
+)
+from gold_forecast.technical_analysis import build_multitimeframe_analysis
 try:
     from gold_forecast.supabase_broker import load_supabase_terminal_status
 except ImportError:  # pragma: no cover - compatibility during Streamlit rolling deploys
@@ -1000,6 +1006,68 @@ def render_optimizer_v1_dashboard(
     )
 
 
+def _render_multitimeframe_technical_analysis(
+    technical_frames: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame] | None,
+    feed_error: str | None,
+    now: pd.Timestamp,
+) -> None:
+    st.subheader("Analisa Teknikal Multi-Timeframe MT5")
+    st.caption(
+        "Pola dihitung secara deterministik dari candle yang sudah selesai. Label KANDIDAT belum menjadi "
+        "sinyal sampai neckline atau level konfirmasi ditembus. Analisa ini adalah pendukung, bukan order trading."
+    )
+    if technical_frames is None:
+        technical_frames = (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    analysis = build_multitimeframe_analysis(*technical_frames, now=now)
+    columns = st.columns(3)
+    for column, timeframe in zip(columns, ["M5", "H1", "D1"]):
+        result = analysis[timeframe]
+        with column:
+            st.markdown(f"**Candle {timeframe}**")
+            signal = str(result["signal"])
+            confidence = int(result.get("confidence", 0))
+            st.metric("Kesimpulan", signal, f"Confidence {confidence}%" if result["valid"] else "Data belum cukup")
+            st.write(f"**Pola:** {result['pattern']} ({result['pattern_status']})")
+            st.write(f"**Tren:** {result['trend']}")
+            if result["valid"]:
+                st.write(
+                    f"**RSI / ATR:** {float(result['rsi']):.1f} / ${float(result['atr']):,.2f}"
+                )
+                st.write(
+                    f"**Support / Resistance:** ${float(result['support']):,.2f} / "
+                    f"${float(result['resistance']):,.2f}"
+                )
+            st.write(str(result["interpretation"]))
+            timestamp = result.get("last_timestamp")
+            timestamp_label = (
+                "-"
+                if pd.isna(timestamp)
+                else pd.Timestamp(timestamp).tz_convert(WIT).strftime("%d %b %Y %H:%M WIT")
+            )
+            st.caption(
+                f"Sumber: {result['source']} | Candle: {result['bars']} | Terakhir: {timestamp_label}"
+            )
+
+    valid_results = [result for result in analysis.values() if result["valid"]]
+    directional = [result["signal"] for result in valid_results if result["signal"] in {"BUY", "SELL"}]
+    if len(directional) >= 2 and len(set(directional)) == 1:
+        st.success(
+            f"Konfirmasi lintas timeframe: **{directional[0]}** muncul pada {len(directional)} timeframe valid."
+        )
+    elif directional:
+        st.warning(
+            "Timeframe belum selaras penuh. Gunakan hasil per timeframe sebagai konteks dan hindari menyimpulkan "
+            "sinyal universal dari satu pola saja."
+        )
+    else:
+        st.info("Belum ada konfirmasi BUY/SELL lintas timeframe; kondisi saat ini WAIT atau data belum cukup.")
+    if feed_error:
+        st.warning(
+            "Feed H1/D1 belum lengkap. Jalankan versi terbaru `supabase/broker_feed.sql`, lalu restart "
+            f"START Gold Predictor. Detail audit: {feed_error}"
+        )
+
+
 def render_dashboard(
     market: pd.DataFrame,
     data_fetched_at: pd.Timestamp,
@@ -1013,6 +1081,8 @@ def render_dashboard(
     snapshot_market_date: object,
     snapshot_market_price: object,
     snapshot_feature_date: object,
+    technical_frames: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame] | None = None,
+    technical_feed_error: str | None = None,
 ) -> None:
     gold = market["gold"]
     latest = float(gold.iloc[-1])
@@ -1116,6 +1186,12 @@ def render_dashboard(
         st.metric("Target TP", "-" if pd.isna(target_value) else f"${float(target_value):,.2f}")
         st.metric("Sinyal", signal_label, str(v1_prediction["note"]))
         st.caption("Prediksi berbasis rule baseline Optimizer v1, bukan forecast probabilistik harga.")
+
+    _render_multitimeframe_technical_analysis(
+        technical_frames,
+        technical_feed_error,
+        data_fetched_at,
+    )
 
     if optimization_v1_leaderboard.empty:
         st.warning(
@@ -9927,6 +10003,30 @@ def get_supabase_terminal_status(base_url: str, read_key: str, symbol: str) -> d
     return load_supabase_terminal_status(base_url, read_key, symbol=symbol)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def get_supabase_higher_timeframes(
+    base_url: str,
+    read_key: str,
+    symbol: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return load_supabase_higher_timeframes(base_url, read_key, symbol=symbol)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_supabase_technical_m1(
+    base_url: str,
+    read_key: str,
+    symbol: str,
+) -> pd.DataFrame:
+    bars, _ = load_supabase_broker_feed(
+        base_url,
+        read_key,
+        symbol=symbol,
+        bars_limit=600,
+    )
+    return bars
+
+
 def _latest_broker_snapshot() -> tuple[pd.DataFrame, pd.Series | None, str | None]:
     supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
     if supabase_url and supabase_read_key:
@@ -9945,6 +10045,37 @@ def _latest_broker_snapshot() -> tuple[pd.DataFrame, pd.Series | None, str | Non
 def _latest_broker_quote() -> tuple[pd.Series | None, str | None]:
     _, quote, error = _latest_broker_snapshot()
     return quote, error
+
+
+def _latest_technical_frames() -> tuple[
+    tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
+    str | None,
+]:
+    m1_bars = load_broker_bars(BROKER_BARS_PATH).tail(600)
+    h1_bars = load_broker_bars(BROKER_H1_BARS_PATH)
+    d1_bars = load_broker_bars(BROKER_D1_BARS_PATH)
+    supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
+    broker_error = None
+    higher_error = None
+    if supabase_url and supabase_read_key:
+        try:
+            m1_bars = get_supabase_technical_m1(
+                supabase_url,
+                supabase_read_key,
+                supabase_symbol,
+            )
+        except Exception as exc:
+            broker_error = str(exc)
+        try:
+            h1_bars, d1_bars = get_supabase_higher_timeframes(
+                supabase_url,
+                supabase_read_key,
+                supabase_symbol,
+            )
+        except Exception as exc:
+            higher_error = str(exc)
+    error = higher_error or broker_error
+    return (m1_bars, h1_bars, d1_bars), error
 
 
 def _render_real_trading_readiness(terminal_status: dict[str, object], audit: dict[str, object]) -> None:
@@ -10322,6 +10453,7 @@ if page == "Dashboard":
     v1_leaderboard = dashboard_snapshot.get("v1_leaderboard")
     if not isinstance(v1_leaderboard, pd.DataFrame) or v1_leaderboard.empty:
         v1_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
+    technical_frames, technical_feed_error = _latest_technical_frames()
 
     render_dashboard(
         market,
@@ -10339,6 +10471,8 @@ if page == "Dashboard":
             "market_feature_last_date",
             dashboard_snapshot.get("market_last_date", market.index.max()),
         ),
+        technical_frames,
+        technical_feed_error,
     )
 
 elif page == "Simulasi":
