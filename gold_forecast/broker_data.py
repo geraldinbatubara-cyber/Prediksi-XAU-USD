@@ -190,7 +190,16 @@ def audit_broker_feed(
             latest_received_at = received_at
         clock_offset_hours = float(latest_quote.get("clock_offset_hours", 0.0) or 0.0)
         clock_valid = bool(latest_quote.get("clock_valid", True))
-    freshness_timestamp = latest_received_at if pd.notna(latest_received_at) else latest_timestamp
+    quote_timestamp = (
+        pd.Timestamp(latest_quote["timestamp_utc"])
+        if latest_quote is not None
+        else pd.NaT
+    )
+    freshness_timestamp = (
+        latest_received_at
+        if pd.notna(latest_received_at)
+        else quote_timestamp if pd.notna(quote_timestamp) else latest_timestamp
+    )
     age_minutes = (
         (now_utc - freshness_timestamp).total_seconds() / 60
         if pd.notna(freshness_timestamp)

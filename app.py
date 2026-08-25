@@ -10463,6 +10463,7 @@ elif page == "Live Trading":
                 "maksimal 8 BUY dan 10 SELL. Strategi ini masih paper trading."
             ),
             broker_quote=broker_quote,
+            broker_bars=broker_bars,
         )
     with fixed_delay_live_tab:
         render_live_trading(

@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+from gold_forecast.broker_data import audit_broker_feed, load_broker_bars, load_broker_quote
 import gold_forecast.live_trading as live_trading
 import gold_forecast.sideways_moderate_live as moderate_live
 
@@ -51,6 +52,53 @@ def test_broker_valuation_prefers_fresh_bid_ask():
     assert state["buy_price"] == 4634.8
     assert state["sell_price"] == 4635.2
     assert not state["provisional"]
+
+
+def test_broker_quote_uses_market_timestamp_when_received_time_is_missing():
+    now = pd.Timestamp("2026-08-25 12:00:00", tz="Asia/Jayapura")
+    quote = pd.Series(
+        {
+            "bid": 4634.8,
+            "ask": 4635.2,
+            "timestamp_utc": now.tz_convert("UTC") - pd.Timedelta(minutes=1),
+            "received_at_utc": pd.NaT,
+            "source": "MT5 DEMO",
+        }
+    )
+    state = live_trading._broker_quote_state(quote, now)
+    assert state["fresh"]
+    assert state["age_minutes"] == 1.0
+
+
+def test_broker_audit_does_not_hide_stale_quote_behind_fresh_m1():
+    now = pd.Timestamp("2026-08-25 03:00:00", tz="UTC")
+    quotes = load_broker_quote(
+        pd.DataFrame(
+            {
+                "timestamp_utc": [now - pd.Timedelta(minutes=10)],
+                "bid": [4634.8],
+                "ask": [4635.2],
+                "source": ["MT5 DEMO"],
+            }
+        )
+    )
+    bars = load_broker_bars(
+        pd.DataFrame(
+            {
+                "timestamp_utc": [now - pd.Timedelta(minutes=1)],
+                "open": [4634.0],
+                "high": [4636.0],
+                "low": [4633.0],
+                "close": [4635.0],
+                "spread_points": [30.0],
+                "source": ["MT5 DEMO"],
+            }
+        )
+    )
+    audit = audit_broker_feed(bars, quotes, now=now)
+    assert audit["connected"]
+    assert audit["stale"]
+    assert audit["age_minutes"] == 10.0
 
 
 def test_broker_valuation_falls_back_to_fresh_m1_close():

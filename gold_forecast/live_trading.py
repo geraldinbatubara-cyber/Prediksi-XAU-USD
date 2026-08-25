@@ -792,9 +792,14 @@ def _broker_quote_state(quote: pd.Series | None, now: pd.Timestamp) -> dict[str,
         bid = float(quote["bid"])
         ask = float(quote["ask"])
         market_timestamp = pd.Timestamp(quote["timestamp_utc"])
-        timestamp = pd.Timestamp(quote.get("received_at_utc", market_timestamp))
+        received_timestamp = pd.Timestamp(quote.get("received_at_utc", pd.NaT))
+        timestamp = market_timestamp if pd.isna(received_timestamp) else received_timestamp
     except (KeyError, TypeError, ValueError):
         return {**empty, "configured": True, "source": "Quote broker tidak valid"}
+    if market_timestamp.tzinfo is None:
+        market_timestamp = market_timestamp.tz_localize("UTC")
+    else:
+        market_timestamp = market_timestamp.tz_convert("UTC")
     if timestamp.tzinfo is None:
         timestamp = timestamp.tz_localize("UTC")
     else:
