@@ -70,6 +70,17 @@ def test_broker_quote_uses_market_timestamp_when_received_time_is_missing():
     assert state["age_minutes"] == 1.0
 
 
+def test_manual_exit_action_price_uses_fresh_broker_price():
+    summary = {
+        "Latest price": 4641.70,
+        "Broker quote fresh": True,
+    }
+    assert live_trading.manual_exit_action_price(summary) == 4641.70
+
+    summary["Broker quote fresh"] = False
+    assert pd.isna(live_trading.manual_exit_action_price(summary))
+
+
 def test_broker_audit_does_not_hide_stale_quote_behind_fresh_m1():
     now = pd.Timestamp("2026-08-25 03:00:00", tz="UTC")
     quotes = load_broker_quote(

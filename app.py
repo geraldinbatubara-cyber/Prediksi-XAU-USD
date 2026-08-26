@@ -8601,7 +8601,6 @@ def _render_manual_exit_comparison(
     manual_recorder = getattr(live_trading_module, "record_manual_exit", None)
     manual_exits = manual_loader(manual_path) if manual_loader is not None else pd.DataFrame()
     latest_price = summary["Latest price"]
-    manual_exit_price = latest_price if summary.get("Broker quote fresh") else np.nan
 
     st.markdown("**Perbandingan Optimizer vs Intervensi Manual**")
     st.caption(
@@ -8655,11 +8654,13 @@ def _render_manual_exit_comparison(
 
         manual_row = manual_by_position.get(position_id)
         if manual_row is None:
-            manual_exit_price = pd.NA
+            recorded_manual_exit_price = pd.NA
             manual_net = pd.NA
             manual_label = "Belum exit manual"
         else:
-            manual_exit_price = float(pd.to_numeric(manual_row.get("manual_exit_price", 0.0), errors="coerce") or 0.0)
+            recorded_manual_exit_price = float(
+                pd.to_numeric(manual_row.get("manual_exit_price", 0.0), errors="coerce") or 0.0
+            )
             manual_net = float(pd.to_numeric(manual_row.get("manual_net_pl", 0.0), errors="coerce") or 0.0)
             manual_label = f"{manual_row.get('manual_result_label', 'Manual')} ({manual_net:+,.2f})"
             human_total += manual_net
@@ -8674,7 +8675,7 @@ def _render_manual_exit_comparison(
                 "Exit Price Optimizer": optimizer_exit_price,
                 "Net Profit Optimizer": optimizer_net,
                 "Status Net Optimizer": optimizer_net_status,
-                "Exit Price Manual": manual_exit_price,
+                "Exit Price Manual": recorded_manual_exit_price,
                 "TP/CL Manusia": manual_label,
                 "Net Profit Manusia": manual_net,
             }
@@ -8715,7 +8716,8 @@ def _render_manual_exit_comparison(
     if open_action_rows.empty:
         st.info("Tidak ada posisi terbuka yang menunggu exit manual baru.")
         return
-    if pd.isna(manual_exit_price):
+    broker_exit_price = live_trading_module.manual_exit_action_price(summary)
+    if pd.isna(broker_exit_price):
         st.warning("Bid/ask broker segar belum tersedia, tombol exit manual dinonaktifkan.")
         return
     if manual_recorder is None:
@@ -8740,7 +8742,7 @@ def _render_manual_exit_comparison(
         if action_cols[3].button(f"Exit Manual #{position_id}", key=f"{key_prefix}_manual_exit_{position_id}"):
             _, message, success = manual_recorder(
                 position_id,
-                float(manual_exit_price),
+                broker_exit_price,
                 live_path=live_path,
                 manual_path=manual_path,
             )

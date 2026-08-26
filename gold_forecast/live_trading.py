@@ -821,6 +821,13 @@ def _broker_quote_state(quote: pd.Series | None, now: pd.Timestamp) -> dict[str,
     }
 
 
+def manual_exit_action_price(summary: dict[str, object]) -> float:
+    if not bool(summary.get("Broker quote fresh")):
+        return np.nan
+    price = pd.to_numeric(summary.get("Latest price"), errors="coerce")
+    return float(price) if pd.notna(price) else np.nan
+
+
 def _close_hit_positions_quote(
     ledger: pd.DataFrame,
     bid: float,
