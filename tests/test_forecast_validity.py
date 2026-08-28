@@ -1,5 +1,6 @@
 import pandas as pd
 
+from gold_forecast.dashboard_snapshot import dashboard_snapshot_is_current
 from gold_forecast.forecast_validity import completed_daily_frame, forecast_guard
 
 
@@ -83,3 +84,23 @@ def test_snapshot_behind_completed_candle_is_stale() -> None:
 
     assert result["code"] == "STALE_SNAPSHOT"
     assert result["usable"] is False
+
+
+def test_dashboard_snapshot_requires_latest_completed_candle() -> None:
+    market = pd.DataFrame(
+        {"gold": [4486.60, 4513.50]},
+        index=pd.to_datetime(["2026-08-10", "2026-08-11"]),
+    )
+    as_of = pd.Timestamp("2026-08-12 08:00:00", tz="Asia/Jayapura")
+
+    stale = {
+        "market_last_date": "2026-08-10",
+        "market_feature_last_date": "2026-08-10",
+    }
+    current = {
+        "market_last_date": "2026-08-11",
+        "market_feature_last_date": "2026-08-11",
+    }
+
+    assert dashboard_snapshot_is_current(stale, market, as_of) is False
+    assert dashboard_snapshot_is_current(current, market, as_of) is True

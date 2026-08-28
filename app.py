@@ -28,7 +28,10 @@ from gold_forecast.broker_data import (
 from gold_forecast.data import load_gold_data, load_market_data, refresh_market_cache
 from gold_forecast.dashboard_snapshot import (
     DASHBOARD_SNAPSHOT_VERSION,
+    build_dashboard_snapshot,
+    dashboard_snapshot_is_current,
     load_dashboard_snapshot,
+    save_dashboard_snapshot,
 )
 from gold_forecast.forecast_validity import completed_daily_frame, forecast_guard
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
@@ -1149,7 +1152,11 @@ def render_dashboard(
         st.metric("Estimasi hari ke-7", f"${m1_day_seven['Estimasi']:,.2f}", f"{m1_day_seven['Estimasi'] - completed_price:+,.2f}")
         st.metric(
             "Sinyal",
-            signal_1.label if guard_1["usable"] else "TIDAK VALID",
+            signal_1.label if guard_1["usable"] else (
+                "MENUNGGU MODEL"
+                if guard_1["code"] == "STALE_SNAPSHOT"
+                else "TIDAK VALID"
+            ),
             f"Status: {guard_1['label']}",
         )
         st.caption(
@@ -1164,7 +1171,11 @@ def render_dashboard(
         st.metric("Estimasi hari ke-7", f"${m2_day_seven['Estimasi']:,.2f}", f"{m2_day_seven['Estimasi'] - completed_price:+,.2f}")
         st.metric(
             "Sinyal",
-            signal_2.label if guard_2["usable"] else "TIDAK VALID",
+            signal_2.label if guard_2["usable"] else (
+                "MENUNGGU MODEL"
+                if guard_2["code"] == "STALE_SNAPSHOT"
+                else "TIDAK VALID"
+            ),
             f"Status: {guard_2['label']}",
         )
         st.caption(
@@ -1205,7 +1216,11 @@ def render_dashboard(
             {
                 "Model": "Model 1 - Harga Historis",
                 "Output utama": f"${m1_tomorrow['Estimasi']:,.2f}",
-                "Arah / Sinyal": signal_1.label if guard_1["usable"] else "TIDAK VALID",
+                "Arah / Sinyal": signal_1.label if guard_1["usable"] else (
+                    "MENUNGGU MODEL"
+                    if guard_1["code"] == "STALE_SNAPSHOT"
+                    else "TIDAK VALID"
+                ),
                 "Status kalibrasi": guard_1["label"],
                 "Data model": _format_date(snapshot_market_date),
                 "Perubahan vs candle selesai": m1_tomorrow["Estimasi"] - completed_price,
@@ -1216,7 +1231,11 @@ def render_dashboard(
             {
                 "Model": "Model 2 - Lintas Pasar",
                 "Output utama": f"${m2_tomorrow['Estimasi']:,.2f}",
-                "Arah / Sinyal": signal_2.label if guard_2["usable"] else "TIDAK VALID",
+                "Arah / Sinyal": signal_2.label if guard_2["usable"] else (
+                    "MENUNGGU MODEL"
+                    if guard_2["code"] == "STALE_SNAPSHOT"
+                    else "TIDAK VALID"
+                ),
                 "Status kalibrasi": guard_2["label"],
                 "Data model": _format_date(snapshot_feature_date),
                 "Perubahan vs candle selesai": m2_tomorrow["Estimasi"] - completed_price,
@@ -10390,14 +10409,15 @@ with st.sidebar:
         notice_type, notice_text = refresh_notice
         getattr(st, notice_type)(notice_text)
 
-    if st.button("Perbarui Data Harian GC=F", use_container_width=True):
+    if st.button("Perbarui Data Harian GC=F + Model 1/2", use_container_width=True):
         try:
             with st.spinner("Mengambil candle harian terbaru dari Yahoo Finance..."):
                 refreshed_gold, _ = refresh_market_cache(incremental_period="14d")
             latest_daily = pd.Timestamp(refreshed_gold.index.max()).strftime("%d %b %Y")
             st.session_state["data_refresh_notice"] = (
                 "success",
-                f"Data harian GC=F diperbarui. Candle terakhir: {latest_daily}.",
+                f"Data harian GC=F diperbarui sampai {latest_daily}. "
+                "Model 1/2 akan diselaraskan dengan candle selesai terbaru.",
             )
         except Exception as exc:
             st.session_state["data_refresh_notice"] = (
@@ -10448,6 +10468,42 @@ if page == "Dashboard":
             "Dashboard sengaja tidak melatih model saat halaman dibuka agar aplikasi tetap responsif."
         )
         st.stop()
+
+    snapshot_refreshed = False
+    snapshot_refresh_error = None
+    if not dashboard_snapshot_is_current(
+        dashboard_snapshot, market, data_fetched_at
+    ):
+        try:
+            stored_leaderboard = dashboard_snapshot.get("v1_leaderboard")
+            if not isinstance(stored_leaderboard, pd.DataFrame) or stored_leaderboard.empty:
+                stored_leaderboard = get_v1_leaderboard_for_live(
+                    SIMULATION_CACHE_VERSION
+                )
+            with st.spinner("Menyelaraskan Model 1/2 dengan candle harian selesai terbaru..."):
+                dashboard_snapshot = build_dashboard_snapshot(
+                    market,
+                    stored_leaderboard,
+                    generated_at=data_fetched_at,
+                )
+            snapshot_refreshed = True
+            try:
+                save_dashboard_snapshot(dashboard_snapshot)
+                get_dashboard_snapshot.clear()
+            except OSError:
+                pass
+        except Exception as exc:
+            snapshot_refresh_error = str(exc)
+
+    if snapshot_refreshed:
+        st.success(
+            "Snapshot Model 1/2 diperbarui otomatis sesuai candle harian selesai terbaru."
+        )
+    elif snapshot_refresh_error:
+        st.warning(
+            "Candle harian baru sudah tersedia, tetapi pembaruan Model 1/2 belum selesai. "
+            f"Forecast lama tetap hanya untuk audit. Detail: {snapshot_refresh_error}"
+        )
 
     model_1 = dashboard_snapshot["model_1"]
     model_2 = dashboard_snapshot["model_2"]

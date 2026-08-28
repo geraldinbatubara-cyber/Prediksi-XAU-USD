@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import pickle
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +22,17 @@ V1_PARAMS_PATH = Path("data/precomputed/v1_params.json")
 def build_dashboard_snapshot(
     market: pd.DataFrame,
     v1_leaderboard: pd.DataFrame,
+    generated_at: object | None = None,
 ) -> dict[str, Any]:
-    generated_at = datetime.now(timezone.utc)
+    generated_at = (
+        pd.Timestamp.now(tz="UTC")
+        if generated_at is None
+        else pd.Timestamp(generated_at)
+    )
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.tz_localize("UTC")
+    else:
+        generated_at = generated_at.tz_convert("UTC")
     completed_market = completed_daily_frame(market, generated_at)
     if completed_market.empty:
         raise ValueError("Tidak ada candle harian selesai untuk membangun snapshot.")
@@ -49,6 +57,32 @@ def build_dashboard_snapshot(
         "direction_model": train_direction_model(market),
         "v1_leaderboard": v1_leaderboard.head(1).copy(),
     }
+
+
+def dashboard_snapshot_is_current(
+    snapshot: dict[str, Any] | None,
+    market: pd.DataFrame,
+    as_of: object,
+) -> bool:
+    if not isinstance(snapshot, dict):
+        return False
+
+    completed_market = completed_daily_frame(market, as_of)
+    if completed_market.empty:
+        return False
+    expected_date = pd.Timestamp(completed_market.index.max()).normalize()
+
+    for key in ("market_last_date", "market_feature_last_date"):
+        value = snapshot.get(key)
+        if value is None:
+            return False
+        try:
+            source_date = pd.Timestamp(value).normalize()
+        except (TypeError, ValueError):
+            return False
+        if source_date != expected_date:
+            return False
+    return True
 
 
 def save_dashboard_snapshot(

@@ -4,6 +4,8 @@ import sys
 import time
 from pathlib import Path
 
+import pandas as pd
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -13,6 +15,8 @@ from gold_forecast.dashboard_snapshot import (
     DASHBOARD_SNAPSHOT_PATH,
     V1_PARAMS_PATH,
     build_dashboard_snapshot,
+    dashboard_snapshot_is_current,
+    load_dashboard_snapshot,
     load_v1_params,
     save_dashboard_snapshot,
     save_v1_params,
@@ -27,6 +31,15 @@ def main() -> None:
     if len(market) < 360:
         print("Cache 2025+ belum cukup untuk training; mengambil riwayat 5 tahun hanya untuk snapshot model.")
         market = _download_market_data("5y")
+
+    existing_snapshot = load_dashboard_snapshot()
+    if dashboard_snapshot_is_current(
+        existing_snapshot,
+        market,
+        pd.Timestamp.now(tz="UTC"),
+    ):
+        print("Dashboard snapshot sudah sesuai candle selesai terbaru; rebuild dilewati.")
+        return
     v1_leaderboard = load_v1_params()
 
     if v1_leaderboard.empty:

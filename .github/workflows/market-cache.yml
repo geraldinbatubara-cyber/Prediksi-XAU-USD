@@ -16,6 +16,8 @@ on:
       - "scripts/update_dashboard_snapshot.py"
   schedule:
     - cron: "30 21 * * 0-5"
+    - cron: "30 23 * * 0-5"
+    - cron: "30 1 * * 0-5"
 
 permissions:
   contents: write
