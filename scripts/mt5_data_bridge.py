@@ -30,6 +30,51 @@ def _load_mt5():
     return mt5
 
 
+def _initialize_mt5(
+    mt5,
+    terminal_path: str | None,
+    attempts: int,
+    timeout_ms: int,
+    retry_delay: int,
+    sleep_func=time.sleep,
+) -> None:
+    last_error = None
+    for attempt in range(1, max(attempts, 1) + 1):
+        kwargs = {"timeout": max(timeout_ms, 1)}
+        if terminal_path:
+            kwargs["path"] = terminal_path
+        if mt5.initialize(**kwargs):
+            return
+        last_error = mt5.last_error()
+        mt5.shutdown()
+        print(
+            f"WARNING MT5 IPC: inisialisasi gagal {attempt}/{max(attempts, 1)}: "
+            f"{last_error}",
+            file=sys.stderr,
+            flush=True,
+        )
+        if attempt < max(attempts, 1):
+            sleep_func(max(retry_delay, 1))
+    raise RuntimeError(f"MT5 gagal diinisialisasi setelah {max(attempts, 1)} percobaan: {last_error}")
+
+
+def _reconnect_until_available(mt5, args) -> None:
+    while True:
+        try:
+            _initialize_mt5(
+                mt5,
+                args.terminal_path,
+                args.initialize_attempts,
+                args.initialize_timeout_ms,
+                args.retry_delay,
+            )
+            print("MT5 IPC tersambung kembali.", flush=True)
+            return
+        except RuntimeError as exc:
+            print(f"WARNING MT5 IPC watchdog: {exc}", file=sys.stderr, flush=True)
+            time.sleep(max(args.retry_delay, 1))
+
+
 def _enum_name(value: object, mapping: dict[int, str], default: str = "UNKNOWN") -> str:
     try:
         return mapping.get(int(value), default)
@@ -110,6 +155,8 @@ def _write_snapshot(
     BROKER_BARS_PATH.parent.mkdir(parents=True, exist_ok=True)
     received_at_utc = pd.Timestamp.now(tz="UTC")
     terminal_status = _terminal_status(mt5, symbol, received_at_utc)
+    if not terminal_status["terminal_connected"]:
+        raise RuntimeError("Terminal MT5 belum terhubung ke server broker.")
     source = f"MT5 {terminal_status['account_mode']}"
 
     def _rates_frame(rates) -> pd.DataFrame:
@@ -168,6 +215,10 @@ def main() -> None:
     parser.add_argument("--h1-bars", type=int, default=500, help="Jumlah candle H1 selesai yang disalin.")
     parser.add_argument("--d1-bars", type=int, default=300, help="Jumlah candle D1 selesai yang disalin.")
     parser.add_argument("--interval", type=int, default=60, help="Interval pembaruan dalam detik.")
+    parser.add_argument("--terminal-path", help="Path terminal64.exe yang harus digunakan bridge.")
+    parser.add_argument("--initialize-attempts", type=int, default=4, help="Jumlah percobaan IPC per siklus.")
+    parser.add_argument("--initialize-timeout-ms", type=int, default=30000, help="Timeout tiap percobaan IPC.")
+    parser.add_argument("--retry-delay", type=int, default=10, help="Jeda percobaan ulang IPC dalam detik.")
     parser.add_argument("--once", action="store_true", help="Ambil satu snapshot lalu berhenti.")
     parser.add_argument(
         "--publish-supabase",
@@ -184,18 +235,33 @@ def main() -> None:
         )
 
     mt5 = _load_mt5()
-    if not mt5.initialize():
-        raise RuntimeError(f"MT5 gagal diinisialisasi: {mt5.last_error()}")
+    _initialize_mt5(
+        mt5,
+        args.terminal_path,
+        args.initialize_attempts,
+        args.initialize_timeout_ms,
+        args.retry_delay,
+    )
     first_publish = True
+    ready_announced = False
     try:
         while True:
-            bars, h1_bars, d1_bars, quote, terminal_status = _write_snapshot(
-                mt5,
-                args.symbol,
-                args.bars,
-                args.h1_bars,
-                args.d1_bars,
-            )
+            try:
+                bars, h1_bars, d1_bars, quote, terminal_status = _write_snapshot(
+                    mt5,
+                    args.symbol,
+                    args.bars,
+                    args.h1_bars,
+                    args.d1_bars,
+                )
+            except Exception as exc:
+                print(f"WARNING MT5 feed terputus: {exc}", file=sys.stderr, flush=True)
+                mt5.shutdown()
+                if args.once:
+                    raise
+                _reconnect_until_available(mt5, args)
+                first_publish = True
+                continue
             if args.publish_supabase:
                 publish_bars = bars if first_publish else bars.tail(5)
                 publish_h1 = h1_bars if first_publish else h1_bars.tail(3)
@@ -212,15 +278,22 @@ def main() -> None:
                     )
                     print(
                         f"Supabase updated | quote=1 | bars={len(publish_bars)} | "
-                        f"account={terminal_status['account_mode']}"
+                        f"account={terminal_status['account_mode']}",
+                        flush=True,
                     )
+                    if not ready_announced:
+                        print("BRIDGE_READY", flush=True)
+                        ready_announced = True
+                    first_publish = False
                     for warning in warnings:
                         print(f"WARNING Supabase timeframe: {warning}", file=sys.stderr)
                 except Exception as exc:
                     print(f"WARNING Supabase: {exc}", file=sys.stderr)
                     if args.once:
                         raise
-                first_publish = False
+            elif not ready_announced:
+                print("BRIDGE_READY", flush=True)
+                ready_announced = True
             if args.once:
                 break
             time.sleep(max(args.interval, 5))
