@@ -25,6 +25,7 @@ try {
     }
     $pythonPath = Join-Path $config.project_root ".venv\Scripts\python.exe"
     $bridgePath = Join-Path $config.project_root "scripts\mt5_data_bridge.py"
+    $quotePath = Join-Path $config.project_root "data\broker\latest_quote.csv"
     $notificationPath = Join-Path $config.project_root "gold_forecast\email_notifications.py"
     if (-not (Test-Path -LiteralPath $pythonPath)) {
         throw "Python virtual environment tidak ditemukan: $pythonPath"
@@ -36,7 +37,7 @@ try {
     $mt5ProcessName = [IO.Path]::GetFileNameWithoutExtension($config.mt5_path)
     if (-not (Get-Process -Name $mt5ProcessName -ErrorAction SilentlyContinue)) {
         Start-Process -FilePath $config.mt5_path | Out-Null
-        Start-Sleep -Seconds 8
+        Start-Sleep -Seconds 12
     }
 
     $bridgeRunning = $false
@@ -46,7 +47,17 @@ try {
             Get-CimInstance Win32_Process -Filter "ProcessId = $savedPid" -ErrorAction SilentlyContinue
         }
         if ($savedProcess -and $savedProcess.CommandLine -like "*mt5_data_bridge.py*") {
-            $bridgeRunning = $true
+            $maximumQuoteAge = [Math]::Max(([int]$config.interval_seconds * 3), 180)
+            $quoteFresh = (
+                (Test-Path -LiteralPath $quotePath) -and
+                ((Get-Date) - (Get-Item -LiteralPath $quotePath).LastWriteTime).TotalSeconds -le $maximumQuoteAge
+            )
+            if ($quoteFresh) {
+                $bridgeRunning = $true
+            } else {
+                Stop-Process -Id $savedPid -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+            }
         } else {
             Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
         }
@@ -66,6 +77,7 @@ try {
             "`"$bridgePath`"",
             "--symbol", [string]$config.symbol,
             "--interval", [string]$config.interval_seconds,
+            "--terminal-path", "`"$($config.mt5_path)`"",
             "--publish-supabase"
         )
         $process = Start-Process `
@@ -78,10 +90,25 @@ try {
             -PassThru
         $process.Id | Set-Content -LiteralPath $pidPath -Encoding ASCII
         Remove-Variable plainSecret, secureSecret -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 5
-        if ($process.HasExited) {
+        $bridgeReady = $false
+        $healthDeadline = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $healthDeadline) {
+            Start-Sleep -Seconds 2
+            if ($process.HasExited) {
+                $errorDetail = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+                throw "Bridge gagal berjalan. $errorDetail"
+            }
+            $bridgeOutput = Get-Content -LiteralPath $stdoutPath -Raw -ErrorAction SilentlyContinue
+            if ($bridgeOutput -match "BRIDGE_READY") {
+                $bridgeReady = $true
+                break
+            }
+        }
+        if (-not $bridgeReady) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
             $errorDetail = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
-            throw "Bridge gagal berjalan. $errorDetail"
+            throw "Bridge belum berhasil mengirim quote pertama dalam 120 detik. $errorDetail"
         }
     }
 
@@ -156,7 +183,7 @@ try {
     } else {
         "Notifikasi email belum dikonfigurasi."
     }
-    Show-LauncherMessage "MT5 dan bridge aktif. $notificationStatus Dashboard dibuka di browser."
+    Show-LauncherMessage "MT5 aktif dan quote pertama bridge sudah terkirim. $notificationStatus Dashboard dibuka di browser."
 } catch {
     Show-LauncherMessage $_.Exception.Message "Gold Predictor gagal dimulai" 16
     exit 1
