@@ -69,6 +69,7 @@ from gold_forecast.paper_ledger_store import (
     configure_paper_ledger_store,
     paper_ledger_store_status,
 )
+from gold_forecast.session_hour_map import summarize_hour_frequency
 from gold_forecast.signals import build_signal
 from gold_forecast import strategy_optimizer as strategy_optimizer_module
 from gold_forecast.supabase_broker import (
@@ -9685,6 +9686,55 @@ def _render_session_hour_map() -> None:
         ["Frekuensi Jam", "Pola Bulanan", "Data Harian", "Audit Setelah 08:00"]
     )
     with frequency_tab:
+        insight = summarize_hour_frequency(hourly, sessions)
+        high_peak = insight["high_rank"][0]
+        low_peak = insight["low_rank"][0]
+
+        st.markdown("**Summary Insight**")
+        i1, i2, i3, i4 = st.columns(4)
+        i1.metric(
+            "Jam High paling sering",
+            f"{high_peak['hour']:02d}:00 WIT",
+            f"{high_peak['count']}/{sessions} sesi ({high_peak['percentage']:.1f}%)",
+        )
+        i2.metric(
+            "Jam Low paling sering",
+            f"{low_peak['hour']:02d}:00 WIT",
+            f"{low_peak['count']}/{sessions} sesi ({low_peak['percentage']:.1f}%)",
+        )
+        i3.metric(
+            "High pada 22-04 WIT",
+            f"{insight['late_high_pct']:.1f}%",
+            "Window akhir sesi",
+        )
+        i4.metric(
+            "Low pada 07-10 WIT",
+            f"{insight['opening_low_pct']:.1f}%",
+            "Window pembukaan",
+        )
+
+        high_top_text = ", ".join(
+            f"{row['hour']:02d}:00 ({row['percentage']:.1f}%)"
+            for row in insight["high_rank"]
+        )
+        low_top_text = ", ".join(
+            f"{row['hour']:02d}:00 ({row['percentage']:.1f}%)"
+            for row in insight["low_rank"]
+        )
+        st.info(
+            f"Tiga jam teratas High adalah **{high_top_text}**, mencakup "
+            f"**{insight['top_three_high_pct']:.1f}%** sesi. Tiga jam teratas Low adalah "
+            f"**{low_top_text}**, mencakup **{insight['top_three_low_pct']:.1f}%** sesi. "
+            f"Secara kelompok, window 22:00-04:59 memuat **{insight['late_high_pct']:.1f}% High** "
+            f"dan **{insight['late_low_pct']:.1f}% Low**, sedangkan window 07:00-10:59 memuat "
+            f"**{insight['opening_high_pct']:.1f}% High** dan **{insight['opening_low_pct']:.1f}% Low**."
+        )
+        st.warning(
+            "Interpretasi: ekstrem sesi cenderung terkonsentrasi di sekitar pembukaan dan akhir sesi, "
+            "tetapi frekuensi ini tidak menunjukkan arah berikutnya atau profitabilitas entry. Jam 05:00 "
+            "dan 06:00 bernilai nol karena berada di luar definisi sesi, bukan karena pasar pasti tidak bergerak."
+        )
+
         figure = go.Figure()
         figure.add_trace(
             go.Bar(x=hourly["Jam WIT"], y=hourly["Frekuensi High"], name="High sesi")

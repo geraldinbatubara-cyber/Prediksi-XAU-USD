@@ -1,6 +1,9 @@
 import pandas as pd
 
-from gold_forecast.session_hour_map import build_session_hour_map
+from gold_forecast.session_hour_map import (
+    build_session_hour_map,
+    summarize_hour_frequency,
+)
 
 
 def test_session_mapping_uses_exact_wit_observation_and_first_extreme():
@@ -57,3 +60,22 @@ def test_missing_exact_observation_is_not_interpolated():
     assert pd.isna(row["Close -1 Jam (04 WIT)"])
     assert row["Status Open +1"] == "Tidak tersedia"
     assert row["Status Close -1"] == "Tidak tersedia"
+
+
+def test_hour_frequency_summary_uses_counts_and_session_windows():
+    hourly = pd.DataFrame(
+        {
+            "Jam WIT": range(24),
+            "Frekuensi High": [10 if hour == 4 else 5 if hour == 7 else 0 for hour in range(24)],
+            "Frekuensi Low": [12 if hour == 7 else 4 if hour == 23 else 0 for hour in range(24)],
+        }
+    )
+
+    summary = summarize_hour_frequency(hourly, sessions=20)
+
+    assert summary["high_rank"][0] == {"hour": 4, "count": 10, "percentage": 50.0}
+    assert summary["low_rank"][0] == {"hour": 7, "count": 12, "percentage": 60.0}
+    assert summary["late_high_pct"] == 50.0
+    assert summary["late_low_pct"] == 20.0
+    assert summary["opening_high_pct"] == 25.0
+    assert summary["opening_low_pct"] == 60.0

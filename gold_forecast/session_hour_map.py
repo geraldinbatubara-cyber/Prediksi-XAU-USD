@@ -21,6 +21,53 @@ class SessionHourMap:
     metadata: dict[str, object]
 
 
+def summarize_hour_frequency(
+    hourly_frequency: pd.DataFrame,
+    sessions: int,
+) -> dict[str, object]:
+    """Summarize when session extremes occur without implying a trading edge."""
+    required = {"Jam WIT", "Frekuensi High", "Frekuensi Low"}
+    missing = required.difference(hourly_frequency.columns)
+    if missing:
+        raise ValueError(f"Kolom frekuensi tidak lengkap: {', '.join(sorted(missing))}")
+    if sessions <= 0:
+        raise ValueError("Jumlah sesi harus lebih besar dari nol.")
+
+    frame = hourly_frequency.loc[:, sorted(required)].copy()
+    for column in required:
+        frame[column] = pd.to_numeric(frame[column], errors="raise").astype(int)
+
+    high_rank = frame.sort_values(
+        ["Frekuensi High", "Jam WIT"], ascending=[False, True]
+    ).head(3)
+    low_rank = frame.sort_values(
+        ["Frekuensi Low", "Jam WIT"], ascending=[False, True]
+    ).head(3)
+    opening = frame["Jam WIT"].between(7, 10)
+    late_session = frame["Jam WIT"].isin([22, 23, 0, 1, 2, 3, 4])
+
+    def _rank_rows(rank: pd.DataFrame, count_column: str) -> list[dict[str, object]]:
+        return [
+            {
+                "hour": int(row["Jam WIT"]),
+                "count": int(row[count_column]),
+                "percentage": float(row[count_column]) / sessions * 100.0,
+            }
+            for _, row in rank.iterrows()
+        ]
+
+    return {
+        "high_rank": _rank_rows(high_rank, "Frekuensi High"),
+        "low_rank": _rank_rows(low_rank, "Frekuensi Low"),
+        "top_three_high_pct": float(high_rank["Frekuensi High"].sum()) / sessions * 100.0,
+        "top_three_low_pct": float(low_rank["Frekuensi Low"].sum()) / sessions * 100.0,
+        "opening_high_pct": float(frame.loc[opening, "Frekuensi High"].sum()) / sessions * 100.0,
+        "opening_low_pct": float(frame.loc[opening, "Frekuensi Low"].sum()) / sessions * 100.0,
+        "late_high_pct": float(frame.loc[late_session, "Frekuensi High"].sum()) / sessions * 100.0,
+        "late_low_pct": float(frame.loc[late_session, "Frekuensi Low"].sum()) / sessions * 100.0,
+    }
+
+
 def _prepare_bars(bars: pd.DataFrame) -> pd.DataFrame:
     frame = bars.copy()
     if "timestamp_utc" in frame.columns:
