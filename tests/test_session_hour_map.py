@@ -3,6 +3,7 @@ import pandas as pd
 from gold_forecast.session_hour_map import (
     build_session_hour_map,
     summarize_hour_frequency,
+    summarize_monthly_frequency,
 )
 
 
@@ -79,3 +80,26 @@ def test_hour_frequency_summary_uses_counts_and_session_windows():
     assert summary["late_low_pct"] == 20.0
     assert summary["opening_high_pct"] == 25.0
     assert summary["opening_low_pct"] == 60.0
+
+
+def test_monthly_summary_counts_tied_peaks_and_window_dominance():
+    monthly = pd.DataFrame(
+        [
+            {"Bulan": "2025-01", "Jam WIT": 4, "Frekuensi High": 3, "Frekuensi Low": 1},
+            {"Bulan": "2025-01", "Jam WIT": 7, "Frekuensi High": 1, "Frekuensi Low": 3},
+            {"Bulan": "2025-02", "Jam WIT": 4, "Frekuensi High": 2, "Frekuensi Low": 0},
+            {"Bulan": "2025-02", "Jam WIT": 7, "Frekuensi High": 2, "Frekuensi Low": 4},
+        ]
+    )
+
+    summary = summarize_monthly_frequency(monthly)
+
+    assert summary["month_count"] == 2
+    assert summary["recurring_high_hour"] == 4
+    assert summary["recurring_high_months"] == 2
+    assert summary["recurring_low_hour"] == 7
+    assert summary["recurring_low_months"] == 2
+    assert summary["late_high_dominant_months"] == 1
+    assert summary["opening_low_dominant_months"] == 2
+    assert summary["strongest_high"]["percentage"] == 75.0
+    assert summary["strongest_low"]["percentage"] == 100.0

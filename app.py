@@ -69,7 +69,10 @@ from gold_forecast.paper_ledger_store import (
     configure_paper_ledger_store,
     paper_ledger_store_status,
 )
-from gold_forecast.session_hour_map import summarize_hour_frequency
+from gold_forecast.session_hour_map import (
+    summarize_hour_frequency,
+    summarize_monthly_frequency,
+)
 from gold_forecast.signals import build_signal
 from gold_forecast import strategy_optimizer as strategy_optimizer_module
 from gold_forecast.supabase_broker import (
@@ -9763,6 +9766,56 @@ def _render_session_hour_map() -> None:
         )
 
     with monthly_tab:
+        monthly_insight = summarize_monthly_frequency(monthly)
+        strongest_high = monthly_insight["strongest_high"]
+        strongest_low = monthly_insight["strongest_low"]
+        month_count = monthly_insight["month_count"]
+
+        st.markdown("**Summary Insight Bulanan**")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(
+            "Periode yang dianalisis",
+            f"{month_count} bulan",
+            f"{monthly_insight['period_start']} s.d. {monthly_insight['period_end']}",
+        )
+        m2.metric(
+            "Peak High paling konsisten",
+            f"{monthly_insight['recurring_high_hour']:02d}:00 WIT",
+            f"Puncak/tie pada {monthly_insight['recurring_high_months']}/{month_count} bulan",
+        )
+        m3.metric(
+            "Peak Low paling konsisten",
+            f"{monthly_insight['recurring_low_hour']:02d}:00 WIT",
+            f"Puncak/tie pada {monthly_insight['recurring_low_months']}/{month_count} bulan",
+        )
+        m4.metric(
+            "High akhir sesi dominan",
+            f"{monthly_insight['late_high_dominant_months']}/{month_count} bulan",
+            f"Low pembukaan dominan {monthly_insight['opening_low_dominant_months']}/{month_count}",
+        )
+
+        strongest_high_hours = ", ".join(
+            f"{hour:02d}:00" for hour in strongest_high["hours"]
+        )
+        strongest_low_hours = ", ".join(
+            f"{hour:02d}:00" for hour in strongest_low["hours"]
+        )
+        st.info(
+            f"Konsentrasi High bulanan terkuat terjadi pada **{strongest_high['month']}** pukul "
+            f"**{strongest_high_hours} WIT**: {strongest_high['count']}/{strongest_high['sessions']} "
+            f"sesi (**{strongest_high['percentage']:.1f}%**). Konsentrasi Low terkuat terjadi pada "
+            f"**{strongest_low['month']}** pukul **{strongest_low_hours} WIT**: "
+            f"{strongest_low['count']}/{strongest_low['sessions']} sesi "
+            f"(**{strongest_low['percentage']:.1f}%**). Tie tetap dihitung agar konsistensi jam tidak bias."
+        )
+        st.warning(
+            f"Interpretasi: peak Low yang paling berulang muncul pada "
+            f"{monthly_insight['recurring_low_months']}/{month_count} bulan dan peak High pada "
+            f"{monthly_insight['recurring_high_months']}/{month_count} bulan. Data hanya mencakup "
+            f"{month_count} bulan berurutan, sehingga heatmap ini mengukur kestabilan bulan-ke-bulan "
+            "dan belum membuktikan seasonality kalender tahunan."
+        )
+
         months = sorted(monthly["Bulan"].unique())
         high_pivot = monthly.pivot(index="Bulan", columns="Jam WIT", values="Frekuensi High")
         low_pivot = monthly.pivot(index="Bulan", columns="Jam WIT", values="Frekuensi Low")

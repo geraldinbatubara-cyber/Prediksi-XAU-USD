@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 
 import pandas as pd
@@ -65,6 +66,111 @@ def summarize_hour_frequency(
         "opening_low_pct": float(frame.loc[opening, "Frekuensi Low"].sum()) / sessions * 100.0,
         "late_high_pct": float(frame.loc[late_session, "Frekuensi High"].sum()) / sessions * 100.0,
         "late_low_pct": float(frame.loc[late_session, "Frekuensi Low"].sum()) / sessions * 100.0,
+    }
+
+
+def summarize_monthly_frequency(
+    monthly_frequency: pd.DataFrame,
+) -> dict[str, object]:
+    """Measure month-to-month stability, including tied monthly peaks."""
+    required = {"Bulan", "Jam WIT", "Frekuensi High", "Frekuensi Low"}
+    missing = required.difference(monthly_frequency.columns)
+    if missing:
+        raise ValueError(f"Kolom bulanan tidak lengkap: {', '.join(sorted(missing))}")
+
+    frame = monthly_frequency.loc[:, sorted(required)].copy()
+    frame["Bulan"] = frame["Bulan"].astype(str)
+    for column in required.difference({"Bulan"}):
+        frame[column] = pd.to_numeric(frame[column], errors="raise").astype(int)
+    months = sorted(frame["Bulan"].unique())
+    if not months:
+        raise ValueError("Data frekuensi bulanan kosong.")
+
+    high_peak_months: Counter[int] = Counter()
+    low_peak_months: Counter[int] = Counter()
+    strongest_high: dict[str, object] | None = None
+    strongest_low: dict[str, object] | None = None
+    late_high_dominant = 0
+    opening_low_dominant = 0
+    late_hours = {22, 23, 0, 1, 2, 3, 4}
+    opening_hours = {7, 8, 9, 10}
+
+    for month in months:
+        group = frame.loc[frame["Bulan"].eq(month)]
+        high_total = int(group["Frekuensi High"].sum())
+        low_total = int(group["Frekuensi Low"].sum())
+        if high_total <= 0 or high_total != low_total:
+            raise ValueError(f"Total High/Low bulanan tidak konsisten untuk {month}.")
+
+        high_max = int(group["Frekuensi High"].max())
+        low_max = int(group["Frekuensi Low"].max())
+        high_hours = sorted(
+            group.loc[group["Frekuensi High"].eq(high_max), "Jam WIT"].astype(int)
+        )
+        low_hours = sorted(
+            group.loc[group["Frekuensi Low"].eq(low_max), "Jam WIT"].astype(int)
+        )
+        high_peak_months.update(high_hours)
+        low_peak_months.update(low_hours)
+
+        high_candidate = {
+            "month": month,
+            "hours": high_hours,
+            "count": high_max,
+            "sessions": high_total,
+            "percentage": high_max / high_total * 100.0,
+        }
+        low_candidate = {
+            "month": month,
+            "hours": low_hours,
+            "count": low_max,
+            "sessions": low_total,
+            "percentage": low_max / low_total * 100.0,
+        }
+        if (
+            strongest_high is None
+            or high_candidate["percentage"] > strongest_high["percentage"]
+        ):
+            strongest_high = high_candidate
+        if (
+            strongest_low is None
+            or low_candidate["percentage"] > strongest_low["percentage"]
+        ):
+            strongest_low = low_candidate
+
+        late_high = int(
+            group.loc[group["Jam WIT"].isin(late_hours), "Frekuensi High"].sum()
+        )
+        opening_high = int(
+            group.loc[group["Jam WIT"].isin(opening_hours), "Frekuensi High"].sum()
+        )
+        opening_low = int(
+            group.loc[group["Jam WIT"].isin(opening_hours), "Frekuensi Low"].sum()
+        )
+        late_low = int(
+            group.loc[group["Jam WIT"].isin(late_hours), "Frekuensi Low"].sum()
+        )
+        late_high_dominant += int(late_high > opening_high)
+        opening_low_dominant += int(opening_low > late_low)
+
+    high_hour, high_month_count = sorted(
+        high_peak_months.items(), key=lambda item: (-item[1], item[0])
+    )[0]
+    low_hour, low_month_count = sorted(
+        low_peak_months.items(), key=lambda item: (-item[1], item[0])
+    )[0]
+    return {
+        "month_count": len(months),
+        "period_start": months[0],
+        "period_end": months[-1],
+        "recurring_high_hour": high_hour,
+        "recurring_high_months": high_month_count,
+        "recurring_low_hour": low_hour,
+        "recurring_low_months": low_month_count,
+        "late_high_dominant_months": late_high_dominant,
+        "opening_low_dominant_months": opening_low_dominant,
+        "strongest_high": strongest_high,
+        "strongest_low": strongest_low,
     }
 
 
