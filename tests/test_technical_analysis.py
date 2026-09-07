@@ -3,7 +3,9 @@ import pandas as pd
 
 from gold_forecast.technical_analysis import (
     analyze_timeframe,
+    build_multitimeframe_analysis,
     completed_m5_bars,
+    completed_timeframe_bars,
     detect_price_pattern,
 )
 
@@ -30,6 +32,22 @@ def test_completed_m5_excludes_unfinished_bucket():
     result = completed_m5_bars(frame, now=now)
     assert len(result) == 2
     assert result.index.max() == pd.Timestamp("2026-01-01 00:05:00", tz="UTC")
+
+
+def test_completed_timeframe_bars_excludes_current_and_future_bars():
+    frame = _bars(periods=6, freq="1h")
+    now = pd.Timestamp("2026-01-01 04:30:00", tz="UTC")
+    result = completed_timeframe_bars(frame, pd.Timedelta(hours=1), now=now)
+    assert result.index.max() == pd.Timestamp("2026-01-01 03:00:00", tz="UTC")
+
+
+def test_multitimeframe_analysis_never_uses_unfinished_h1_or_d1():
+    h1 = _bars(periods=120, freq="1h")
+    d1 = _bars(periods=100, freq="1D")
+    now = pd.Timestamp("2026-01-05 12:30:00", tz="UTC")
+    result = build_multitimeframe_analysis(pd.DataFrame(), h1, d1, now=now)
+    assert result["H1"]["last_timestamp"] <= now - pd.Timedelta(hours=1)
+    assert result["D1"]["last_timestamp"] <= now - pd.Timedelta(days=1)
 
 
 def test_head_and_shoulders_requires_neckline_confirmation():

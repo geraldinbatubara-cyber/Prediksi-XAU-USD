@@ -63,6 +63,23 @@ def completed_m5_bars(
     return resampled.loc[resampled.index + pd.Timedelta(minutes=5) <= now_utc]
 
 
+def completed_timeframe_bars(
+    frame: pd.DataFrame | None,
+    duration: pd.Timedelta,
+    now: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Return only bars whose full timeframe has elapsed."""
+    data = _normalize_bars(frame)
+    if data.empty:
+        return data
+    now_utc = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.tz_localize("UTC")
+    else:
+        now_utc = now_utc.tz_convert("UTC")
+    return data.loc[data.index + duration <= now_utc]
+
+
 def _atr(data: pd.DataFrame, length: int = 14) -> pd.Series:
     previous_close = data["close"].shift(1)
     true_range = pd.concat(
@@ -326,8 +343,10 @@ def build_multitimeframe_analysis(
     now: pd.Timestamp | None = None,
 ) -> dict[str, dict[str, object]]:
     m5 = completed_m5_bars(m1_bars, now=now)
+    h1 = completed_timeframe_bars(h1_bars, pd.Timedelta(hours=1), now=now)
+    d1 = completed_timeframe_bars(d1_bars, pd.Timedelta(days=1), now=now)
     return {
         "M5": analyze_timeframe(m5, "M5", "MT5 M1 diresample, candle selesai", 60),
-        "H1": analyze_timeframe(h1_bars, "H1", "MT5 H1 langsung, candle selesai", 80),
-        "D1": analyze_timeframe(d1_bars, "D1", "MT5 D1 langsung, candle selesai", 60),
+        "H1": analyze_timeframe(h1, "H1", "MT5 H1 langsung, candle selesai", 80),
+        "D1": analyze_timeframe(d1, "D1", "MT5 D1 langsung, candle selesai", 60),
     }

@@ -10691,6 +10691,10 @@ elif page == "Live Trading":
     except Exception as exc:
         st.error(f"Data OHLC belum dapat diproses: {exc}")
         st.stop()
+    completed_gold_ohlc = completed_daily_frame(gold_ohlc, pd.Timestamp.now(tz=WIT))
+    if completed_gold_ohlc.empty:
+        st.error("Belum ada candle harian selesai untuk menjalankan paper live trading.")
+        st.stop()
 
     broker_bars, broker_quote, broker_feed_error = _latest_broker_snapshot()
     if broker_feed_error:
@@ -10771,7 +10775,7 @@ elif page == "Live Trading":
     )
     with baseline_live_tab:
         render_live_trading(
-            gold_ohlc,
+            completed_gold_ohlc,
             optimization_v1_live_leaderboard,
             title="Optimizer v1",
             start_date=LIVE_START_DATE,
@@ -10787,7 +10791,7 @@ elif page == "Live Trading":
         )
     with fixed_delay_live_tab:
         render_live_trading(
-            gold_ohlc,
+            completed_gold_ohlc,
             optimization_v1_live_leaderboard,
             title="Fixed Delay 5m",
             start_date=LIVE_FIXED_DELAY_START,
@@ -10806,7 +10810,7 @@ elif page == "Live Trading":
         )
     with buy_specialist_v4_tab:
         render_live_trading(
-            gold_ohlc,
+            completed_gold_ohlc,
             optimization_v1_live_leaderboard,
             title="BUY Specialist v4 - Bullish Regime",
             start_date=LIVE_BUY_SPECIALIST_V4_START,
@@ -10828,7 +10832,7 @@ elif page == "Live Trading":
         )
     with sideways_moderate_tab:
         render_live_trading(
-            gold_ohlc,
+            completed_gold_ohlc,
             optimization_v1_live_leaderboard,
             title="Moderate Regime - Sideways v9",
             start_date=LIVE_SIDEWAYS_MODERATE_START,
@@ -10854,7 +10858,7 @@ elif page == "Live Trading":
     archived_open = archived_v10_ledger[archived_v10_ledger["status"].eq("OPEN")]
     if not archived_open.empty:
         archived_v10 = run_live_trading_update(
-            gold_ohlc,
+            completed_gold_ohlc,
             pd.DataFrame(),
             path=LIVE_TRADING_V10_PATH,
             start_date=LIVE_V10_START_DATE,
