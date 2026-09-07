@@ -1,7 +1,12 @@
 import pandas as pd
 
 from gold_forecast.dashboard_snapshot import dashboard_snapshot_is_current
-from gold_forecast.forecast_validity import completed_daily_frame, forecast_guard
+from gold_forecast.forecast_validity import (
+    completed_daily_frame,
+    forecast_guard,
+    live_quote_basis,
+    rebase_forecast_to_live,
+)
 
 
 def test_current_wit_daily_row_is_provisional() -> None:
@@ -17,6 +22,32 @@ def test_current_wit_daily_row_is_provisional() -> None:
 
     assert completed.index.tolist() == [pd.Timestamp("2026-08-10")]
     assert completed["gold"].iloc[-1] == 4486.60
+
+
+def test_live_quote_basis_accepts_fresh_quote() -> None:
+    quote = pd.Series(
+        {
+            "bid": 4400.0,
+            "ask": 4400.4,
+            "received_at_utc": "2026-09-07T01:00:00Z",
+            "clock_valid": True,
+        }
+    )
+    result = live_quote_basis(quote, "2026-09-07T01:04:00Z")
+    assert result["usable"] is True
+    assert result["price"] == 4400.2
+
+
+def test_live_quote_basis_rejects_stale_quote() -> None:
+    quote = pd.Series(
+        {"mid": 4400.2, "received_at_utc": "2026-09-07T01:00:00Z"}
+    )
+    assert live_quote_basis(quote, "2026-09-07T01:06:00Z")["usable"] is False
+
+
+def test_rebase_forecast_preserves_projected_return() -> None:
+    rebased = rebase_forecast_to_live(4480.0, 4400.0, 4450.0)
+    assert abs(rebased - 4450.0 * (4480.0 / 4400.0)) < 1e-9
 
 
 def test_weekend_session_row_is_not_treated_as_completed_candle() -> None:

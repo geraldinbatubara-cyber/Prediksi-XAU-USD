@@ -33,7 +33,12 @@ from gold_forecast.dashboard_snapshot import (
     load_dashboard_snapshot,
     save_dashboard_snapshot,
 )
-from gold_forecast.forecast_validity import completed_daily_frame, forecast_guard
+from gold_forecast.forecast_validity import (
+    completed_daily_frame,
+    forecast_guard,
+    live_quote_basis,
+    rebase_forecast_to_live,
+)
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
 from gold_forecast import live_trading as live_trading_module
 from gold_forecast.live_trading import (
@@ -1139,6 +1144,21 @@ def render_dashboard(
     snapshot_reference = (
         np.nan if snapshot_market_price is None else float(snapshot_market_price)
     )
+    model_reference = (
+        snapshot_reference
+        if np.isfinite(snapshot_reference) and snapshot_reference > 0
+        else completed_price
+    )
+    quote_basis = live_quote_basis(broker_quote, data_fetched_at)
+    live_mt5_price = float(quote_basis["price"]) if quote_basis["usable"] else np.nan
+    forecast_basis = live_mt5_price if quote_basis["usable"] else completed_price
+    m1_live_tomorrow = rebase_forecast_to_live(m1_tomorrow["Estimasi"], model_reference, forecast_basis)
+    m1_live_day_seven = rebase_forecast_to_live(m1_day_seven["Estimasi"], model_reference, forecast_basis)
+    m2_live_tomorrow = rebase_forecast_to_live(m2_tomorrow["Estimasi"], model_reference, forecast_basis)
+    m2_live_day_seven = rebase_forecast_to_live(m2_day_seven["Estimasi"], model_reference, forecast_basis)
+    v1_live_prediction = rebase_forecast_to_live(
+        v1_prediction["prediction"], v1_prediction["latest_close"], forecast_basis
+    )
 
     if not guard_1["usable"] or not guard_2["usable"]:
         st.error(
@@ -1157,11 +1177,19 @@ def render_dashboard(
         )
 
     st.subheader("Perbandingan Prediksi Antar Model")
+    if quote_basis["usable"]:
+        quote_time = pd.Timestamp(quote_basis["timestamp"]).tz_convert(WIT).strftime("%d %b %Y %H:%M:%S WIT")
+        st.caption(
+            f"Prediksi live 5 menit memakai basis MT5 ${live_mt5_price:,.2f} pada {quote_time}. "
+            "Return model harian dipertahankan; sinyal resmi paper trading tidak berubah."
+        )
+    else:
+        st.warning("Quote MT5 belum valid atau lebih lama dari 5 menit. Prediksi sementara memakai basis candle selesai.")
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("**Model 1 - Harga Historis**")
-        st.metric("Estimasi besok", f"${m1_tomorrow['Estimasi']:,.2f}", f"{m1_tomorrow['Estimasi'] - completed_price:+,.2f}")
-        st.metric("Estimasi hari ke-7", f"${m1_day_seven['Estimasi']:,.2f}", f"{m1_day_seven['Estimasi'] - completed_price:+,.2f}")
+        st.metric("Prediksi live T+1", f"${m1_live_tomorrow:,.2f}", f"{m1_live_tomorrow - forecast_basis:+,.2f}")
+        st.metric("Prediksi live T+7", f"${m1_live_day_seven:,.2f}", f"{m1_live_day_seven - forecast_basis:+,.2f}")
         st.metric(
             "Sinyal",
             signal_1.label if guard_1["usable"] else (
@@ -1175,12 +1203,13 @@ def render_dashboard(
             "Regresi ridge berbasis riwayat harga emas. "
             f"Data model: {_format_date(snapshot_market_date)} | "
             f"Referensi: {'-' if pd.isna(snapshot_reference) else f'${snapshot_reference:,.2f}'} | "
+            f"Prediksi dasar T+1: ${float(m1_tomorrow['Estimasi']):,.2f} | "
             f"Sinyal mentah: {signal_1.label} ({signal_1.confidence:.0f}%)."
         )
     with col2:
         st.markdown("**Model 2 - Lintas Pasar**")
-        st.metric("Estimasi besok", f"${m2_tomorrow['Estimasi']:,.2f}", f"{m2_tomorrow['Estimasi'] - completed_price:+,.2f}")
-        st.metric("Estimasi hari ke-7", f"${m2_day_seven['Estimasi']:,.2f}", f"{m2_day_seven['Estimasi'] - completed_price:+,.2f}")
+        st.metric("Prediksi live T+1", f"${m2_live_tomorrow:,.2f}", f"{m2_live_tomorrow - forecast_basis:+,.2f}")
+        st.metric("Prediksi live T+7", f"${m2_live_day_seven:,.2f}", f"{m2_live_day_seven - forecast_basis:+,.2f}")
         st.metric(
             "Sinyal",
             signal_2.label if guard_2["usable"] else (
@@ -1194,34 +1223,28 @@ def render_dashboard(
             "Gradient boosting memakai emas dan faktor lintas pasar. "
             f"Data model: {_format_date(snapshot_feature_date)} | "
             f"Referensi: {'-' if pd.isna(snapshot_reference) else f'${snapshot_reference:,.2f}'} | "
+            f"Prediksi dasar T+1: ${float(m2_tomorrow['Estimasi']):,.2f} | "
             f"Sinyal mentah: {signal_2.label} ({signal_2.confidence:.0f}%)."
         )
     with col3:
         signal_direction = str(v1_prediction["direction"])
         signal_label = signal_direction if signal_direction in {"BUY", "SELL"} else "WAIT"
-        target_value = v1_prediction["target_price"]
         st.markdown("**Model 3 - Optimizer v1 Baseline**")
         st.metric(
-            "Prediksi harian",
-            f"${float(v1_prediction['prediction']):,.2f}",
+            "Prediksi live 5 menit",
+            f"${v1_live_prediction:,.2f}",
             f"{float(v1_prediction['expected_change_pct']):+.2f}%",
         )
-        live_mt5_price = np.nan
-        if broker_quote is not None:
-            if pd.notna(broker_quote.get("mid")):
-                live_mt5_price = float(broker_quote["mid"])
-            elif pd.notna(broker_quote.get("bid")) and pd.notna(broker_quote.get("ask")):
-                live_mt5_price = (float(broker_quote["bid"]) + float(broker_quote["ask"])) / 2
         st.metric(
             "Harga live MT5",
             "-" if pd.isna(live_mt5_price) else f"${live_mt5_price:,.2f}",
-            None if pd.isna(live_mt5_price) else f"{live_mt5_price - float(v1_prediction['prediction']):+,.2f} vs prediksi",
+            None if pd.isna(live_mt5_price) else f"{v1_live_prediction - live_mt5_price:+,.2f} proyeksi",
         )
-        st.metric("Target TP", "-" if pd.isna(target_value) else f"${float(target_value):,.2f}")
         st.metric("Sinyal", signal_label, str(v1_prediction["note"]))
         st.caption(
-            "Prediksi berbasis candle harian selesai dan tidak berubah mengikuti tick. "
-            f"Candle sumber: {_format_date(v1_prediction.get('latest_date'))}. Harga live hanya pembanding."
+            f"Prediksi dasar harian: ${float(v1_prediction['prediction']):,.2f} | "
+            f"Candle sumber: {_format_date(v1_prediction.get('latest_date'))}. "
+            "Nilai live bergerak tiap refresh 5 menit; sinyal resmi tetap dari candle selesai."
         )
 
     _render_multitimeframe_technical_analysis(
@@ -1241,7 +1264,7 @@ def render_dashboard(
         [
             {
                 "Model": "Model 1 - Harga Historis",
-                "Output utama": f"${m1_tomorrow['Estimasi']:,.2f}",
+                "Output utama": f"${m1_live_tomorrow:,.2f}",
                 "Arah / Sinyal": signal_1.label if guard_1["usable"] else (
                     "MENUNGGU MODEL"
                     if guard_1["code"] == "STALE_SNAPSHOT"
@@ -1249,14 +1272,14 @@ def render_dashboard(
                 ),
                 "Status kalibrasi": guard_1["label"],
                 "Data model": _format_date(snapshot_market_date),
-                "Perubahan vs candle selesai": m1_tomorrow["Estimasi"] - completed_price,
+                "Perubahan vs basis live": m1_live_tomorrow - forecast_basis,
                 "Confidence / Expected": f"{signal_1.confidence:.0f}%" if guard_1["usable"] else "-",
                 "MAE T+1": model_1.metrics.get("MAE", pd.NA),
                 "Akurasi arah T+1": model_1.metrics.get("Akurasi arah", pd.NA),
             },
             {
                 "Model": "Model 2 - Lintas Pasar",
-                "Output utama": f"${m2_tomorrow['Estimasi']:,.2f}",
+                "Output utama": f"${m2_live_tomorrow:,.2f}",
                 "Arah / Sinyal": signal_2.label if guard_2["usable"] else (
                     "MENUNGGU MODEL"
                     if guard_2["code"] == "STALE_SNAPSHOT"
@@ -1264,18 +1287,18 @@ def render_dashboard(
                 ),
                 "Status kalibrasi": guard_2["label"],
                 "Data model": _format_date(snapshot_feature_date),
-                "Perubahan vs candle selesai": m2_tomorrow["Estimasi"] - completed_price,
+                "Perubahan vs basis live": m2_live_tomorrow - forecast_basis,
                 "Confidence / Expected": f"{signal_2.confidence:.0f}%" if guard_2["usable"] else "-",
                 "MAE T+1": model_2.horizon_metrics.loc[1, "MAE"],
                 "Akurasi arah T+1": model_2.horizon_metrics.loc[1, "Akurasi arah"],
             },
             {
                 "Model": "Model 3 - Optimizer v1 Baseline",
-                "Output utama": f"${float(v1_prediction['prediction']):,.2f}",
+                "Output utama": f"${v1_live_prediction:,.2f}",
                 "Arah / Sinyal": signal_label,
                 "Status kalibrasi": "Rule strategi, bukan forecast harga",
                 "Data model": _format_date(v1_prediction.get("latest_date")),
-                "Perubahan vs candle selesai": float(v1_prediction["prediction"]) - latest,
+                "Perubahan vs basis live": v1_live_prediction - forecast_basis,
                 "Confidence / Expected": f"{float(v1_prediction['expected_change_pct']):+.2f}%",
                 "MAE T+1": pd.NA,
                 "Akurasi arah T+1": pd.NA,
@@ -1285,7 +1308,7 @@ def render_dashboard(
     st.dataframe(
         comparison.style.format(
             {
-                "Perubahan vs candle selesai": "${:+,.2f}",
+                "Perubahan vs basis live": "${:+,.2f}",
                 "MAE T+1": "${:,.2f}",
                 "Akurasi arah T+1": "{:.1f}%",
             },
@@ -1295,11 +1318,15 @@ def render_dashboard(
         hide_index=True,
     )
 
-    st.subheader("Estimasi 7 Hari Bursa Model 1 dan Model 2")
+    st.subheader("Prediksi Live 7 Hari Bursa Model 1 dan Model 2")
     forecast_comparison = pd.DataFrame(
         {
-            "Model 1 - Estimasi": model_1.forecast["Estimasi"],
-            "Model 2 - Estimasi": model_2.forecast["Estimasi"],
+            "Model 1 - Prediksi live": model_1.forecast["Estimasi"].apply(
+                lambda value: rebase_forecast_to_live(value, model_reference, forecast_basis)
+            ),
+            "Model 2 - Prediksi live": model_2.forecast["Estimasi"].apply(
+                lambda value: rebase_forecast_to_live(value, model_reference, forecast_basis)
+            ),
         }
     )
     st.dataframe(
