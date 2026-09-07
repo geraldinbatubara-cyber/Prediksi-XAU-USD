@@ -38,6 +38,7 @@ def forecast_guard(
     completed_date: object,
     completed_price: float,
     forecast_row: pd.Series,
+    source_price: float | None = None,
 ) -> dict[str, object]:
     source = pd.Timestamp(source_date).normalize()
     current = pd.Timestamp(completed_date).normalize()
@@ -49,9 +50,17 @@ def forecast_guard(
         and pd.notna(upper)
         and not lower <= completed_price <= upper
     )
+    price_mismatch = (
+        source_price is not None
+        and pd.notna(source_price)
+        and abs(float(source_price) - float(completed_price)) > 0.01
+    )
     if stale:
         code = "STALE_SNAPSHOT"
         label = "Snapshot model tertinggal"
+    elif price_mismatch:
+        code = "SOURCE_PRICE_MISMATCH"
+        label = "Harga sumber snapshot berubah"
     elif outside_interval:
         code = "OUT_OF_DISTRIBUTION"
         label = "Harga candle selesai di luar interval model"
@@ -63,5 +72,6 @@ def forecast_guard(
         "label": label,
         "usable": code == "VALID",
         "outside_interval": outside_interval,
+        "price_mismatch": price_mismatch,
         "age_days": max((current - source).days, 0),
     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import pickle
 from pathlib import Path
 from typing import Any
@@ -14,9 +15,14 @@ from gold_forecast.model_v2 import train_model_v2
 from gold_forecast.model_v2 import _market_features
 
 
-DASHBOARD_SNAPSHOT_VERSION = "dashboard-snapshot-v2-v1-only"
+DASHBOARD_SNAPSHOT_VERSION = "dashboard-snapshot-v3-data-fingerprint"
 DASHBOARD_SNAPSHOT_PATH = Path("data/precomputed/dashboard_snapshot.pkl")
 V1_PARAMS_PATH = Path("data/precomputed/v1_params.json")
+
+
+def market_fingerprint(market: pd.DataFrame, rows: int = 30) -> str:
+    canonical = market.tail(rows).to_csv(float_format="%.8f", index=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def build_dashboard_snapshot(
@@ -45,6 +51,7 @@ def build_dashboard_snapshot(
         "market_last_price": float(market["gold"].iloc[-1]),
         "market_training_min": float(market["gold"].min()),
         "market_training_max": float(market["gold"].max()),
+        "market_fingerprint": market_fingerprint(market),
         "market_feature_last_date": (
             pd.Timestamp(complete_features.index.max()).isoformat()
             if not complete_features.empty
@@ -82,6 +89,15 @@ def dashboard_snapshot_is_current(
             return False
         if source_date != expected_date:
             return False
+    try:
+        snapshot_price = float(snapshot["market_last_price"])
+        completed_price = float(completed_market["gold"].iloc[-1])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not pd.notna(snapshot_price) or abs(snapshot_price - completed_price) > 0.01:
+        return False
+    if snapshot.get("market_fingerprint") != market_fingerprint(completed_market):
+        return False
     return True
 
 

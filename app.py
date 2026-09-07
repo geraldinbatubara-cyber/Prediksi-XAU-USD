@@ -1090,6 +1090,7 @@ def render_dashboard(
     snapshot_feature_date: object,
     technical_frames: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame] | None = None,
     technical_feed_error: str | None = None,
+    broker_quote: pd.Series | None = None,
 ) -> None:
     gold = market["gold"]
     latest = float(gold.iloc[-1])
@@ -1104,7 +1105,12 @@ def render_dashboard(
     completed_date_label = completed_date.strftime("%d %b %Y")
     has_provisional_row = live_market_date > completed_date
     fetched_label = data_fetched_at.strftime("%d %b %Y %H:%M:%S WIT")
-    v1_prediction = _optimizer_v1_latest_prediction(gold_ohlc, optimization_v1_leaderboard)
+    completed_gold_ohlc = completed_daily_frame(gold_ohlc, data_fetched_at)
+    if completed_gold_ohlc.empty:
+        completed_gold_ohlc = gold_ohlc
+    v1_prediction = _optimizer_v1_latest_prediction(
+        completed_gold_ohlc, optimization_v1_leaderboard
+    )
     v1_params = v1_prediction["params"]
 
     generated_at = pd.Timestamp(snapshot_generated_at)
@@ -1123,10 +1129,12 @@ def render_dashboard(
     signal_1 = build_signal(completed_market, model_1.forecast)
     signal_2 = build_signal(completed_market, model_2.forecast)
     guard_1 = forecast_guard(
-        snapshot_market_date, completed_date, completed_price, m1_tomorrow
+        snapshot_market_date, completed_date, completed_price, m1_tomorrow,
+        source_price=snapshot_market_price,
     )
     guard_2 = forecast_guard(
-        snapshot_feature_date, completed_date, completed_price, m2_tomorrow
+        snapshot_feature_date, completed_date, completed_price, m2_tomorrow,
+        source_price=snapshot_market_price,
     )
     snapshot_reference = (
         np.nan if snapshot_market_price is None else float(snapshot_market_price)
@@ -1194,13 +1202,27 @@ def render_dashboard(
         target_value = v1_prediction["target_price"]
         st.markdown("**Model 3 - Optimizer v1 Baseline**")
         st.metric(
-            "Prediksi strategi",
+            "Prediksi harian",
             f"${float(v1_prediction['prediction']):,.2f}",
             f"{float(v1_prediction['expected_change_pct']):+.2f}%",
         )
+        live_mt5_price = np.nan
+        if broker_quote is not None:
+            if pd.notna(broker_quote.get("mid")):
+                live_mt5_price = float(broker_quote["mid"])
+            elif pd.notna(broker_quote.get("bid")) and pd.notna(broker_quote.get("ask")):
+                live_mt5_price = (float(broker_quote["bid"]) + float(broker_quote["ask"])) / 2
+        st.metric(
+            "Harga live MT5",
+            "-" if pd.isna(live_mt5_price) else f"${live_mt5_price:,.2f}",
+            None if pd.isna(live_mt5_price) else f"{live_mt5_price - float(v1_prediction['prediction']):+,.2f} vs prediksi",
+        )
         st.metric("Target TP", "-" if pd.isna(target_value) else f"${float(target_value):,.2f}")
         st.metric("Sinyal", signal_label, str(v1_prediction["note"]))
-        st.caption("Prediksi berbasis rule baseline Optimizer v1, bukan forecast probabilistik harga.")
+        st.caption(
+            "Prediksi berbasis candle harian selesai dan tidak berubah mengikuti tick. "
+            f"Candle sumber: {_format_date(v1_prediction.get('latest_date'))}. Harga live hanya pembanding."
+        )
 
     _render_multitimeframe_technical_analysis(
         technical_frames,
@@ -10615,6 +10637,8 @@ if page == "Dashboard":
     if not isinstance(v1_leaderboard, pd.DataFrame) or v1_leaderboard.empty:
         v1_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
     technical_frames, technical_feed_error = _latest_technical_frames()
+    dashboard_broker_quote, dashboard_quote_error = _latest_broker_quote()
+    technical_feed_error = technical_feed_error or dashboard_quote_error
 
     render_dashboard(
         market,
@@ -10634,6 +10658,7 @@ if page == "Dashboard":
         ),
         technical_frames,
         technical_feed_error,
+        dashboard_broker_quote,
     )
 
 elif page == "Simulasi":

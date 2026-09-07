@@ -72,6 +72,19 @@ def test_snapshot_matches_latest_completed_candle() -> None:
     assert result["label"] == "Valid berdasarkan candle selesai"
 
 
+def test_snapshot_price_revision_invalidates_forecast() -> None:
+    result = forecast_guard(
+        "2026-09-04",
+        "2026-09-04",
+        4429.80,
+        pd.Series({"Batas bawah": 4300.0, "Batas atas": 4600.0}),
+        source_price=4477.20,
+    )
+
+    assert result["code"] == "SOURCE_PRICE_MISMATCH"
+    assert result["usable"] is False
+
+
 def test_snapshot_behind_completed_candle_is_stale() -> None:
     forecast = pd.Series({"Batas bawah": 4300.0, "Batas atas": 4550.0})
 
@@ -100,7 +113,31 @@ def test_dashboard_snapshot_requires_latest_completed_candle() -> None:
     current = {
         "market_last_date": "2026-08-11",
         "market_feature_last_date": "2026-08-11",
+        "market_last_price": 4513.50,
     }
+
+    from gold_forecast.dashboard_snapshot import market_fingerprint
+
+    current["market_fingerprint"] = market_fingerprint(market)
 
     assert dashboard_snapshot_is_current(stale, market, as_of) is False
     assert dashboard_snapshot_is_current(current, market, as_of) is True
+
+
+def test_dashboard_snapshot_rebuilds_when_same_date_price_changes() -> None:
+    from gold_forecast.dashboard_snapshot import market_fingerprint
+
+    market = pd.DataFrame(
+        {"gold": [4477.20]}, index=pd.to_datetime(["2026-09-04"])
+    )
+    snapshot = {
+        "market_last_date": "2026-09-04",
+        "market_feature_last_date": "2026-09-04",
+        "market_last_price": 4429.80,
+        "market_fingerprint": market_fingerprint(market),
+    }
+    assert dashboard_snapshot_is_current(
+        snapshot,
+        market,
+        pd.Timestamp("2026-09-07 09:00:00", tz="Asia/Jayapura"),
+    ) is False

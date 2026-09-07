@@ -128,6 +128,28 @@ def load_market_data(period: str = "10y") -> pd.DataFrame:
     return _download_market_data(period)
 
 
+def _merge_gold_revisions(cached: pd.DataFrame, latest: pd.DataFrame) -> pd.DataFrame:
+    """Merge Yahoo revisions without replacing healthy candles with partial rows."""
+    accepted = latest.copy()
+    for timestamp in cached.index.intersection(latest.index):
+        old = cached.loc[timestamp]
+        new = latest.loc[timestamp]
+        old_range = float(old["High"] - old["Low"])
+        new_range = float(new["High"] - new["Low"])
+        old_volume = float(old.get("Volume", 0) or 0)
+        new_volume = float(new.get("Volume", 0) or 0)
+        became_flat = old_range > 0 and new_range <= 1e-9
+        volume_collapsed = (
+            old_volume >= 100
+            and new_volume < 100
+            and new_volume < old_volume * 0.05
+        )
+        if became_flat or volume_collapsed:
+            accepted = accepted.drop(index=timestamp)
+    merged = pd.concat([cached, accepted]).sort_index()
+    return merged[~merged.index.duplicated(keep="last")].dropna(subset=["Close"])
+
+
 def refresh_market_cache(incremental_period: str = "14d", bootstrap_period: str = "10y") -> tuple[pd.DataFrame, pd.DataFrame]:
     """Update local CSV caches. Use a short Yahoo window when cache already exists."""
     gold_cached = _read_cached_frame(GOLD_CACHE_PATH, ["Open", "High", "Low", "Close", "Volume"])
@@ -142,11 +164,13 @@ def refresh_market_cache(incremental_period: str = "14d", bootstrap_period: str 
 
     gold_latest = _download_gold_data(period)
     market_latest = _download_market_data(period)
-    gold = pd.concat([gold_cached, gold_latest]).sort_index()
+    gold = _merge_gold_revisions(gold_cached, gold_latest)
     market = pd.concat([market_cached, market_latest]).sort_index()
 
-    gold = gold[~gold.index.duplicated(keep="last")].dropna(subset=["Close"])
     market = market[~market.index.duplicated(keep="last")].ffill(limit=3).dropna(subset=["gold"])
+    market.loc[gold.index.intersection(market.index), "gold"] = gold.loc[
+        gold.index.intersection(market.index), "Close"
+    ]
     gold = gold.loc[gold.index >= REQUIRED_CACHE_START]
     market = market.loc[market.index >= REQUIRED_CACHE_START]
     _write_cached_frame(gold, GOLD_CACHE_PATH)
