@@ -88,6 +88,26 @@ def rebase_forecast_to_live(
     return float(live_value * estimate_value / reference_value)
 
 
+def compare_locked_prediction_to_live(
+    prediction: object,
+    live_price: object,
+) -> dict[str, float]:
+    """Keep a daily prediction fixed while calculating a live comparison only."""
+    prediction_value = pd.to_numeric(prediction, errors="coerce")
+    live_value = pd.to_numeric(live_price, errors="coerce")
+    if not np.isfinite(prediction_value) or prediction_value <= 0:
+        return {"prediction": float("nan"), "live_difference": float("nan")}
+    difference = (
+        float(live_value - prediction_value)
+        if np.isfinite(live_value) and live_value > 0
+        else float("nan")
+    )
+    return {
+        "prediction": float(prediction_value),
+        "live_difference": difference,
+    }
+
+
 def forecast_guard(
     source_date: object,
     completed_date: object,

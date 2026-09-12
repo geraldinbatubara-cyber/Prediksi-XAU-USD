@@ -2,6 +2,7 @@ import pandas as pd
 
 from gold_forecast.dashboard_snapshot import dashboard_snapshot_is_current
 from gold_forecast.forecast_validity import (
+    compare_locked_prediction_to_live,
     completed_daily_frame,
     forecast_guard,
     live_quote_basis,
@@ -48,6 +49,16 @@ def test_live_quote_basis_rejects_stale_quote() -> None:
 def test_rebase_forecast_preserves_projected_return() -> None:
     rebased = rebase_forecast_to_live(4480.0, 4400.0, 4450.0)
     assert abs(rebased - 4450.0 * (4480.0 / 4400.0)) < 1e-9
+
+
+def test_model_3_daily_prediction_does_not_follow_live_quote() -> None:
+    first_quote = compare_locked_prediction_to_live(4480.0, 4450.0)
+    second_quote = compare_locked_prediction_to_live(4480.0, 4475.0)
+
+    assert first_quote["prediction"] == 4480.0
+    assert second_quote["prediction"] == 4480.0
+    assert first_quote["live_difference"] == -30.0
+    assert second_quote["live_difference"] == -5.0
 
 
 def test_weekend_session_row_is_not_treated_as_completed_candle() -> None:
