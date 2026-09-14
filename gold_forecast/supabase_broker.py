@@ -172,17 +172,27 @@ def load_supabase_broker_feed(
             "limit": "1",
         },
     )
-    bar_rows = _request_json(
-        base_url,
-        read_key,
-        "broker_m1_bars",
-        query={
-            "select": "timestamp_utc,open,high,low,close,tick_volume,spread_points,symbol,source",
-            "symbol": f"eq.{symbol}",
-            "order": "timestamp_utc.desc",
-            "limit": str(max(1, min(bars_limit, 5000))),
-        },
-    )
+    requested_bars = max(1, min(int(bars_limit), 5000))
+    bar_rows: list[dict[str, object]] = []
+    while len(bar_rows) < requested_bars:
+        page_limit = min(1000, requested_bars - len(bar_rows))
+        page = _request_json(
+            base_url,
+            read_key,
+            "broker_m1_bars",
+            query={
+                "select": "timestamp_utc,open,high,low,close,tick_volume,spread_points,symbol,source",
+                "symbol": f"eq.{symbol}",
+                "order": "timestamp_utc.desc",
+                "limit": str(page_limit),
+                "offset": str(len(bar_rows)),
+            },
+        )
+        if not isinstance(page, list) or not page:
+            break
+        bar_rows.extend(page)
+        if len(page) < page_limit:
+            break
     bars = load_broker_bars(pd.DataFrame(bar_rows or []))
     quotes = load_broker_quote(pd.DataFrame(quote_rows or []))
     return apply_broker_clock_offset(bars, quotes)

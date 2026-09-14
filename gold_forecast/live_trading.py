@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from gold_forecast.forecast_validity import completed_daily_frame
 from gold_forecast.monitoring import WIT
 from gold_forecast.paper_ledger_store import (
     load_historical_max_position_id,
@@ -341,11 +342,17 @@ def _decision_code(
     daily_data_stale: bool,
     quote_configured: bool,
     quote_fresh: bool,
+    strategy_gate_state: dict[str, object] | None = None,
 ) -> str:
     if daily_data_stale:
         return "DATA_STALE"
     if quote_configured and not quote_fresh:
         return "BROKER_QUOTE_STALE"
+    if signal is None and strategy_gate_state:
+        gate_status = str(strategy_gate_state.get("Status", "")).upper()
+        if gate_status.startswith(("BATAL", "ABSTAIN", "BLOKIR")):
+            return "FILTER_BLOCKED"
+        return "FILTER_PENDING"
     if signal is None:
         return "NO_NEW_SIGNAL" if historical_signal is not None else "NO_SIGNAL_HISTORY"
     status = str(trigger_state.get("Status trigger", ""))
@@ -373,6 +380,7 @@ def _build_decision_snapshot(
     params: dict[str, object],
     quote_state: dict[str, object],
     daily_data_stale: bool,
+    strategy_gate_state: dict[str, object] | None = None,
 ) -> dict[str, object]:
     evaluation_date = (
         pd.Timestamp(daily_data_date).normalize()
@@ -386,6 +394,13 @@ def _build_decision_snapshot(
         daily_data_stale=daily_data_stale,
         quote_configured=bool(quote_state.get("configured")),
         quote_fresh=bool(quote_state.get("fresh")),
+        strategy_gate_state=strategy_gate_state,
+    )
+    gate_status = (
+        strategy_gate_state.get("Status") if strategy_gate_state else None
+    )
+    gate_detail = (
+        strategy_gate_state.get("Detail") if strategy_gate_state else None
     )
     return {
         "evaluation_key": evaluation_date.strftime("%Y-%m-%d"),
@@ -399,8 +414,20 @@ def _build_decision_snapshot(
         "active_signal_direction": signal.get("arah") if signal else None,
         "historical_signal_date": historical_signal.get("signal_date") if historical_signal else None,
         "historical_signal_direction": historical_signal.get("arah") if historical_signal else None,
-        "trigger_status": trigger_state.get("Status trigger"),
-        "trigger_note": trigger_state.get("Catatan"),
+        "trigger_status": gate_status or trigger_state.get("Status trigger"),
+        "trigger_note": gate_detail or trigger_state.get("Catatan"),
+        "strategy_gate_status": gate_status,
+        "strategy_gate_detail": gate_detail,
+        "strategy_gate_code": (
+            strategy_gate_state.get("Kode diagnosis")
+            if strategy_gate_state
+            else None
+        ),
+        "strategy_gate_checklist": (
+            strategy_gate_state.get("Checklist", [])
+            if strategy_gate_state
+            else []
+        ),
         "market_status": waiting_state.get("Status sinyal"),
         "market_interpretation": waiting_state.get("Interpretasi"),
         "buy_gate": waiting_state.get("Checklist BUY", []),
@@ -1921,7 +1948,7 @@ def run_live_trading_update(
 ) -> dict[str, object]:
     now_wit = _now_wit(now)
     cutoff_date = now_wit.tz_localize(None).normalize()
-    usable_gold = gold_ohlc[gold_ohlc.index <= cutoff_date].copy()
+    usable_gold = completed_daily_frame(gold_ohlc, now_wit)
     ledger = load_live_ledger(path)
     params = _best_optimizer_params(optimizer_leaderboard)
     can_trade, session_note = _is_live_session_open(now_wit)
@@ -2126,6 +2153,7 @@ def run_live_trading_update(
         params,
         quote_state,
         daily_data_stale and entry_strategy != "sideways_moderate",
+        specialist_state or fixed_delay_state,
     )
     decision_persisted = save_persistent_decision_snapshot(
         strategy_id_for_path(path), decision_snapshot

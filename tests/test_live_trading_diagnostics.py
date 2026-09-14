@@ -240,6 +240,82 @@ def test_decision_code_reports_no_new_signal_instead_of_old_signal():
     assert code == "NO_NEW_SIGNAL"
 
 
+def test_specialist_waiting_state_is_reported_as_filter_pending():
+    code = live_trading._decision_code(
+        None,
+        {"signal_date": pd.Timestamp("2026-07-29"), "arah": "SELL"},
+        {"Status trigger": "Menunggu sinyal Optimizer"},
+        daily_data_stale=False,
+        quote_configured=True,
+        quote_fresh=True,
+        strategy_gate_state={
+            "Status": "MENUNGGU OPPORTUNITY",
+            "Detail": "Belum ada setup mean-reversion terbaru.",
+        },
+    )
+    assert code == "FILTER_PENDING"
+
+
+def test_decision_snapshot_uses_specialist_reason():
+    snapshot = live_trading._build_decision_snapshot(
+        "sideways_moderate_regime",
+        pd.Timestamp("2026-09-14 10:00:00", tz="Asia/Jayapura"),
+        pd.Timestamp("2026-09-11"),
+        None,
+        None,
+        {"Status sinyal": "Belum ada sinyal valid", "Interpretasi": "-"},
+        {
+            "Status trigger": "Menunggu sinyal Optimizer",
+            "Catatan": "Strategi menunggu candle harian.",
+        },
+        _params(),
+        {"configured": True, "fresh": True},
+        False,
+        {
+            "Status": "MENUNGGU OPPORTUNITY",
+            "Detail": "Belum ada setup mean-reversion terbaru.",
+            "Checklist": [],
+        },
+    )
+    assert snapshot["decision_code"] == "FILTER_PENDING"
+    assert snapshot["trigger_status"] == "MENUNGGU OPPORTUNITY"
+    assert snapshot["trigger_note"] == "Belum ada setup mean-reversion terbaru."
+
+
+def test_live_update_excludes_current_and_weekend_daily_rows(monkeypatch, tmp_path):
+    index = pd.to_datetime(["2026-09-11", "2026-09-13", "2026-09-14"])
+    gold = pd.DataFrame(
+        {
+            "Open": [4390.0, 4400.0, 4410.0],
+            "High": [4400.0, 4410.0, 4420.0],
+            "Low": [4380.0, 4390.0, 4400.0],
+            "Close": [4395.0, 4405.0, 4415.0],
+        },
+        index=index,
+    )
+    observed = {}
+
+    def capture_signal(frame, *args, **kwargs):
+        observed["last_daily_row"] = frame.index.max()
+        return None
+
+    monkeypatch.setattr(live_trading, "load_live_ledger", lambda path: live_trading._empty_ledger())
+    monkeypatch.setattr(live_trading, "save_live_ledger", lambda frame, path: None)
+    monkeypatch.setattr(live_trading, "save_persistent_decision_snapshot", lambda *args: True)
+    monkeypatch.setattr(live_trading, "load_historical_max_position_id", lambda *args: 0)
+    monkeypatch.setattr(live_trading, "_current_optimizer_signal", capture_signal)
+
+    result = live_trading.run_live_trading_update(
+        gold,
+        pd.DataFrame(),
+        now=pd.Timestamp("2026-09-14 12:00:00", tz="Asia/Jayapura"),
+        path=tmp_path / "live_trading_optimizer.csv",
+    )
+
+    assert observed["last_daily_row"] == pd.Timestamp("2026-09-11")
+    assert result["summary"]["Daily data date"] == pd.Timestamp("2026-09-11")
+
+
 def test_stale_daily_data_has_priority_in_decision_code():
     code = live_trading._decision_code(
         None,
