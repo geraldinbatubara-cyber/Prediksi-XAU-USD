@@ -41,6 +41,7 @@ from gold_forecast.forecast_validity import (
     rebase_forecast_to_live,
 )
 from gold_forecast.intraday_audit import audit_intraday_data, load_intraday_csv
+from gold_forecast.h1_forecast import build_h1_forecast
 from gold_forecast import live_trading as live_trading_module
 from gold_forecast.live_trading import (
     LIVE_BUY_SPECIALIST_V4_START,
@@ -1161,6 +1162,12 @@ def render_dashboard(
         v1_prediction["prediction"], live_mt5_price
     )
     v1_daily_prediction = float(v1_daily_comparison["prediction"])
+    h1_source = (
+        technical_frames[1]
+        if technical_frames is not None and len(technical_frames) >= 2
+        else pd.DataFrame()
+    )
+    h1_forecast = build_h1_forecast(h1_source, now=data_fetched_at)
 
     if not guard_1["usable"] or not guard_2["usable"]:
         st.error(
@@ -1183,11 +1190,11 @@ def render_dashboard(
         quote_time = pd.Timestamp(quote_basis["timestamp"]).tz_convert(WIT).strftime("%d %b %Y %H:%M:%S WIT")
         st.caption(
             f"Prediksi live Model 1/2 memakai basis MT5 ${live_mt5_price:,.2f} pada {quote_time}. "
-            "Prediksi Model 3 tetap dikunci pada candle D1 selesai; sinyal resmi paper trading tidak berubah."
+            "Model 3 dikunci pada D1 selesai dan Model 4 pada H1 selesai; keduanya tidak mengikuti tick live."
         )
     else:
         st.warning("Quote MT5 belum valid atau lebih lama dari 5 menit. Prediksi sementara memakai basis candle selesai.")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown("**Model 1 - Harga Historis**")
         st.metric("Prediksi live T+1", f"${m1_live_tomorrow:,.2f}", f"{m1_live_tomorrow - forecast_basis:+,.2f}")
@@ -1254,6 +1261,41 @@ def render_dashboard(
             f"Harga referensi terkunci: ${float(v1_prediction['latest_close']):,.2f}. "
             "Prediksi dan TP baru berubah setelah tersedia candle D1 selesai berikutnya; harga live hanya pembanding."
         )
+    with col4:
+        st.markdown("**Model 4 - Prediksi Intraday H1**")
+        if h1_forecast["valid"]:
+            h1_result = h1_forecast["forecasts"][1]
+            h6_result = h1_forecast["forecasts"][6]
+            st.metric(
+                "Estimasi H+1",
+                f"${float(h1_result['prediction']):,.2f}",
+                f"{float(h1_result['predicted_return']) * 100:+.3f}%",
+            )
+            st.metric(
+                "Estimasi H+6",
+                f"${float(h6_result['prediction']):,.2f}",
+                f"{float(h6_result['predicted_return']) * 100:+.3f}%",
+            )
+            st.metric(
+                "Arah H+1",
+                str(h1_forecast["signal"]),
+                f"Confidence {float(h1_forecast['confidence']):.1f}%",
+            )
+            source_time = pd.Timestamp(h1_forecast["source_time"]).tz_convert(WIT)
+            st.caption(
+                f"Candle sumber: {source_time.strftime('%d %b %Y %H:%M WIT')} | "
+                f"Referensi: ${float(h1_forecast['source_close']):,.2f} | "
+                f"Interval 80% H+1: ${float(h1_result['lower']):,.2f}–${float(h1_result['upper']):,.2f} | "
+                f"Status: {h1_forecast['status']}. Shadow forecast, bukan pemicu order."
+            )
+        else:
+            st.metric("Estimasi H+1", "-", "Data belum cukup")
+            st.metric("Estimasi H+6", "-")
+            st.metric("Arah H+1", "TIDAK VALID", str(h1_forecast.get("reason", "-")))
+            st.caption(
+                f"Candle H1 selesai tersedia: {int(h1_forecast['bars'])}. "
+                "Model tidak membuat angka prediksi sebelum data minimum terpenuhi."
+            )
 
     _render_multitimeframe_technical_analysis(
         technical_frames,
@@ -1310,6 +1352,42 @@ def render_dashboard(
                 "Confidence / Expected": f"{float(v1_prediction['expected_change_pct']):+.2f}%",
                 "MAE T+1": pd.NA,
                 "Akurasi arah T+1": pd.NA,
+            },
+            {
+                "Model": "Model 4 - Prediksi Intraday H1",
+                "Output utama": (
+                    f"${float(h1_forecast['forecasts'][1]['prediction']):,.2f}"
+                    if h1_forecast["valid"]
+                    else "-"
+                ),
+                "Arah / Sinyal": h1_forecast["signal"],
+                "Status kalibrasi": h1_forecast["status"],
+                "Data model": (
+                    _format_utc_timestamp_wit(h1_forecast["source_time"])
+                    if pd.notna(h1_forecast["source_time"])
+                    else "-"
+                ),
+                "Perubahan vs basis live": (
+                    float(h1_forecast["forecasts"][1]["prediction"])
+                    - float(h1_forecast["source_close"])
+                    if h1_forecast["valid"]
+                    else pd.NA
+                ),
+                "Confidence / Expected": (
+                    f"{float(h1_forecast['confidence']):.1f}%"
+                    if h1_forecast["valid"]
+                    else "-"
+                ),
+                "MAE T+1": (
+                    h1_forecast["forecasts"][1]["mae_price"]
+                    if h1_forecast["valid"]
+                    else pd.NA
+                ),
+                "Akurasi arah T+1": (
+                    h1_forecast["forecasts"][1]["directional_accuracy"]
+                    if h1_forecast["valid"]
+                    else pd.NA
+                ),
             },
         ]
     )
