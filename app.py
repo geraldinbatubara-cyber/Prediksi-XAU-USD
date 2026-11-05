@@ -7847,45 +7847,8 @@ def render_simulation(
         "Jika TP dan SL tersentuh dalam candle yang sama, SL dianggap lebih dulu."
     )
 
-    (
-        optimizer_tab,
-        model_comparison_tab,
-        optimizer_v1_oos_tab,
-        exact_v1_tab,
-        robustness_v1_tab,
-        risk_control_v1_tab,
-        signal_quality_v1_tab,
-        balanced_robustness_v1_tab,
-        sideways_defense_v1_tab,
-        regime_classifier_v1_tab,
-        entry_outcome_v1_tab,
-        entry_quality_v1_tab,
-        entry_quality_path_v1_tab,
-        entry_timing_v1_tab,
-        fixed_delay_v1_tab,
-        unified_benchmark_v1_tab,
-        fixed_delay_quality_v1_tab,
-        trend_strength_stability_v1_tab,
-        trend_regime_fusion_v1_tab,
-        regime_classifier_v3_tab,
-        directional_specialization_v4_tab,
-        buy_continuation_v41_tab,
-        sell_specialist_v5_tab,
-        sell_specialist_v6_tab,
-        sell_specialist_v7_tab,
-        sideways_specialist_v1_tab,
-        sideways_specialist_v2_tab,
-        sideways_specialist_v3_tab,
-        sideways_specialist_v4_tab,
-        sideways_specialist_v5_tab,
-        sideways_specialist_v5b_tab,
-        sideways_specialist_v5c_tab,
-        sideways_specialist_v5d_tab,
-        sideways_specialist_v6_tab,
-        sideways_specialist_v7_tab,
-        sideways_specialist_v8_tab,
-        sideways_specialist_v9_tab,
-    ) = st.tabs(
+    selected_experiment = st.selectbox(
+        "Pilih eksperimen",
         [
             "Optimizer v1",
             "Komparasi Model Mesin",
@@ -7924,146 +7887,147 @@ def render_simulation(
             "v1 Sideways Specialist v7",
             "v1 Sideways Specialist v8",
             "v1 Sideways Specialist v9",
-        ]
+        ],
+        key="simulation_experiment",
     )
-    with optimizer_tab:
+    if selected_experiment == "Optimizer v1":
         _render_multiphase_result("Optimizer v1", optimized_result, optimization_leaderboard, gold_ohlc)
-    with model_comparison_tab:
+    elif selected_experiment == "Komparasi Model Mesin":
         _render_model_comparison_tab(
             load_precomputed_model_comparison(MODEL_COMPARISON_VERSION)
         )
-    oos_payload = load_precomputed_optimizer_oos(OPTIMIZER_OOS_VERSION)
-    with optimizer_v1_oos_tab:
+    elif selected_experiment == "Optimizer v1 OOS":
+        oos_payload = load_precomputed_optimizer_oos(OPTIMIZER_OOS_VERSION)
         _render_optimizer_oos_tab(oos_payload, key="v1", title="Optimizer v1 OOS")
-    exact_payload = load_precomputed_exact_broker_oos(EXACT_BROKER_OOS_VERSION)
-    with exact_v1_tab:
+    elif selected_experiment == "Optimizer v1 Exact Broker-Aware OOS":
+        exact_payload = load_precomputed_exact_broker_oos(EXACT_BROKER_OOS_VERSION)
         _render_exact_broker_oos_tab(exact_payload, key="v1", title="Optimizer v1 Exact Broker-Aware OOS")
-    with robustness_v1_tab:
+    elif selected_experiment == "Optimizer v1 Robustness Test":
         _render_v1_robustness_tab(load_precomputed_v1_robustness(V1_ROBUSTNESS_VERSION))
-    with risk_control_v1_tab:
+    elif selected_experiment == "v1 Risk-Control Lab":
         _render_v1_risk_control_tab(load_precomputed_v1_risk_control(V1_RISK_CONTROL_VERSION))
-    with signal_quality_v1_tab:
+    elif selected_experiment == "v1 Balanced Entry":
         _render_v1_signal_quality_tab(load_precomputed_v1_signal_quality(V1_SIGNAL_QUALITY_VERSION))
-    with balanced_robustness_v1_tab:
+    elif selected_experiment == "v1 Balanced Robustness":
         _render_v1_balanced_robustness_tab(
             load_precomputed_v1_balanced_robustness(V1_BALANCED_ROBUSTNESS_VERSION)
         )
-    with sideways_defense_v1_tab:
+    elif selected_experiment == "v1 Sideways Defense":
         _render_v1_sideways_defense_tab(
             load_precomputed_v1_sideways_defense(V1_SIDEWAYS_DEFENSE_VERSION)
         )
-    with regime_classifier_v1_tab:
+    elif selected_experiment == "v1 Regime Classifier v2":
         _render_v1_regime_classifier_tab(
             load_precomputed_v1_regime_classifier(V1_REGIME_CLASSIFIER_VERSION)
         )
-    with entry_outcome_v1_tab:
+    elif selected_experiment == "v1 Entry Outcome Lab":
         _render_v1_entry_outcome_tab(
             load_precomputed_v1_entry_outcome(V1_ENTRY_OUTCOME_VERSION)
         )
-    with entry_quality_v1_tab:
+    elif selected_experiment == "v1 Entry Quality Lab v2":
         _render_v1_entry_quality_tab(
             load_precomputed_v1_entry_quality(V1_ENTRY_QUALITY_VERSION)
         )
-    with entry_quality_path_v1_tab:
+    elif selected_experiment == "v1 Entry Quality Path-Aware v3":
         _render_v1_entry_quality_path_tab(
             load_precomputed_v1_entry_quality_path(V1_ENTRY_QUALITY_PATH_VERSION)
         )
-    with entry_timing_v1_tab:
+    elif selected_experiment == "v1 Entry Timing Lab v1":
         _render_v1_entry_timing_tab(
             load_precomputed_v1_entry_timing(V1_ENTRY_TIMING_VERSION)
         )
-    with fixed_delay_v1_tab:
+    elif selected_experiment == "v1 Fixed Delay 5m Robustness":
         _render_v1_fixed_delay_tab(
             load_precomputed_v1_fixed_delay(V1_FIXED_DELAY_VERSION)
         )
-    with unified_benchmark_v1_tab:
+    elif selected_experiment == "v1 Unified Strategy Benchmark":
         _render_v1_unified_benchmark_tab(
             load_precomputed_v1_unified_benchmark(V1_UNIFIED_BENCHMARK_VERSION)
         )
-    with fixed_delay_quality_v1_tab:
+    elif selected_experiment == "v1 Fixed Delay Quality Guard":
         _render_v1_fixed_delay_quality_tab(
             load_precomputed_v1_fixed_delay_quality(V1_FIXED_DELAY_QUALITY_VERSION)
         )
-    with trend_strength_stability_v1_tab:
+    elif selected_experiment == "v1 Trend Strength Stability":
         _render_v1_trend_strength_stability_tab(
             load_precomputed_v1_trend_strength_stability(
                 V1_TREND_STRENGTH_STABILITY_VERSION
             )
         )
-    with trend_regime_fusion_v1_tab:
+    elif selected_experiment == "v1 Trend-Regime Fusion":
         _render_v1_trend_regime_fusion_tab(
             load_precomputed_v1_trend_regime_fusion(
                 V1_TREND_REGIME_FUSION_VERSION
             )
         )
-    with regime_classifier_v3_tab:
+    elif selected_experiment == "v1 Regime Classifier v3":
         _render_v1_regime_classifier_v3_tab(
             load_precomputed_v1_regime_classifier_v3(
                 V1_REGIME_CLASSIFIER_V3_VERSION
             )
         )
-    with directional_specialization_v4_tab:
+    elif selected_experiment == "v1 Directional Specialization v4":
         _render_v1_directional_specialization_tab(
             load_precomputed_v1_directional_specialization(
                 V1_DIRECTIONAL_SPECIALIZATION_VERSION
             )
         )
-    with buy_continuation_v41_tab:
+    elif selected_experiment == "BUY Specialist v4.1 Continuation":
         _render_v1_buy_continuation_tab(
             load_precomputed_v1_buy_continuation(
                 V1_BUY_CONTINUATION_VERSION
             )
         )
-    with sell_specialist_v5_tab:
+    elif selected_experiment == "v1 SELL Specialist v5":
         _render_v1_sell_specialist_tab(
             load_precomputed_v1_sell_specialist(V1_SELL_SPECIALIST_VERSION)
         )
-    with sell_specialist_v6_tab:
+    elif selected_experiment == "v1 SELL Specialist v6":
         _render_v1_sell_specialist_v6_tab(
             load_precomputed_v1_sell_specialist_v6(
                 V1_SELL_SPECIALIST_V6_VERSION
             )
         )
-    with sell_specialist_v7_tab:
+    elif selected_experiment == "v1 SELL Specialist v7":
         _render_v1_sell_specialist_v7_tab(
             load_precomputed_v1_sell_specialist_v7(
                 V1_SELL_SPECIALIST_V7_VERSION
             )
         )
-    with sideways_specialist_v1_tab:
+    elif selected_experiment == "v1 Sideways Specialist v1":
         _render_v1_sideways_specialist_tab(
             load_precomputed_v1_sideways_specialist(
                 V1_SIDEWAYS_SPECIALIST_VERSION
             )
         )
-    with sideways_specialist_v2_tab:
+    elif selected_experiment == "v1 Sideways Specialist v2":
         _render_v1_sideways_specialist_v2_tab(
             load_precomputed_v1_sideways_specialist_v2(
                 V1_SIDEWAYS_SPECIALIST_V2_VERSION
             )
         )
-    with sideways_specialist_v3_tab:
+    elif selected_experiment == "v1 Sideways Specialist v3":
         _render_v1_sideways_specialist_v3_tab(
             load_precomputed_v1_sideways_specialist_v3(
                 V1_SIDEWAYS_SPECIALIST_V3_VERSION
             )
         )
-    with sideways_specialist_v4_tab:
+    elif selected_experiment == "v1 Sideways Specialist v4":
         _render_v1_sideways_specialist_v4_tab(
             load_precomputed_v1_sideways_specialist_v4(
                 V1_SIDEWAYS_SPECIALIST_V4_VERSION
             )
         )
-    with sideways_specialist_v5_tab:
+    elif selected_experiment == "v1 Sideways Specialist v5A":
         _render_v1_sideways_specialist_v5_tab(
             load_precomputed_v1_sideways_specialist_v5(
                 V1_SIDEWAYS_SPECIALIST_V5_VERSION
             )
         )
-    v5_extensions = load_precomputed_v1_sideways_specialist_v5_extensions(
-        V1_SIDEWAYS_SPECIALIST_V5_EXTENSIONS_VERSION
-    )
-    with sideways_specialist_v5b_tab:
+    elif selected_experiment == "v1 Sideways Specialist v5B":
+        v5_extensions = load_precomputed_v1_sideways_specialist_v5_extensions(
+            V1_SIDEWAYS_SPECIALIST_V5_EXTENSIONS_VERSION
+        )
         _render_v1_sideways_v5_extension_tab(
             None if v5_extensions is None else v5_extensions["v5b"],
             title="v1 Sideways Specialist Lab v5B - Exit Timing Isolation",
@@ -8074,7 +8038,10 @@ def render_simulation(
                 "Trailing 2R tidak pernah aktif karena TP tercapai lebih dahulu."
             ),
         )
-    with sideways_specialist_v5c_tab:
+    elif selected_experiment == "v1 Sideways Specialist v5C":
+        v5_extensions = load_precomputed_v1_sideways_specialist_v5_extensions(
+            V1_SIDEWAYS_SPECIALIST_V5_EXTENSIONS_VERSION
+        )
         _render_v1_sideways_v5_extension_tab(
             None if v5_extensions is None else v5_extensions["v5c"],
             title="v1 Sideways Specialist Lab v5C - Feasible Trailing",
@@ -8084,7 +8051,10 @@ def render_simulation(
                 "tetap negatif pada 2026H1, sehingga belum layak dipromosikan."
             ),
         )
-    with sideways_specialist_v5d_tab:
+    elif selected_experiment == "v1 Sideways Specialist v5D":
+        v5_extensions = load_precomputed_v1_sideways_specialist_v5_extensions(
+            V1_SIDEWAYS_SPECIALIST_V5_EXTENSIONS_VERSION
+        )
         _render_v1_sideways_v5_extension_tab(
             None if v5_extensions is None else v5_extensions["v5d"],
             title="v1 Sideways Specialist Lab v5D - Hazard Severity",
@@ -8094,25 +8064,25 @@ def render_simulation(
                 "control. Hazard severity belum stabil sebagai aturan exit."
             ),
         )
-    with sideways_specialist_v6_tab:
+    elif selected_experiment == "v1 Sideways Specialist v6":
         _render_v1_sideways_specialist_v6_tab(
             load_precomputed_v1_sideways_specialist_v6(
                 V1_SIDEWAYS_SPECIALIST_V6_VERSION
             )
         )
-    with sideways_specialist_v7_tab:
+    elif selected_experiment == "v1 Sideways Specialist v7":
         _render_v1_sideways_specialist_v7_tab(
             load_precomputed_v1_sideways_specialist_v7(
                 V1_SIDEWAYS_SPECIALIST_V7_VERSION
             )
         )
-    with sideways_specialist_v8_tab:
+    elif selected_experiment == "v1 Sideways Specialist v8":
         _render_v1_sideways_specialist_v8_tab(
             load_precomputed_v1_sideways_specialist_v8(
                 V1_SIDEWAYS_SPECIALIST_V8_VERSION
             )
         )
-    with sideways_specialist_v9_tab:
+    elif selected_experiment == "v1 Sideways Specialist v9":
         _render_v1_sideways_specialist_v9_tab(
             load_precomputed_v1_sideways_specialist_v9(
                 V1_SIDEWAYS_SPECIALIST_V9_VERSION
@@ -10622,26 +10592,34 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
 
 with st.sidebar:
     st.header("Pengaturan")
-    auto_refresh = st.checkbox("Auto refresh dashboard", value=True)
-    refresh_interval_seconds = st.selectbox(
-        "Interval auto refresh",
-        options=[60, 300, 900],
-        index=1,
-        format_func=lambda value: f"{value // 60} menit" if value >= 60 else f"{value} detik",
-        disabled=not auto_refresh,
+    page = st.radio(
+        "Halaman",
+        ["Dashboard", "Simulasi", "Live Trading", "Data Broker", "Audit Intraday"],
+        index=0,
     )
-    if auto_refresh:
-        if st_autorefresh is None:
-            st.warning("Auto refresh belum aktif karena dependency belum tersedia.")
-        else:
-            refresh_count = st_autorefresh(
-                interval=refresh_interval_seconds * 1000,
-                key="dashboard_auto_refresh",
-            )
-            st.caption(
-                f"Auto refresh aktif tiap {refresh_interval_seconds // 60} menit. "
-                f"Refresh ke-{refresh_count} | {pd.Timestamp.now(tz=WIT).strftime('%H:%M:%S WIT')}"
-            )
+    if page == "Simulasi":
+        st.caption("Auto refresh dinonaktifkan di halaman Simulasi.")
+    else:
+        auto_refresh = st.checkbox("Auto refresh dashboard", value=True)
+        refresh_interval_seconds = st.selectbox(
+            "Interval auto refresh",
+            options=[60, 300, 900],
+            index=1,
+            format_func=lambda value: f"{value // 60} menit" if value >= 60 else f"{value} detik",
+            disabled=not auto_refresh,
+        )
+        if auto_refresh:
+            if st_autorefresh is None:
+                st.warning("Auto refresh belum aktif karena dependency belum tersedia.")
+            else:
+                refresh_count = st_autorefresh(
+                    interval=refresh_interval_seconds * 1000,
+                    key="dashboard_auto_refresh",
+                )
+                st.caption(
+                    f"Auto refresh aktif tiap {refresh_interval_seconds // 60} menit. "
+                    f"Refresh ke-{refresh_count} | {pd.Timestamp.now(tz=WIT).strftime('%H:%M:%S WIT')}"
+                )
     refresh_notice = st.session_state.pop("data_refresh_notice", None)
     if refresh_notice:
         notice_type, notice_text = refresh_notice
@@ -10677,11 +10655,6 @@ with st.sidebar:
             "Feed MT5 dimuat ulang dari Supabase. Tombol ini tidak menyalakan terminal atau bridge di laptop.",
         )
         st.rerun()
-    page = st.radio(
-        "Halaman",
-        ["Dashboard", "Simulasi", "Live Trading", "Data Broker", "Audit Intraday"],
-        index=0,
-    )
     if page == "Dashboard":
         direction_threshold = st.select_slider(
             "Threshold sinyal arah",
