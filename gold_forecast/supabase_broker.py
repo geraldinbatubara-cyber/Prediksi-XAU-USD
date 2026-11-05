@@ -162,16 +162,7 @@ def load_supabase_broker_feed(
     symbol: str = "XAUUSD",
     bars_limit: int = 3000,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    quote_rows = _request_json(
-        base_url,
-        read_key,
-        "broker_latest_quote",
-        query={
-            "select": "timestamp_utc,bid,ask,symbol,source,updated_at",
-            "symbol": f"eq.{symbol}",
-            "limit": "1",
-        },
-    )
+    quotes = load_supabase_broker_quote(base_url, read_key, symbol=symbol)
     requested_bars = max(1, min(int(bars_limit), 5000))
     bar_rows: list[dict[str, object]] = []
     while len(bar_rows) < requested_bars:
@@ -194,8 +185,25 @@ def load_supabase_broker_feed(
         if len(page) < page_limit:
             break
     bars = load_broker_bars(pd.DataFrame(bar_rows or []))
-    quotes = load_broker_quote(pd.DataFrame(quote_rows or []))
     return apply_broker_clock_offset(bars, quotes)
+
+
+def load_supabase_broker_quote(
+    base_url: str,
+    read_key: str,
+    symbol: str = "XAUUSD",
+) -> pd.DataFrame:
+    quote_rows = _request_json(
+        base_url,
+        read_key,
+        "broker_latest_quote",
+        query={
+            "select": "timestamp_utc,bid,ask,symbol,source,updated_at",
+            "symbol": f"eq.{symbol}",
+            "limit": "1",
+        },
+    )
+    return load_broker_quote(pd.DataFrame(quote_rows or []))
 
 
 def load_supabase_higher_timeframes(

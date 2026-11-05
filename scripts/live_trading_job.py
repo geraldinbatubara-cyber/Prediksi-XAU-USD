@@ -150,6 +150,11 @@ def _broker_snapshot(
     read_key: str,
     symbol: str,
 ) -> tuple[pd.DataFrame, pd.Series | None]:
+    local_bars = load_broker_bars(BROKER_BARS_PATH)
+    local_quotes = load_broker_quote(BROKER_QUOTE_PATH)
+    if not local_bars.empty and not local_quotes.empty:
+        return local_bars, local_quotes.iloc[-1]
+
     try:
         bars, quotes = load_supabase_broker_feed(
             base_url,
@@ -162,9 +167,7 @@ def _broker_snapshot(
     except Exception as exc:
         print(f"WARNING: Feed broker Supabase gagal dimuat: {exc}", flush=True)
 
-    bars = load_broker_bars(BROKER_BARS_PATH)
-    quotes = load_broker_quote(BROKER_QUOTE_PATH)
-    return bars, (quotes.iloc[-1] if not quotes.empty else None)
+    return local_bars, (local_quotes.iloc[-1] if not local_quotes.empty else None)
 
 
 def run_cycle(

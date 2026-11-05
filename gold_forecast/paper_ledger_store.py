@@ -55,11 +55,12 @@ def configure_paper_ledger_store(
             "write_key": str(write_key or "").strip(),
         }
     )
-    _STATUS["mode"] = (
-        "Supabase persistent"
-        if _CONFIG["base_url"] and _CONFIG["read_key"] and _CONFIG["write_key"]
-        else "CSV fallback"
-    )
+    if _CONFIG["base_url"] and _CONFIG["read_key"] and _CONFIG["write_key"]:
+        _STATUS["mode"] = "Supabase persistent"
+    elif _CONFIG["base_url"] and _CONFIG["read_key"]:
+        _STATUS["mode"] = "Supabase read-only"
+    else:
+        _STATUS["mode"] = "CSV fallback"
 
 
 def paper_ledger_store_status() -> dict[str, str]:

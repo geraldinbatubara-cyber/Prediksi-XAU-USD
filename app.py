@@ -28,10 +28,8 @@ from gold_forecast.broker_data import (
 from gold_forecast.data import load_gold_data, load_market_data, refresh_market_cache
 from gold_forecast.dashboard_snapshot import (
     DASHBOARD_SNAPSHOT_VERSION,
-    build_dashboard_snapshot,
     dashboard_snapshot_is_current,
     load_dashboard_snapshot,
-    save_dashboard_snapshot,
 )
 from gold_forecast.forecast_validity import (
     compare_locked_prediction_to_live,
@@ -84,6 +82,7 @@ from gold_forecast.signals import build_signal
 from gold_forecast import strategy_optimizer as strategy_optimizer_module
 from gold_forecast.supabase_broker import (
     load_supabase_broker_feed,
+    load_supabase_broker_quote,
     load_supabase_higher_timeframes,
 )
 from gold_forecast.technical_analysis import build_multitimeframe_analysis
@@ -10247,6 +10246,11 @@ def get_supabase_broker_feed(base_url: str, read_key: str, symbol: str) -> tuple
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def get_supabase_broker_quote(base_url: str, read_key: str, symbol: str) -> pd.DataFrame:
+    return load_supabase_broker_quote(base_url, read_key, symbol=symbol)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def get_supabase_terminal_status(base_url: str, read_key: str, symbol: str) -> dict[str, object]:
     return load_supabase_terminal_status(base_url, read_key, symbol=symbol)
 
@@ -10291,8 +10295,20 @@ def _latest_broker_snapshot() -> tuple[pd.DataFrame, pd.Series | None, str | Non
 
 
 def _latest_broker_quote() -> tuple[pd.Series | None, str | None]:
-    _, quote, error = _latest_broker_snapshot()
-    return quote, error
+    supabase_url, supabase_read_key, supabase_symbol = _supabase_broker_config()
+    if supabase_url and supabase_read_key:
+        try:
+            quotes = get_supabase_broker_quote(
+                supabase_url,
+                supabase_read_key,
+                supabase_symbol,
+            )
+            return (quotes.iloc[-1] if not quotes.empty else None), None
+        except Exception as exc:
+            fallback = load_broker_quote(BROKER_QUOTE_PATH)
+            return (fallback.iloc[-1] if not fallback.empty else None), str(exc)
+    quotes = load_broker_quote(BROKER_QUOTE_PATH)
+    return (quotes.iloc[-1] if not quotes.empty else None), None
 
 
 def _latest_technical_frames() -> tuple[
@@ -10709,40 +10725,13 @@ if page == "Ringkasan":
         )
         st.stop()
 
-    snapshot_refreshed = False
-    snapshot_refresh_error = None
     if not dashboard_snapshot_is_current(
         dashboard_snapshot, market, data_fetched_at
     ):
-        try:
-            stored_leaderboard = dashboard_snapshot.get("v1_leaderboard")
-            if not isinstance(stored_leaderboard, pd.DataFrame) or stored_leaderboard.empty:
-                stored_leaderboard = get_v1_leaderboard_for_live(
-                    SIMULATION_CACHE_VERSION
-                )
-            with st.spinner("Menyelaraskan Model 1/2 dengan candle harian selesai terbaru..."):
-                dashboard_snapshot = build_dashboard_snapshot(
-                    market,
-                    stored_leaderboard,
-                    generated_at=data_fetched_at,
-                )
-            snapshot_refreshed = True
-            try:
-                save_dashboard_snapshot(dashboard_snapshot)
-                get_dashboard_snapshot.clear()
-            except OSError:
-                pass
-        except Exception as exc:
-            snapshot_refresh_error = str(exc)
-
-    if snapshot_refreshed:
-        st.success(
-            "Snapshot Model 1/2 diperbarui otomatis sesuai candle harian selesai terbaru."
-        )
-    elif snapshot_refresh_error:
         st.warning(
-            "Candle harian baru sudah tersedia, tetapi pembaruan Model 1/2 belum selesai. "
-            f"Forecast lama tetap hanya untuk audit. Detail: {snapshot_refresh_error}"
+            "Snapshot Model 1/2 belum mengikuti candle harian selesai terbaru. "
+            "Forecast lama ditampilkan untuk audit sampai workflow market-cache selesai; "
+            "dashboard tidak melatih model agar CPU Streamlit tetap ringan."
         )
 
     model_1 = dashboard_snapshot["model_1"]
@@ -10786,12 +10775,9 @@ elif page == "Riset & Backtest":
     if simulation_payload is None:
         st.warning(
             "Hasil simulasi precomputed untuk versi terbaru belum tersedia. "
-            "Aplikasi sengaja tidak menghitung optimizer saat startup agar dashboard bisa dibuka lebih cepat."
+            "Jalankan builder dari lingkungan pengembangan dan commit artefaknya; "
+            "dashboard tidak menghitung optimizer agar CPU Streamlit tetap ringan."
         )
-        if st.button("Bangun ulang simulasi v1", use_container_width=True):
-            with st.spinner("Menghitung simulasi lengkap. Proses ini bisa memakan waktu di Streamlit Cloud."):
-                simulation_payload = get_simulations(SIMULATION_CACHE_VERSION)
-            st.rerun()
     else:
         st.info(
             "Hasil simulasi precomputed tersedia. Untuk menjaga aplikasi ringan saat dibuka, "
@@ -10813,9 +10799,9 @@ elif page == "Paper Trading":
         paper_write_key,
     )
     paper_store = paper_ledger_store_status()
-    if paper_store["mode"] == "Supabase persistent":
+    if paper_store["mode"] in {"Supabase persistent", "Supabase read-only"}:
         st.success(
-            "Ledger Paper Trading tersimpan persisten di Supabase dan tidak akan di-reset oleh redeploy."
+            "Ledger Paper Trading dibaca dari Supabase dan diperbarui oleh worker Windows."
         )
     else:
         detail = (
@@ -10824,9 +10810,8 @@ elif page == "Paper Trading":
             else ""
         )
         st.error(
-            "Ledger paper trading masih memakai CSV fallback. Tambahkan "
-            "`service_role_key` ke `[supabase_broker]` pada Streamlit Secrets "
-            "setelah menjalankan `supabase/paper_trading.sql` agar observasi "
+            "Ledger paper trading masih memakai CSV fallback. Tambahkan publishable key "
+            "read-only ke `[supabase_broker]` pada Streamlit Secrets agar observasi "
             f"tidak hilang saat redeploy.{detail}"
         )
 
