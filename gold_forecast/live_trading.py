@@ -166,6 +166,27 @@ def load_live_ledger(path: Path = LIVE_TRADING_PATH) -> pd.DataFrame:
     return normalized
 
 
+def read_live_ledger(path: Path = LIVE_TRADING_PATH) -> pd.DataFrame:
+    strategy_id = strategy_id_for_path(path)
+    local = pd.read_csv(path) if path.exists() else _empty_ledger()
+    persistent = load_persistent_positions(strategy_id)
+    recovery = load_recovery_positions(strategy_id)
+    frame = merge_ledger_frames(
+        persistent,
+        local,
+        recovery,
+        "position_id",
+    )
+    if frame.empty:
+        return _empty_ledger()
+    for column in LIVE_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = np.nan
+    for column in LIVE_TEXT_COLUMNS:
+        frame[column] = frame[column].fillna("").astype(str)
+    return frame[LIVE_COLUMNS]
+
+
 def save_live_ledger(frame: pd.DataFrame, path: Path = LIVE_TRADING_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(path, index=False)

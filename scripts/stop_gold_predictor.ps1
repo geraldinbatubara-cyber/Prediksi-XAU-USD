@@ -3,6 +3,7 @@
 $ErrorActionPreference = "Stop"
 $configDirectory = Join-Path $env:LOCALAPPDATA "GoldPredictor"
 $pidPath = Join-Path $configDirectory "bridge.pid"
+$paperWorkerPidPath = Join-Path $configDirectory "paper-worker.pid"
 $notificationPidPath = Join-Path $configDirectory "notification.pid"
 $shell = New-Object -ComObject WScript.Shell
 
@@ -18,6 +19,18 @@ try {
             $stopped += "bridge MT5"
         }
         Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+    }
+
+    if (Test-Path -LiteralPath $paperWorkerPidPath) {
+        $savedWorkerPid = Get-Content -LiteralPath $paperWorkerPidPath -ErrorAction Stop
+        $workerInfo = if ($savedWorkerPid) {
+            Get-CimInstance Win32_Process -Filter "ProcessId = $savedWorkerPid" -ErrorAction SilentlyContinue
+        }
+        if ($workerInfo -and $workerInfo.CommandLine -like "*live_trading_job.py*") {
+            Stop-Process -Id $savedWorkerPid -ErrorAction Stop
+            $stopped += "worker Paper Trading"
+        }
+        Remove-Item -LiteralPath $paperWorkerPidPath -Force -ErrorAction SilentlyContinue
     }
 
     if (Test-Path -LiteralPath $notificationPidPath) {

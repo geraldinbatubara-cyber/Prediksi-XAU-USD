@@ -67,11 +67,11 @@ function New-GoldPredictorShortcut {
 New-GoldPredictorShortcut `
     -Name "START Gold Predictor" `
     -ScriptPath (Join-Path $PSScriptRoot "start_gold_predictor.ps1") `
-    -Description "Jalankan MT5, bridge Supabase, dan dashboard Gold Predictor"
+    -Description "Jalankan MT5, bridge Supabase, worker Paper Trading, dan dashboard Gold Predictor"
 New-GoldPredictorShortcut `
     -Name "STOP Gold Predictor" `
     -ScriptPath (Join-Path $PSScriptRoot "stop_gold_predictor.ps1") `
-    -Description "Hentikan bridge Gold Predictor tanpa menutup MT5"
+    -Description "Hentikan bridge dan worker Gold Predictor tanpa menutup MT5"
 
 Write-Host "Setup selesai." -ForegroundColor Green
 Write-Host "Shortcut START dan STOP Gold Predictor sudah dibuat di Desktop."

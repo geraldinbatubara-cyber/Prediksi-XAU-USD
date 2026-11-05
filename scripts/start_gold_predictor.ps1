@@ -4,6 +4,7 @@ $ErrorActionPreference = "Stop"
 $configDirectory = Join-Path $env:LOCALAPPDATA "GoldPredictor"
 $configPath = Join-Path $configDirectory "launcher.json"
 $pidPath = Join-Path $configDirectory "bridge.pid"
+$paperWorkerPidPath = Join-Path $configDirectory "paper-worker.pid"
 $notificationPidPath = Join-Path $configDirectory "notification.pid"
 $logDirectory = Join-Path $configDirectory "logs"
 $dashboardUrl = "https://goldpredictor.streamlit.app/"
@@ -25,6 +26,7 @@ try {
     }
     $pythonPath = Join-Path $config.project_root ".venv\Scripts\python.exe"
     $bridgePath = Join-Path $config.project_root "scripts\mt5_data_bridge.py"
+    $paperWorkerPath = Join-Path $config.project_root "scripts\live_trading_job.py"
     $quotePath = Join-Path $config.project_root "data\broker\latest_quote.csv"
     $notificationPath = Join-Path $config.project_root "gold_forecast\email_notifications.py"
     if (-not (Test-Path -LiteralPath $pythonPath)) {
@@ -112,6 +114,66 @@ try {
         }
     }
 
+    $paperWorkerRunning = $false
+    if (Test-Path -LiteralPath $paperWorkerPidPath) {
+        $savedWorkerPid = Get-Content -LiteralPath $paperWorkerPidPath -ErrorAction SilentlyContinue
+        $savedWorkerProcess = if ($savedWorkerPid) {
+            Get-CimInstance Win32_Process -Filter "ProcessId = $savedWorkerPid" -ErrorAction SilentlyContinue
+        }
+        if ($savedWorkerProcess -and $savedWorkerProcess.CommandLine -like "*live_trading_job.py*") {
+            $paperWorkerRunning = $true
+        } else {
+            Remove-Item -LiteralPath $paperWorkerPidPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (-not $paperWorkerRunning) {
+        $secureWorkerSecret = ConvertTo-SecureString $config.supabase_secret
+        $plainWorkerSecret = [Net.NetworkCredential]::new("", $secureWorkerSecret).Password
+        $env:SUPABASE_URL = [string]$config.supabase_url
+        $env:SUPABASE_SERVICE_ROLE_KEY = $plainWorkerSecret
+        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $workerStdout = Join-Path $logDirectory "paper-worker-$timestamp.log"
+        $workerStderr = Join-Path $logDirectory "paper-worker-$timestamp-error.log"
+        $workerArguments = @(
+            "-u",
+            "`"$paperWorkerPath`"",
+            "--interval", "60"
+        )
+        $paperWorkerProcess = Start-Process `
+            -FilePath $pythonPath `
+            -ArgumentList $workerArguments `
+            -WorkingDirectory $config.project_root `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $workerStdout `
+            -RedirectStandardError $workerStderr `
+            -PassThru
+        $paperWorkerProcess.Id | Set-Content -LiteralPath $paperWorkerPidPath -Encoding ASCII
+        Remove-Item Env:SUPABASE_SERVICE_ROLE_KEY -ErrorAction SilentlyContinue
+        Remove-Variable plainWorkerSecret, secureWorkerSecret -ErrorAction SilentlyContinue
+
+        $workerReady = $false
+        $workerDeadline = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $workerDeadline) {
+            Start-Sleep -Seconds 1
+            if ($paperWorkerProcess.HasExited) {
+                $errorDetail = Get-Content -LiteralPath $workerStderr -Raw -ErrorAction SilentlyContinue
+                throw "Worker Paper Trading gagal berjalan. $errorDetail"
+            }
+            $workerOutput = Get-Content -LiteralPath $workerStdout -Raw -ErrorAction SilentlyContinue
+            if ($workerOutput -match "PAPER_WORKER_READY") {
+                $workerReady = $true
+                break
+            }
+        }
+        if (-not $workerReady) {
+            Stop-Process -Id $paperWorkerProcess.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $paperWorkerPidPath -Force -ErrorAction SilentlyContinue
+            throw "Worker Paper Trading belum siap dalam 120 detik. Periksa log di $logDirectory."
+        }
+        $paperWorkerRunning = $true
+    }
+
     $notificationConfigured = (
         $config.PSObject.Properties.Name -contains "email_app_password" -and
         $config.PSObject.Properties.Name -contains "email_sender" -and
@@ -183,7 +245,7 @@ try {
     } else {
         "Notifikasi email belum dikonfigurasi."
     }
-    Show-LauncherMessage "MT5 aktif dan quote pertama bridge sudah terkirim. $notificationStatus Dashboard dibuka di browser."
+    Show-LauncherMessage "MT5 aktif, quote bridge terkirim, dan worker empat strategi berjalan tiap 60 detik. $notificationStatus Dashboard dibuka di browser."
 } catch {
     Show-LauncherMessage $_.Exception.Message "Gold Predictor gagal dimulai" 16
     exit 1

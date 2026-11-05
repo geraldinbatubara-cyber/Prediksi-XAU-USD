@@ -37,6 +37,7 @@ _RECOVERY_MANUAL_PATHS = {
         "data/recovery/baseline_v1_manual_exits_recovered_20260724.csv"
     ),
 }
+_STRATEGY_STATE_POSITION_ID = 0
 
 
 def configure_paper_ledger_store(
@@ -83,7 +84,65 @@ def load_persistent_positions(strategy_id: str) -> pd.DataFrame:
         strategy_id,
         "position_id,payload,updated_at",
     )
-    return _payload_frame(rows)
+    position_rows = [
+        row
+        for row in rows
+        if _integer(row.get("position_id")) != _STRATEGY_STATE_POSITION_ID
+    ]
+    return _payload_frame(position_rows)
+
+
+def load_strategy_state(strategy_id: str) -> dict[str, object]:
+    if not _read_ready():
+        return {}
+    try:
+        rows = _request_json(
+            _CONFIG["base_url"],
+            _CONFIG["read_key"],
+            "paper_live_positions",
+            query={
+                "select": "payload,updated_at",
+                "strategy_id": f"eq.{strategy_id}",
+                "position_id": f"eq.{_STRATEGY_STATE_POSITION_ID}",
+                "limit": "1",
+            },
+        )
+        _sync_ok()
+        if isinstance(rows, list) and rows and isinstance(rows[0].get("payload"), dict):
+            state = dict(rows[0]["payload"])
+            state["worker_updated_at_utc"] = rows[0].get("updated_at")
+            return state
+    except Exception as exc:
+        _sync_error(exc)
+    return {}
+
+
+def save_strategy_state(strategy_id: str, state: dict[str, object]) -> bool:
+    if not _write_ready():
+        return False
+    now = pd.Timestamp.now(tz="UTC").isoformat()
+    record = {
+        "strategy_id": strategy_id,
+        "position_id": _STRATEGY_STATE_POSITION_ID,
+        "status": "STATE",
+        "payload": _clean_mapping(state),
+        "updated_at": now,
+    }
+    try:
+        _request_json(
+            _CONFIG["base_url"],
+            _CONFIG["write_key"],
+            "paper_live_positions",
+            method="POST",
+            query={"on_conflict": "strategy_id,position_id"},
+            payload=[record],
+            prefer="resolution=merge-duplicates,return=minimal",
+        )
+        _sync_ok()
+        return True
+    except Exception as exc:
+        _sync_error(exc)
+        return False
 
 
 def load_historical_max_position_id(strategy_id: str) -> int:

@@ -45,9 +45,7 @@ from gold_forecast.live_trading import (
     LIVE_TRADING_FIXED_DELAY_PATH,
     LIVE_TRADING_PATH,
     LIVE_TRADING_V10_PATH,
-    LIVE_V10_START_DATE,
-    load_live_ledger,
-    run_live_trading_update,
+    read_live_ledger,
 )
 from gold_forecast.monitoring import (
     ACTUAL_HOURS,
@@ -61,7 +59,9 @@ from gold_forecast.monitoring import (
 from gold_forecast.model_comparison import MODEL_COMPARISON_VERSION
 from gold_forecast.paper_ledger_store import (
     configure_paper_ledger_store,
+    load_strategy_state,
     paper_ledger_store_status,
+    strategy_id_for_path,
 )
 from gold_forecast.signals import build_signal
 from gold_forecast import strategy_optimizer as strategy_optimizer_module
@@ -7693,7 +7693,7 @@ def _entry_checklist_rows(gold_ohlc: pd.DataFrame, params: dict[str, object], li
 
 
 def _exit_checklist_rows(gold_ohlc: pd.DataFrame, params: dict[str, object]) -> pd.DataFrame:
-    ledger = load_live_ledger()
+    ledger = read_live_ledger()
     if ledger.empty:
         return pd.DataFrame()
 
@@ -8188,24 +8188,23 @@ def render_live_trading(
     broker_bars: pd.DataFrame | None = None,
     strategy_model_bundle: dict[str, object] | None = None,
 ) -> None:
-    if optimization_leaderboard.empty:
+    state = load_strategy_state(strategy_id_for_path(live_path))
+    if not state:
         st.warning(
-            f"Parameter {title} belum tersedia. Bangun ulang simulasi precomputed lebih dulu agar Live Trading "
-            "bisa memakai parameter strategi yang benar."
+            f"Snapshot {title} belum tersedia. Jalankan ulang shortcut START Gold Predictor "
+            "agar worker Windows mulai memperbarui empat strategi."
         )
         return
-
-    live = run_live_trading_update(
-        gold_ohlc,
-        optimization_leaderboard,
-        path=live_path,
-        start_date=start_date,
-        broker_quote=broker_quote,
-        entry_strategy=entry_strategy,
-        broker_bars=broker_bars,
-        strategy_model_bundle=strategy_model_bundle,
-    )
+    ledger = read_live_ledger(live_path)
+    live = {
+        **state,
+        "ledger": ledger,
+        "signals": ledger[ledger["status"].isin(["SIGNAL", "OPEN", "CANCELLED"])].copy(),
+        "open_positions": ledger[ledger["status"].eq("OPEN")].copy(),
+        "closed_positions": ledger[ledger["status"].eq("CLOSED")].copy(),
+    }
     summary = live["summary"]
+    summary["Now WIT"] = pd.Timestamp(summary["Now WIT"])
     params = live["params"]
     signal = live["signal"]
     waiting_state = live["waiting_state"]
@@ -8218,8 +8217,8 @@ def render_live_trading(
 
     st.subheader(f"Paper Trading - {title}")
     st.caption(
-        "Mode ini adalah paper-trading live berbasis data dashboard. Posisi dibuka mengikuti pola "
-        f"{title}, bukan order broker sungguhan."
+        "Halaman ini hanya membaca hasil worker Windows. Posisi paper diperbarui di latar belakang "
+        f"setiap 60 detik mengikuti aturan {title}."
     )
     st.warning(
         "Asumsi live: equity awal USD 1.000, lot tetap 0.01, swap BUY USD 0.02 per 0.01 lot per hari, "
@@ -8232,6 +8231,15 @@ def render_live_trading(
             "maksimal 8 BUY dan 10 SELL. Re-entry guard USD 3 tidak dipakai untuk eksekusi live."
         )
     st.info(f"Live Trading memakai **{title} secara penuh**.")
+
+    worker_updated_at = pd.to_datetime(state.get("worker_updated_at_utc"), errors="coerce", utc=True)
+    if pd.notna(worker_updated_at):
+        worker_age = (pd.Timestamp.now(tz="UTC") - worker_updated_at).total_seconds()
+        worker_label = worker_updated_at.tz_convert(WIT).strftime("%d %b %Y %H:%M:%S WIT")
+        if worker_age > 180:
+            st.error(f"Worker Paper Trading terlambat. Snapshot terakhir: **{worker_label}**.")
+        else:
+            st.success(f"Worker Paper Trading aktif. Snapshot terakhir: **{worker_label}**.")
 
     status_text = "Aktif" if summary["Can trade"] else "Tidak membuka posisi baru"
     st.info(
@@ -9503,7 +9511,7 @@ elif page == "Paper Trading":
         paper_read_key,
         paper_write_key,
     )
-    baseline_persistence_probe = load_live_ledger(LIVE_TRADING_PATH)
+    baseline_persistence_probe = read_live_ledger(LIVE_TRADING_PATH)
     paper_store = paper_ledger_store_status()
     if paper_store["mode"] == "Supabase persistent":
         st.success(
@@ -9561,12 +9569,6 @@ elif page == "Paper Trading":
         "belum memenuhi target profit factor 1,30 dan drawdown maksimum 10%."
     )
     optimization_v1_live_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
-    buy_specialist_v4_model = load_buy_specialist_v4_live_model(
-        BUY_SPECIALIST_V4_LIVE_VERSION
-    )
-    sideways_moderate_model = load_sideways_moderate_live_model(
-        SIDEWAYS_MODERATE_LIVE_VERSION
-    )
     baseline_live_tab, fixed_delay_live_tab, buy_specialist_v4_tab, sideways_moderate_tab = st.tabs(
         ["Baseline v1", "Fixed Delay 5m", "BUY Specialist v4", "Moderate Regime"]
     )
@@ -9624,7 +9626,6 @@ elif page == "Paper Trading":
             broker_quote=broker_quote,
             entry_strategy="buy_specialist_v4",
             broker_bars=broker_bars,
-            strategy_model_bundle=buy_specialist_v4_model,
         )
     with sideways_moderate_tab:
         render_live_trading(
@@ -9645,25 +9646,14 @@ elif page == "Paper Trading":
             broker_quote=broker_quote,
             entry_strategy="sideways_moderate",
             broker_bars=broker_bars,
-            strategy_model_bundle=sideways_moderate_model,
         )
 
-    archived_v10_ledger = load_live_ledger(LIVE_TRADING_V10_PATH)
+    archived_v10_ledger = read_live_ledger(LIVE_TRADING_V10_PATH)
     archived_open = archived_v10_ledger[archived_v10_ledger["status"].eq("OPEN")]
     if not archived_open.empty:
-        archived_v10 = run_live_trading_update(
-            gold_ohlc,
-            pd.DataFrame(),
-            path=LIVE_TRADING_V10_PATH,
-            start_date=LIVE_V10_START_DATE,
-            broker_quote=broker_quote,
-            allow_new_entries=False,
+        st.info(
+            f"Arsip v10 memiliki **{len(archived_open)} posisi lama**. Strategi ini tidak lagi diperbarui oleh worker baru."
         )
-        archived_open = archived_v10["open_positions"]
-        if not archived_open.empty:
-            st.info(
-                f"Arsip v10 masih memantau **{len(archived_open)} posisi lama** sampai TP/CL. Tidak ada posisi baru yang dibuka."
-            )
 
 elif page == "Data & Diagnostik":
     diagnostic_view = st.selectbox(
