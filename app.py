@@ -9013,7 +9013,7 @@ def render_live_trading(
     open_positions = live["open_positions"].copy()
     closed_positions = live["closed_positions"].copy()
 
-    st.subheader(f"Live Trading - {title}")
+    st.subheader(f"Paper Trading - {title}")
     st.caption(
         "Mode ini adalah paper-trading live berbasis data dashboard. Posisi dibuka mengikuti pola "
         f"{title}, bukan order broker sungguhan."
@@ -10594,11 +10594,11 @@ with st.sidebar:
     st.header("Pengaturan")
     page = st.radio(
         "Halaman",
-        ["Dashboard", "Simulasi", "Live Trading", "Data Broker", "Audit Intraday"],
+        ["Ringkasan", "Paper Trading", "Riset & Backtest", "Data & Diagnostik"],
         index=0,
     )
-    if page == "Simulasi":
-        st.caption("Auto refresh dinonaktifkan di halaman Simulasi.")
+    if page == "Riset & Backtest":
+        st.caption("Auto refresh dinonaktifkan di halaman Riset & Backtest.")
     else:
         auto_refresh = st.checkbox("Auto refresh dashboard", value=True)
         refresh_interval_seconds = st.selectbox(
@@ -10625,37 +10625,38 @@ with st.sidebar:
         notice_type, notice_text = refresh_notice
         getattr(st, notice_type)(notice_text)
 
-    if st.button("Perbarui Data Harian GC=F + Model 1/2", use_container_width=True):
-        try:
-            with st.spinner("Mengambil candle harian terbaru dari Yahoo Finance..."):
-                refreshed_gold, _ = refresh_market_cache(incremental_period="14d")
-            latest_daily = pd.Timestamp(refreshed_gold.index.max()).strftime("%d %b %Y")
+    if page == "Data & Diagnostik":
+        if st.button("Perbarui Data Harian GC=F + Model 1/2", use_container_width=True):
+            try:
+                with st.spinner("Mengambil candle harian terbaru dari Yahoo Finance..."):
+                    refreshed_gold, _ = refresh_market_cache(incremental_period="14d")
+                latest_daily = pd.Timestamp(refreshed_gold.index.max()).strftime("%d %b %Y")
+                st.session_state["data_refresh_notice"] = (
+                    "success",
+                    f"Data harian GC=F diperbarui sampai {latest_daily}. "
+                    "Model 1/2 akan diselaraskan dengan candle selesai terbaru.",
+                )
+            except Exception as exc:
+                st.session_state["data_refresh_notice"] = (
+                    "error",
+                    f"Pembaruan GC=F gagal: {exc}",
+                )
+            get_data.clear()
+            get_gold_ohlc.clear()
+            get_dashboard_snapshot.clear()
+            get_base_optimizer.clear()
+            get_simulations.clear()
+            st.rerun()
+
+        if st.button("Muat Ulang Feed MT5 M1", use_container_width=True):
+            get_supabase_broker_feed.clear()
+            get_supabase_terminal_status.clear()
             st.session_state["data_refresh_notice"] = (
                 "success",
-                f"Data harian GC=F diperbarui sampai {latest_daily}. "
-                "Model 1/2 akan diselaraskan dengan candle selesai terbaru.",
+                "Feed MT5 dimuat ulang dari Supabase. Tombol ini tidak menyalakan terminal atau bridge di laptop.",
             )
-        except Exception as exc:
-            st.session_state["data_refresh_notice"] = (
-                "error",
-                f"Pembaruan GC=F gagal: {exc}",
-            )
-        get_data.clear()
-        get_gold_ohlc.clear()
-        get_dashboard_snapshot.clear()
-        get_base_optimizer.clear()
-        get_simulations.clear()
-        st.rerun()
-
-    if st.button("Muat Ulang Feed MT5 M1", use_container_width=True):
-        get_supabase_broker_feed.clear()
-        get_supabase_terminal_status.clear()
-        st.session_state["data_refresh_notice"] = (
-            "success",
-            "Feed MT5 dimuat ulang dari Supabase. Tombol ini tidak menyalakan terminal atau bridge di laptop.",
-        )
-        st.rerun()
-    if page == "Dashboard":
+            st.rerun()
+    if page == "Ringkasan":
         direction_threshold = st.select_slider(
             "Threshold sinyal arah",
             options=[0.50, 0.55, 0.60, 0.65, 0.70],
@@ -10664,7 +10665,7 @@ with st.sidebar:
         )
     st.info("Harga emas memakai COMEX `GC=F`, USD per troy ounce.")
 
-if page == "Dashboard":
+if page == "Ringkasan":
     try:
         market, data_fetched_at = get_data()
         gold_ohlc = get_gold_ohlc()
@@ -10747,7 +10748,7 @@ if page == "Dashboard":
         dashboard_broker_quote,
     )
 
-elif page == "Simulasi":
+elif page == "Riset & Backtest":
     simulation_payload = load_precomputed_simulations(SIMULATION_CACHE_VERSION)
     if simulation_payload is None:
         st.warning(
@@ -10771,7 +10772,7 @@ elif page == "Simulasi":
                 st.stop()
             render_simulation(*simulation_payload, gold_ohlc)
 
-elif page == "Live Trading":
+elif page == "Paper Trading":
     try:
         gold_ohlc = get_gold_ohlc()
     except Exception as exc:
@@ -10836,7 +10837,7 @@ elif page == "Live Trading":
     else:
         st.info(
             f"Mode akun MT5: **{live_account_mode}** | Broker: **{live_broker}** | "
-            "Periksa panel lengkap di Data Broker sebelum entry manual."
+            "Periksa panel Data Broker di Data & Diagnostik sebelum entry manual."
         )
 
     st.info(
@@ -10957,19 +10958,24 @@ elif page == "Live Trading":
                 f"Arsip v10 masih memantau **{len(archived_open)} posisi lama** sampai TP/CL. Tidak ada posisi baru yang dibuka."
             )
 
-elif page == "Data Broker":
-    try:
-        gold_ohlc = get_gold_ohlc()
-    except Exception as exc:
-        st.error(f"Data benchmark GC=F belum dapat diproses: {exc}")
-        gold_ohlc = pd.DataFrame()
-    render_broker_data(gold_ohlc)
+elif page == "Data & Diagnostik":
+    diagnostic_view = st.selectbox(
+        "Pilih pemeriksaan",
+        ["Data Broker", "Audit Intraday"],
+        key="diagnostic_view",
+    )
+    if diagnostic_view == "Data Broker":
+        try:
+            gold_ohlc = get_gold_ohlc()
+        except Exception as exc:
+            st.error(f"Data benchmark GC=F belum dapat diproses: {exc}")
+            gold_ohlc = pd.DataFrame()
+        render_broker_data(gold_ohlc)
+    else:
+        try:
+            gold_ohlc = get_gold_ohlc()
+        except Exception as exc:
+            st.error(f"Data OHLC belum dapat diproses: {exc}")
+            st.stop()
 
-else:
-    try:
-        gold_ohlc = get_gold_ohlc()
-    except Exception as exc:
-        st.error(f"Data OHLC belum dapat diproses: {exc}")
-        st.stop()
-
-    render_intraday_audit(gold_ohlc)
+        render_intraday_audit(gold_ohlc)
