@@ -28,10 +28,8 @@ from gold_forecast.broker_data import (
 from gold_forecast.data import load_gold_data, load_market_data, refresh_market_cache
 from gold_forecast.dashboard_snapshot import (
     DASHBOARD_SNAPSHOT_VERSION,
-    build_dashboard_snapshot,
     dashboard_snapshot_is_current,
     load_dashboard_snapshot,
-    save_dashboard_snapshot,
 )
 from gold_forecast.forecast_validity import (
     compare_locked_prediction_to_live,
@@ -10622,7 +10620,7 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
 
 with st.sidebar:
     st.header("Pengaturan")
-    auto_refresh = st.checkbox("Auto refresh dashboard", value=True)
+    auto_refresh = st.checkbox("Auto refresh dashboard", value=False)
     refresh_interval_seconds = st.selectbox(
         "Interval auto refresh",
         options=[60, 300, 900],
@@ -10707,40 +10705,14 @@ if page == "Dashboard":
         )
         st.stop()
 
-    snapshot_refreshed = False
-    snapshot_refresh_error = None
-    if not dashboard_snapshot_is_current(
-        dashboard_snapshot, market, data_fetched_at
-    ):
-        try:
-            stored_leaderboard = dashboard_snapshot.get("v1_leaderboard")
-            if not isinstance(stored_leaderboard, pd.DataFrame) or stored_leaderboard.empty:
-                stored_leaderboard = get_v1_leaderboard_for_live(
-                    SIMULATION_CACHE_VERSION
-                )
-            with st.spinner("Menyelaraskan Model 1/2 dengan candle harian selesai terbaru..."):
-                dashboard_snapshot = build_dashboard_snapshot(
-                    market,
-                    stored_leaderboard,
-                    generated_at=data_fetched_at,
-                )
-            snapshot_refreshed = True
-            try:
-                save_dashboard_snapshot(dashboard_snapshot)
-                get_dashboard_snapshot.clear()
-            except OSError:
-                pass
-        except Exception as exc:
-            snapshot_refresh_error = str(exc)
-
-    if snapshot_refreshed:
-        st.success(
-            "Snapshot Model 1/2 diperbarui otomatis sesuai candle harian selesai terbaru."
-        )
-    elif snapshot_refresh_error:
+    # Training and snapshot generation belong to GitHub Actions, never a UI rerun.
+    # Keep the last published artifact visible for audit; render_dashboard applies
+    # the existing stale-snapshot guard to prevent outdated trading signals.
+    if not dashboard_snapshot_is_current(dashboard_snapshot, market, data_fetched_at):
         st.warning(
-            "Candle harian baru sudah tersedia, tetapi pembaruan Model 1/2 belum selesai. "
-            f"Forecast lama tetap hanya untuk audit. Detail: {snapshot_refresh_error}"
+            "Snapshot prediksi belum selaras dengan candle harian selesai terbaru. "
+            "Model tidak dilatih ulang di Streamlit Cloud. "
+            "Prediksi historis hanya untuk audit; tunggu pembaruan GitHub Actions."
         )
 
     model_1 = dashboard_snapshot["model_1"]
