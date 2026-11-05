@@ -993,6 +993,7 @@ def render_dashboard(
     gold_ohlc: pd.DataFrame,
     optimization_v1_leaderboard: pd.DataFrame,
     snapshot_generated_at: str,
+    summary_view: str = "Ringkasan Utama",
     technical_frames: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame] | None = None,
     technical_feed_error: str | None = None,
 ) -> None:
@@ -1012,6 +1013,11 @@ def render_dashboard(
         f"Data pasar terakhir: **{market_last_date}** | Data diambil dashboard: **{fetched_label}** | "
         f"Snapshot model dibuat: **{snapshot_label}**"
     )
+
+    price_col, change_col, date_col = st.columns(3)
+    price_col.metric("Harga emas terakhir", f"${latest:,.2f}", f"{latest - previous:+,.2f}")
+    change_col.metric("Perubahan harian", f"{(latest / previous - 1) * 100:+.2f}%")
+    date_col.metric("Tanggal data", market_last_date)
 
     m1_tomorrow, m1_day_seven = model_1.forecast.iloc[0], model_1.forecast.iloc[-1]
     m2_tomorrow, m2_day_seven = model_2.forecast.iloc[0], model_2.forecast.iloc[-1]
@@ -1046,17 +1052,25 @@ def render_dashboard(
         st.metric("Sinyal", signal_label, str(v1_prediction["note"]))
         st.caption("Prediksi berbasis rule baseline Optimizer v1, bukan forecast probabilistik harga.")
 
-    _render_multitimeframe_technical_analysis(
-        technical_frames,
-        technical_feed_error,
-        data_fetched_at,
-    )
-
     if optimization_v1_leaderboard.empty:
         st.warning(
             "Parameter precomputed Optimizer v1 belum tersedia. Model 3 memakai parameter fallback dan tidak "
             "menghitung ulang optimizer berat saat Dashboard dibuka."
         )
+
+    if summary_view == "Ringkasan Utama":
+        st.caption(
+            "Pilih Analisis Teknikal atau Evaluasi Model di sidebar untuk membuka detail tambahan."
+        )
+        return
+
+    if summary_view == "Analisis Teknikal":
+        _render_multitimeframe_technical_analysis(
+            technical_frames,
+            technical_feed_error,
+            data_fetched_at,
+        )
+        return
 
     st.subheader("Ringkasan Angka Pembanding")
     comparison = pd.DataFrame(
@@ -8175,7 +8189,6 @@ def _build_live_strategy_frame(params: dict[str, object], leaderboard: pd.DataFr
 
 
 def render_live_trading(
-    gold_ohlc: pd.DataFrame,
     optimization_leaderboard: pd.DataFrame,
     title: str = "Optimizer v1",
     start_date: pd.Timestamp = LIVE_START_DATE,
@@ -8183,10 +8196,7 @@ def render_live_trading(
     manual_path=LIVE_MANUAL_EXIT_PATH,
     key_prefix: str = "v1",
     strategy_note: str | None = None,
-    broker_quote: pd.Series | None = None,
     entry_strategy: str = "baseline",
-    broker_bars: pd.DataFrame | None = None,
-    strategy_model_bundle: dict[str, object] | None = None,
 ) -> None:
     state = load_strategy_state(strategy_id_for_path(live_path))
     if not state:
@@ -9365,16 +9375,16 @@ with st.sidebar:
         ["Ringkasan", "Paper Trading", "Riset & Backtest", "Data & Diagnostik"],
         index=0,
     )
-    if page == "Riset & Backtest":
-        st.caption("Auto refresh dinonaktifkan di halaman Riset & Backtest.")
-    else:
+    if page in {"Ringkasan", "Paper Trading"}:
         auto_refresh = st.checkbox("Auto refresh dashboard", value=True)
+        refresh_options = [300, 900] if page == "Ringkasan" else [60, 300]
         refresh_interval_seconds = st.selectbox(
             "Interval auto refresh",
-            options=[60, 300, 900],
-            index=1,
+            options=refresh_options,
+            index=0 if page == "Ringkasan" else 1,
             format_func=lambda value: f"{value // 60} menit" if value >= 60 else f"{value} detik",
             disabled=not auto_refresh,
+            key=f"refresh_interval_{page}",
         )
         if auto_refresh:
             if st_autorefresh is None:
@@ -9388,6 +9398,8 @@ with st.sidebar:
                     f"Auto refresh aktif tiap {refresh_interval_seconds // 60} menit. "
                     f"Refresh ke-{refresh_count} | {pd.Timestamp.now(tz=WIT).strftime('%H:%M:%S WIT')}"
                 )
+    else:
+        st.caption(f"Auto refresh dinonaktifkan di halaman {page}.")
     refresh_notice = st.session_state.pop("data_refresh_notice", None)
     if refresh_notice:
         notice_type, notice_text = refresh_notice
@@ -9424,12 +9436,19 @@ with st.sidebar:
             )
             st.rerun()
     if page == "Ringkasan":
-        direction_threshold = st.select_slider(
-            "Threshold sinyal arah",
-            options=[0.50, 0.55, 0.60, 0.65, 0.70],
-            value=0.65,
-            format_func=lambda value: f"{value:.0%}",
+        summary_view = st.selectbox(
+            "Tampilan Ringkasan",
+            ["Ringkasan Utama", "Analisis Teknikal", "Evaluasi Model"],
+            key="summary_view",
         )
+        direction_threshold = 0.65
+        if summary_view == "Evaluasi Model":
+            direction_threshold = st.select_slider(
+                "Threshold sinyal arah",
+                options=[0.50, 0.55, 0.60, 0.65, 0.70],
+                value=0.65,
+                format_func=lambda value: f"{value:.0%}",
+            )
     st.info("Harga emas memakai COMEX `GC=F`, USD per troy ounce.")
 
 if page == "Ringkasan":
@@ -9454,7 +9473,10 @@ if page == "Ringkasan":
     v1_leaderboard = dashboard_snapshot.get("v1_leaderboard")
     if not isinstance(v1_leaderboard, pd.DataFrame) or v1_leaderboard.empty:
         v1_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
-    technical_frames, technical_feed_error = _latest_technical_frames()
+    if summary_view == "Analisis Teknikal":
+        technical_frames, technical_feed_error = _latest_technical_frames()
+    else:
+        technical_frames, technical_feed_error = None, None
 
     render_dashboard(
         market,
@@ -9466,6 +9488,7 @@ if page == "Ringkasan":
         gold_ohlc,
         v1_leaderboard,
         dashboard_snapshot["generated_at_utc"],
+        summary_view,
         technical_frames,
         technical_feed_error,
     )
@@ -9495,29 +9518,16 @@ elif page == "Riset & Backtest":
             render_simulation(*simulation_payload, gold_ohlc)
 
 elif page == "Paper Trading":
-    try:
-        gold_ohlc = get_gold_ohlc()
-    except Exception as exc:
-        st.error(f"Data OHLC belum dapat diproses: {exc}")
-        st.stop()
-
-    broker_bars, broker_quote, broker_feed_error = _latest_broker_snapshot()
-    if broker_feed_error:
-        st.warning(f"Feed Supabase gagal dibaca; mencoba quote lokal. Detail: {broker_feed_error}")
-
     paper_url, paper_read_key, paper_write_key = _supabase_paper_ledger_config()
     configure_paper_ledger_store(
         paper_url,
         paper_read_key,
         paper_write_key,
     )
-    baseline_persistence_probe = read_live_ledger(LIVE_TRADING_PATH)
     paper_store = paper_ledger_store_status()
     if paper_store["mode"] == "Supabase persistent":
         st.success(
-            f"Ledger paper trading tersimpan persisten di Supabase. "
-            f"Baseline v1 memuat **{len(baseline_persistence_probe)} record** dan "
-            "tidak akan di-reset oleh redeploy."
+            "Ledger Paper Trading tersimpan persisten di Supabase dan tidak akan di-reset oleh redeploy."
         )
     else:
         detail = (
@@ -9569,12 +9579,13 @@ elif page == "Paper Trading":
         "belum memenuhi target profit factor 1,30 dan drawdown maksimum 10%."
     )
     optimization_v1_live_leaderboard = get_v1_leaderboard_for_live(SIMULATION_CACHE_VERSION)
-    baseline_live_tab, fixed_delay_live_tab, buy_specialist_v4_tab, sideways_moderate_tab = st.tabs(
-        ["Baseline v1", "Fixed Delay 5m", "BUY Specialist v4", "Moderate Regime"]
+    selected_paper_strategy = st.selectbox(
+        "Pilih strategi Paper Trading",
+        ["Baseline v1", "Fixed Delay 5m", "BUY Specialist v4", "Moderate Regime"],
+        key="paper_strategy",
     )
-    with baseline_live_tab:
+    if selected_paper_strategy == "Baseline v1":
         render_live_trading(
-            gold_ohlc,
             optimization_v1_live_leaderboard,
             title="Optimizer v1",
             start_date=LIVE_START_DATE,
@@ -9585,11 +9596,9 @@ elif page == "Paper Trading":
                 "Entry mengikuti sinyal Optimizer v1, boleh menambah posisi dari sinyal hari berbeda sampai batas "
                 "maksimal 8 BUY dan 10 SELL. Strategi ini masih paper trading."
             ),
-            broker_quote=broker_quote,
         )
-    with fixed_delay_live_tab:
+    elif selected_paper_strategy == "Fixed Delay 5m":
         render_live_trading(
-            gold_ohlc,
             optimization_v1_live_leaderboard,
             title="Fixed Delay 5m",
             start_date=LIVE_FIXED_DELAY_START,
@@ -9602,13 +9611,10 @@ elif page == "Paper Trading":
                 "5 menit dan dibatalkan jika TP/SL awal sudah tersentuh atau spread MT5 melebihi 20 points. "
                 "Kontrak paper: lot 0.01, TP USD 25, SL USD 10, dan maksimum 1 posisi terbuka."
             ),
-            broker_quote=broker_quote,
             entry_strategy="fixed_delay_5m",
-            broker_bars=broker_bars,
         )
-    with buy_specialist_v4_tab:
+    elif selected_paper_strategy == "BUY Specialist v4":
         render_live_trading(
-            gold_ohlc,
             optimization_v1_live_leaderboard,
             title="BUY Specialist v4 - Bullish Regime",
             start_date=LIVE_BUY_SPECIALIST_V4_START,
@@ -9623,13 +9629,10 @@ elif page == "Paper Trading":
                 "paper: equity USD 1.000, lot 0.01, TP USD 25, SL USD 10, "
                 "maksimum satu posisi."
             ),
-            broker_quote=broker_quote,
             entry_strategy="buy_specialist_v4",
-            broker_bars=broker_bars,
         )
-    with sideways_moderate_tab:
+    else:
         render_live_trading(
-            gold_ohlc,
             optimization_v1_live_leaderboard,
             title="Moderate Regime - Sideways v9",
             start_date=LIVE_SIDEWAYS_MODERATE_START,
@@ -9643,17 +9646,18 @@ elif page == "Paper Trading":
                 "USD 5-12, time stop 12 jam, lot 0.01, dan maksimum satu posisi. Kandidat ini belum lulus "
                 "seluruh kriteria lab sehingga tidak digunakan untuk uang riil."
             ),
-            broker_quote=broker_quote,
             entry_strategy="sideways_moderate",
-            broker_bars=broker_bars,
         )
 
-    archived_v10_ledger = read_live_ledger(LIVE_TRADING_V10_PATH)
-    archived_open = archived_v10_ledger[archived_v10_ledger["status"].eq("OPEN")]
-    if not archived_open.empty:
-        st.info(
-            f"Arsip v10 memiliki **{len(archived_open)} posisi lama**. Strategi ini tidak lagi diperbarui oleh worker baru."
-        )
+    if st.checkbox("Tampilkan status arsip v10", value=False):
+        archived_v10_ledger = read_live_ledger(LIVE_TRADING_V10_PATH)
+        archived_open = archived_v10_ledger[archived_v10_ledger["status"].eq("OPEN")]
+        if archived_open.empty:
+            st.info("Arsip v10 tidak memiliki posisi terbuka.")
+        else:
+            st.info(
+                f"Arsip v10 memiliki **{len(archived_open)} posisi lama**. Strategi ini tidak lagi diperbarui oleh worker baru."
+            )
 
 elif page == "Data & Diagnostik":
     diagnostic_view = st.selectbox(
