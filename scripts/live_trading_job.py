@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import base64
 import os
 import pickle
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -13,6 +15,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from gold_forecast.broker_data import (
+    BROKER_BARS_PATH,
+    BROKER_QUOTE_PATH,
+    load_broker_bars,
+    load_broker_quote,
+)
 from gold_forecast.data import load_gold_data
 from gold_forecast.live_trading import (
     LIVE_BUY_SPECIALIST_V4_START,
@@ -25,21 +33,37 @@ from gold_forecast.live_trading import (
     LIVE_TRADING_SIDEWAYS_MODERATE_PATH,
     run_live_trading_update,
 )
-from gold_forecast.paper_ledger_store import configure_paper_ledger_store
+from gold_forecast.paper_ledger_store import (
+    configure_paper_ledger_store,
+    save_strategy_state,
+    strategy_id_for_path,
+)
 from gold_forecast.supabase_broker import load_supabase_broker_feed
 
 
-SIMULATION_PATH = Path("data/precomputed/simulations.pkl")
+SIMULATION_PATH = PROJECT_ROOT / "data" / "precomputed" / "simulations.pkl"
 SIMULATION_VERSION = "optimizer-v1-only-2025q1-2026q2"
-BUY_SPECIALIST_MODEL_PATH = Path(
-    "data/precomputed/buy_specialist_v4_live.pkl.b64"
+BUY_SPECIALIST_MODEL_PATH = (
+    PROJECT_ROOT / "data" / "precomputed" / "buy_specialist_v4_live.pkl.b64"
 )
 BUY_SPECIALIST_MODEL_VERSION = "buy-specialist-v4-live-inference-2026-07-24-v1"
-SIDEWAYS_MODERATE_MODEL_PATH = Path(
-    "data/precomputed/sideways_moderate_live.pkl.b64"
+SIDEWAYS_MODERATE_MODEL_PATH = (
+    PROJECT_ROOT / "data" / "precomputed" / "sideways_moderate_live.pkl.b64"
 )
 SIDEWAYS_MODERATE_MODEL_VERSION = (
     "sideways-v9-moderate-regime-live-inference-2026-08-17-v1"
+)
+STATE_KEYS = (
+    "summary",
+    "params",
+    "signal",
+    "historical_signal",
+    "decision_snapshot",
+    "decision_persisted",
+    "waiting_state",
+    "trigger_state",
+    "fixed_delay_state",
+    "specialist_state",
 )
 
 
@@ -47,7 +71,7 @@ def _load_v1_leaderboard() -> pd.DataFrame:
     with SIMULATION_PATH.open("rb") as file:
         saved = pickle.load(file)
     if saved.get("version") != SIMULATION_VERSION:
-        raise RuntimeError("Versi artefak Optimizer v1 tidak sesuai dengan kontrak live.")
+        raise RuntimeError("Versi artefak Optimizer v1 tidak sesuai kontrak live.")
     payload = saved.get("payload")
     if not isinstance(payload, tuple) or len(payload) < 2:
         raise RuntimeError("Artefak Optimizer v1 tidak memiliki leaderboard.")
@@ -68,7 +92,7 @@ def _load_model_bundle(path: Path, expected_version: str) -> dict[str, object]:
 
 
 def _supabase_config() -> tuple[str, str, str, str]:
-    base_url = os.getenv("SUPABASE_URL", "").strip()
+    base_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
     write_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     read_key = (
         os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip()
@@ -76,136 +100,131 @@ def _supabase_config() -> tuple[str, str, str, str]:
         or write_key
     )
     symbol = os.getenv("SUPABASE_SYMBOL", "XAUUSD").strip() or "XAUUSD"
+    if not base_url or not read_key or not write_key:
+        raise RuntimeError("Konfigurasi Supabase worker belum lengkap.")
+    configure_paper_ledger_store(base_url, read_key, write_key)
     return base_url, read_key, write_key, symbol
 
 
-def _print_result(label: str, path: Path, result: dict[str, object]) -> None:
-    summary = result["summary"]
-    print(f"[{label}] ledger={path} rows={len(result['ledger'])}")
-    print(
-        f"[{label}] equity={summary['Equity']:.2f} | "
-        f"open BUY={summary['Open BUY']} | open SELL={summary['Open SELL']}"
-    )
-    print(
-        f"[{label}] last update WIT="
-        f"{summary['Now WIT'].strftime('%Y-%m-%d %H:%M:%S WIT')}"
-    )
+def _strategy_specs() -> list[dict[str, object]]:
+    return [
+        {
+            "name": "Baseline v1",
+            "path": LIVE_TRADING_PATH,
+            "start_date": LIVE_START_DATE,
+            "entry_strategy": "baseline",
+            "model": None,
+        },
+        {
+            "name": "Fixed Delay 5m",
+            "path": LIVE_TRADING_FIXED_DELAY_PATH,
+            "start_date": LIVE_FIXED_DELAY_START,
+            "entry_strategy": "fixed_delay_5m",
+            "model": None,
+        },
+        {
+            "name": "BUY Specialist v4",
+            "path": LIVE_TRADING_BUY_SPECIALIST_V4_PATH,
+            "start_date": LIVE_BUY_SPECIALIST_V4_START,
+            "entry_strategy": "buy_specialist_v4",
+            "model": _load_model_bundle(
+                BUY_SPECIALIST_MODEL_PATH,
+                BUY_SPECIALIST_MODEL_VERSION,
+            ),
+        },
+        {
+            "name": "Moderate Regime",
+            "path": LIVE_TRADING_SIDEWAYS_MODERATE_PATH,
+            "start_date": LIVE_SIDEWAYS_MODERATE_START,
+            "entry_strategy": "sideways_moderate",
+            "model": _load_model_bundle(
+                SIDEWAYS_MODERATE_MODEL_PATH,
+                SIDEWAYS_MODERATE_MODEL_VERSION,
+            ),
+        },
+    ]
 
 
-def _run_and_report(label: str, path: Path, **kwargs) -> str | None:
+def _broker_snapshot(
+    base_url: str,
+    read_key: str,
+    symbol: str,
+) -> tuple[pd.DataFrame, pd.Series | None]:
     try:
-        result = run_live_trading_update(path=path, **kwargs)
-        _print_result(label, path, result)
-        return None
+        bars, quotes = load_supabase_broker_feed(
+            base_url,
+            read_key,
+            symbol=symbol,
+            bars_limit=5000,
+        )
+        if not bars.empty or not quotes.empty:
+            return bars, (quotes.iloc[-1] if not quotes.empty else None)
     except Exception as exc:
-        print(f"ERROR [{label}]: {exc}")
-        return f"{label}: {exc}"
+        print(f"WARNING: Feed broker Supabase gagal dimuat: {exc}", flush=True)
+
+    bars = load_broker_bars(BROKER_BARS_PATH)
+    quotes = load_broker_quote(BROKER_QUOTE_PATH)
+    return bars, (quotes.iloc[-1] if not quotes.empty else None)
+
+
+def run_cycle(
+    leaderboard: pd.DataFrame,
+    strategies: list[dict[str, object]],
+    base_url: str,
+    read_key: str,
+    symbol: str,
+) -> bool:
+    gold_ohlc = load_gold_data()
+    broker_bars, broker_quote = _broker_snapshot(base_url, read_key, symbol)
+    cycle_ok = True
+
+    for strategy in strategies:
+        try:
+            result = run_live_trading_update(
+                gold_ohlc,
+                leaderboard,
+                path=strategy["path"],
+                start_date=strategy["start_date"],
+                broker_quote=broker_quote,
+                entry_strategy=strategy["entry_strategy"],
+                broker_bars=broker_bars,
+                strategy_model_bundle=strategy["model"],
+            )
+            state = {key: result.get(key) for key in STATE_KEYS}
+            state["worker_name"] = "Windows Paper Trading Worker"
+            if not save_strategy_state(strategy_id_for_path(strategy["path"]), state):
+                raise RuntimeError("snapshot strategi gagal disimpan ke Supabase")
+            summary = result["summary"]
+            print(
+                f"{strategy['name']}: equity={summary['Equity']:.2f}, "
+                f"open={summary['Open BUY'] + summary['Open SELL']}, "
+                f"updated={summary['Now WIT'].strftime('%Y-%m-%d %H:%M:%S WIT')}",
+                flush=True,
+            )
+        except Exception as exc:
+            cycle_ok = False
+            print(f"ERROR {strategy['name']}: {exc}", file=sys.stderr, flush=True)
+    return cycle_ok
 
 
 def main() -> None:
-    gold_ohlc = load_gold_data()
+    parser = argparse.ArgumentParser(description="Perbarui empat strategi paper trading.")
+    parser.add_argument("--interval", type=int, default=60)
+    parser.add_argument("--once", action="store_true")
+    args = parser.parse_args()
+
+    base_url, read_key, _, symbol = _supabase_config()
     leaderboard = _load_v1_leaderboard()
-    base_url, read_key, write_key, symbol = _supabase_config()
-    broker_bars = pd.DataFrame()
-    broker_quote = None
-    if base_url and read_key and write_key:
-        configure_paper_ledger_store(base_url, read_key, write_key)
-        try:
-            broker_bars, broker_quotes = load_supabase_broker_feed(
-                base_url,
-                read_key,
-                symbol=symbol,
-                bars_limit=5000,
-            )
-            if not broker_quotes.empty:
-                broker_quote = broker_quotes.iloc[-1]
-        except Exception as exc:
-            print(f"WARNING: Feed broker Supabase gagal dimuat: {exc}")
+    strategies = _strategy_specs()
+    if not run_cycle(leaderboard, strategies, base_url, read_key, symbol):
+        raise RuntimeError("Siklus awal worker gagal untuk satu atau lebih strategi.")
+    print("PAPER_WORKER_READY", flush=True)
 
-    failures = []
-    error = _run_and_report(
-        "Baseline v1",
-        path=LIVE_TRADING_PATH,
-        gold_ohlc=gold_ohlc,
-        optimizer_leaderboard=leaderboard,
-        start_date=LIVE_START_DATE,
-        broker_quote=broker_quote,
-    )
-    if error:
-        failures.append(error)
-
-    if not (base_url and read_key and write_key):
-        print(
-            "WARNING: Supabase GitHub secrets belum lengkap. Baseline v1 tetap "
-            "diperbarui, tetapi tiga strategi berbasis feed broker dilewati."
-        )
+    if args.once:
         return
-
-    if broker_quote is None:
-        print("WARNING: Quote broker Supabase kosong; strategi M1 dilewati.")
-        if failures:
-            raise RuntimeError(" | ".join(failures))
-        return
-
-    error = _run_and_report(
-        "Fixed Delay 5m",
-        path=LIVE_TRADING_FIXED_DELAY_PATH,
-        gold_ohlc=gold_ohlc,
-        optimizer_leaderboard=leaderboard,
-        start_date=LIVE_FIXED_DELAY_START,
-        broker_quote=broker_quote,
-        entry_strategy="fixed_delay_5m",
-        broker_bars=broker_bars,
-    )
-    if error:
-        failures.append(error)
-
-    try:
-        buy_bundle = _load_model_bundle(
-            BUY_SPECIALIST_MODEL_PATH,
-            BUY_SPECIALIST_MODEL_VERSION,
-        )
-        error = _run_and_report(
-            "BUY Specialist v4",
-            path=LIVE_TRADING_BUY_SPECIALIST_V4_PATH,
-            gold_ohlc=gold_ohlc,
-            optimizer_leaderboard=leaderboard,
-            start_date=LIVE_BUY_SPECIALIST_V4_START,
-            broker_quote=broker_quote,
-            entry_strategy="buy_specialist_v4",
-            broker_bars=broker_bars,
-            strategy_model_bundle=buy_bundle,
-        )
-    except Exception as exc:
-        error = f"BUY Specialist v4: {exc}"
-        print(f"ERROR [{error}]")
-    if error:
-        failures.append(error)
-
-    try:
-        sideways_bundle = _load_model_bundle(
-            SIDEWAYS_MODERATE_MODEL_PATH,
-            SIDEWAYS_MODERATE_MODEL_VERSION,
-        )
-        error = _run_and_report(
-            "Moderate Regime",
-            path=LIVE_TRADING_SIDEWAYS_MODERATE_PATH,
-            gold_ohlc=gold_ohlc,
-            optimizer_leaderboard=leaderboard,
-            start_date=LIVE_SIDEWAYS_MODERATE_START,
-            broker_quote=broker_quote,
-            entry_strategy="sideways_moderate",
-            broker_bars=broker_bars,
-            strategy_model_bundle=sideways_bundle,
-        )
-    except Exception as exc:
-        error = f"Moderate Regime: {exc}"
-        print(f"ERROR [{error}]")
-    if error:
-        failures.append(error)
-
-    if failures:
-        raise RuntimeError("Sebagian strategi gagal diperbarui: " + " | ".join(failures))
+    while True:
+        time.sleep(max(args.interval, 10))
+        run_cycle(leaderboard, strategies, base_url, read_key, symbol)
 
 
 if __name__ == "__main__":
