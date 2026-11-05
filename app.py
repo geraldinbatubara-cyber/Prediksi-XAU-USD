@@ -28,10 +28,8 @@ from gold_forecast.broker_data import (
 from gold_forecast.data import load_gold_data, load_market_data, refresh_market_cache
 from gold_forecast.dashboard_snapshot import (
     DASHBOARD_SNAPSHOT_VERSION,
-    build_dashboard_snapshot,
     dashboard_snapshot_is_current,
     load_dashboard_snapshot,
-    save_dashboard_snapshot,
 )
 from gold_forecast.forecast_validity import (
     compare_locked_prediction_to_live,
