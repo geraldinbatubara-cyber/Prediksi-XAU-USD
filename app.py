@@ -10620,7 +10620,7 @@ def render_broker_data(gold_ohlc: pd.DataFrame) -> None:
 
 with st.sidebar:
     st.header("Pengaturan")
-    auto_refresh = st.checkbox("Auto refresh dashboard", value=True)
+    auto_refresh = st.checkbox("Auto refresh dashboard", value=False)
     refresh_interval_seconds = st.selectbox(
         "Interval auto refresh",
         options=[60, 300, 900],
