@@ -21,7 +21,7 @@ from gold_forecast.broker_data import (
     load_broker_bars,
     load_broker_quote,
 )
-from gold_forecast.data import load_gold_data
+from gold_forecast.data import load_gold_data, refresh_gold_cache
 from gold_forecast.live_trading import (
     LIVE_BUY_SPECIALIST_V4_START,
     LIVE_FIXED_DELAY_START,
@@ -65,6 +65,8 @@ STATE_KEYS = (
     "fixed_delay_state",
     "specialist_state",
 )
+GOLD_REFRESH_INTERVAL_SECONDS = 3 * 60 * 60
+GOLD_REFRESH_RETRY_SECONDS = 15 * 60
 
 
 def _load_v1_leaderboard() -> pd.DataFrame:
@@ -170,14 +172,28 @@ def _broker_snapshot(
     return local_bars, (local_quotes.iloc[-1] if not local_quotes.empty else None)
 
 
+def _refresh_gold_snapshot() -> tuple[pd.DataFrame, bool]:
+    try:
+        gold_ohlc = refresh_gold_cache()
+        latest_date = pd.Timestamp(gold_ohlc.index.max()).strftime("%Y-%m-%d")
+        print(f"GC=F daily cache refreshed through {latest_date}.", flush=True)
+        return gold_ohlc, True
+    except Exception as exc:
+        print(
+            f"WARNING: GC=F daily cache refresh failed; using existing cache: {exc}",
+            flush=True,
+        )
+        return load_gold_data(), False
+
+
 def run_cycle(
     leaderboard: pd.DataFrame,
     strategies: list[dict[str, object]],
     base_url: str,
     read_key: str,
     symbol: str,
+    gold_ohlc: pd.DataFrame,
 ) -> bool:
-    gold_ohlc = load_gold_data()
     broker_bars, broker_quote = _broker_snapshot(base_url, read_key, symbol)
     cycle_ok = True
 
@@ -219,7 +235,11 @@ def main() -> None:
     base_url, read_key, _, symbol = _supabase_config()
     leaderboard = _load_v1_leaderboard()
     strategies = _strategy_specs()
-    if not run_cycle(leaderboard, strategies, base_url, read_key, symbol):
+    gold_ohlc, refresh_ok = _refresh_gold_snapshot()
+    next_gold_refresh = time.monotonic() + (
+        GOLD_REFRESH_INTERVAL_SECONDS if refresh_ok else GOLD_REFRESH_RETRY_SECONDS
+    )
+    if not run_cycle(leaderboard, strategies, base_url, read_key, symbol, gold_ohlc):
         raise RuntimeError("Siklus awal worker gagal untuk satu atau lebih strategi.")
     print("PAPER_WORKER_READY", flush=True)
 
@@ -227,7 +247,14 @@ def main() -> None:
         return
     while True:
         time.sleep(max(args.interval, 10))
-        run_cycle(leaderboard, strategies, base_url, read_key, symbol)
+        if time.monotonic() >= next_gold_refresh:
+            gold_ohlc, refresh_ok = _refresh_gold_snapshot()
+            next_gold_refresh = time.monotonic() + (
+                GOLD_REFRESH_INTERVAL_SECONDS
+                if refresh_ok
+                else GOLD_REFRESH_RETRY_SECONDS
+            )
+        run_cycle(leaderboard, strategies, base_url, read_key, symbol, gold_ohlc)
 
 
 if __name__ == "__main__":

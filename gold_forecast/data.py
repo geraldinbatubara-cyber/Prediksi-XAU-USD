@@ -128,6 +128,25 @@ def load_market_data(period: str = "10y") -> pd.DataFrame:
     return _download_market_data(period)
 
 
+def refresh_gold_cache(
+    incremental_period: str = "14d",
+    bootstrap_period: str = "10y",
+) -> pd.DataFrame:
+    """Update only the daily GC=F cache used by the paper-trading worker."""
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    cached = _read_cached_frame(GOLD_CACHE_PATH, required)
+    period = (
+        incremental_period
+        if not cached.empty and cached.index.min() <= REQUIRED_CACHE_START
+        else bootstrap_period
+    )
+    latest = _download_gold_data(period)
+    gold = _merge_gold_revisions(cached, latest)
+    gold = gold.loc[gold.index >= REQUIRED_CACHE_START]
+    _write_cached_frame(gold, GOLD_CACHE_PATH)
+    return gold
+
+
 def _merge_gold_revisions(cached: pd.DataFrame, latest: pd.DataFrame) -> pd.DataFrame:
     """Merge Yahoo revisions without replacing healthy candles with partial rows."""
     accepted = latest.copy()
