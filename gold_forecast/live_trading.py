@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from gold_forecast.forecast_validity import completed_daily_frame
+from gold_forecast.forecast_validity import completed_daily_frame, expected_daily_candle
 from gold_forecast.monitoring import WIT
 from gold_forecast.paper_ledger_store import (
     load_historical_max_position_id,
@@ -1968,7 +1968,6 @@ def run_live_trading_update(
     strategy_model_bundle: dict[str, object] | None = None,
 ) -> dict[str, object]:
     now_wit = _now_wit(now)
-    cutoff_date = now_wit.tz_localize(None).normalize()
     usable_gold = completed_daily_frame(gold_ohlc, now_wit)
     ledger = load_live_ledger(path)
     params = _best_optimizer_params(optimizer_leaderboard)
@@ -2018,8 +2017,7 @@ def run_live_trading_update(
         )
 
     daily_data_date = usable_gold.index.max().normalize() if not usable_gold.empty else pd.NaT
-    expected_anchor = cutoff_date if now_wit.hour >= 7 else cutoff_date - pd.Timedelta(days=1)
-    expected_daily_date = (expected_anchor - pd.offsets.BDay(1)).normalize()
+    expected_daily_date = expected_daily_candle(now_wit)
     daily_data_stale = pd.isna(daily_data_date) or daily_data_date < expected_daily_date
     if daily_data_stale and entry_strategy != "sideways_moderate":
         can_trade = False

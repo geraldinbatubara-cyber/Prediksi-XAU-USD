@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from tempfile import gettempdir
@@ -112,12 +113,27 @@ def _download_market_data(period: str = "10y") -> pd.DataFrame:
     return frame
 
 
-def load_gold_data(period: str = "10y") -> pd.DataFrame:
+def load_gold_data(
+    period: str = "10y", *, minimum_date: pd.Timestamp | None = None
+) -> pd.DataFrame:
     required = ["Open", "High", "Low", "Close", "Volume"]
     cached = _read_cached_frame(GOLD_CACHE_PATH, required)
     if not cached.empty:
-        return cached.dropna(subset=["Close"])
-    return _download_gold_data(period)
+        cached = cached.dropna(subset=["Close"])
+    if cached.empty:
+        return _download_gold_data(period)
+    if minimum_date is None or minimum_date in cached.index:
+        return cached
+
+    try:
+        if (minimum_date - cached.index.max()).days >= 14:
+            latest = _download_gold_data(period)
+        else:
+            latest = _download_gold_data("14d")
+        return _merge_gold_revisions(cached, latest).loc[REQUIRED_CACHE_START:]
+    except Exception:
+        logging.getLogger(__name__).exception("Unable to refresh daily GC=F data")
+        return cached
 
 
 def load_market_data(period: str = "10y") -> pd.DataFrame:

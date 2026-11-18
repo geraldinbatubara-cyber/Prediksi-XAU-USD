@@ -22,6 +22,7 @@ from gold_forecast.broker_data import (
     load_broker_quote,
 )
 from gold_forecast.data import load_gold_data, refresh_gold_cache
+from gold_forecast.forecast_validity import WIT, completed_daily_frame, expected_daily_candle
 from gold_forecast.live_trading import (
     LIVE_BUY_SPECIALIST_V4_START,
     LIVE_FIXED_DELAY_START,
@@ -175,15 +176,25 @@ def _broker_snapshot(
 def _refresh_gold_snapshot() -> tuple[pd.DataFrame, bool]:
     try:
         gold_ohlc = refresh_gold_cache()
-        latest_date = pd.Timestamp(gold_ohlc.index.max()).strftime("%Y-%m-%d")
-        print(f"GC=F daily cache refreshed through {latest_date}.", flush=True)
-        return gold_ohlc, True
     except Exception as exc:
         print(
             f"WARNING: GC=F daily cache refresh failed; using existing cache: {exc}",
             flush=True,
         )
         return load_gold_data(), False
+
+    now = pd.Timestamp.now(tz=WIT)
+    latest_date = completed_daily_frame(gold_ohlc, now).index.max()
+    expected_date = expected_daily_candle(now)
+    if pd.isna(latest_date) or latest_date < expected_date:
+        print(
+            f"WARNING: GC=F daily data through {latest_date}; expected {expected_date.date()}. "
+            "The worker will retry on its short interval.",
+            flush=True,
+        )
+        return gold_ohlc, False
+    print(f"GC=F daily cache refreshed through {latest_date.date()}.", flush=True)
+    return gold_ohlc, True
 
 
 def run_cycle(

@@ -9,6 +9,17 @@ import pandas as pd
 WIT = ZoneInfo("Asia/Jayapura")
 
 
+def expected_daily_candle(as_of: object = None) -> pd.Timestamp:
+    """Return the daily candle date required by the WIT entry schedule."""
+    timestamp = pd.Timestamp.now(tz=WIT) if as_of is None else pd.Timestamp(as_of)
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert(WIT).tz_localize(None)
+    anchor = timestamp.normalize()
+    if timestamp.hour < 7:
+        anchor -= pd.Timedelta(days=1)
+    return anchor - pd.offsets.BDay(1)
+
+
 def completed_daily_frame(
     frame: pd.DataFrame,
     as_of: object,

@@ -34,6 +34,7 @@ from gold_forecast.dashboard_snapshot import (
 from gold_forecast.forecast_validity import (
     compare_locked_prediction_to_live,
     completed_daily_frame,
+    expected_daily_candle,
     forecast_guard,
     live_quote_basis,
     rebase_forecast_to_live,
@@ -259,7 +260,7 @@ def get_data() -> tuple[pd.DataFrame, pd.Timestamp]:
 
 @st.cache_data(ttl=300)
 def get_gold_ohlc() -> pd.DataFrame:
-    return load_gold_data()
+    return load_gold_data(minimum_date=expected_daily_candle())
 
 
 @st.cache_resource(ttl=300)
