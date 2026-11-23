@@ -9,12 +9,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gold_forecast.data import load_gold_data
-from gold_forecast.live_trading import LIVE_TRADING_PATH, run_live_trading_update
+from gold_forecast.live_trading import (
+    LIVE_TRADING_PATH,
+    expected_daily_candle,
+    run_live_trading_update,
+)
 from gold_forecast.strategy_optimizer import run_optimized_strategy
 
 
 def main() -> None:
-    gold_ohlc = load_gold_data()
+    gold_ohlc = load_gold_data(minimum_date=expected_daily_candle())
     _, leaderboard = run_optimized_strategy(gold_ohlc)
     result = run_live_trading_update(gold_ohlc, leaderboard, path=LIVE_TRADING_PATH)
     summary = result["summary"]

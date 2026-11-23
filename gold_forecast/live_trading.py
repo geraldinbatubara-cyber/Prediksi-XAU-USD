@@ -205,6 +205,14 @@ def _live_path_for_manual_path(path: Path) -> Path:
     return mapping.get(Path(path).name, Path(path))
 
 
+def expected_daily_candle(now: pd.Timestamp | None = None) -> pd.Timestamp:
+    now_wit = _now_wit(now)
+    session_date = now_wit.tz_localize(None).normalize()
+    if now_wit.hour < 7:
+        session_date -= pd.Timedelta(days=1)
+    return (session_date - pd.offsets.BDay(1)).normalize()
+
+
 def _now_wit(now: pd.Timestamp | None = None) -> pd.Timestamp:
     if now is None:
         return pd.Timestamp.now(tz=WIT)
@@ -1483,8 +1491,7 @@ def run_live_trading_update(
         )
 
     daily_data_date = usable_gold.index.max().normalize() if not usable_gold.empty else pd.NaT
-    expected_anchor = cutoff_date if now_wit.hour >= 7 else cutoff_date - pd.Timedelta(days=1)
-    expected_daily_date = (expected_anchor - pd.offsets.BDay(1)).normalize()
+    expected_daily_date = expected_daily_candle(now_wit)
     daily_data_stale = pd.isna(daily_data_date) or daily_data_date < expected_daily_date
     if daily_data_stale:
         can_trade = False

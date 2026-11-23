@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from tempfile import gettempdir
@@ -112,12 +113,27 @@ def _download_market_data(period: str = "10y") -> pd.DataFrame:
     return frame
 
 
-def load_gold_data(period: str = "10y") -> pd.DataFrame:
+def load_gold_data(
+    period: str = "10y", *, minimum_date: pd.Timestamp | None = None
+) -> pd.DataFrame:
     required = ["Open", "High", "Low", "Close", "Volume"]
     cached = _read_cached_frame(GOLD_CACHE_PATH, required)
     if not cached.empty:
-        return cached.dropna(subset=["Close"])
-    return _download_gold_data(period)
+        cached = cached.dropna(subset=["Close"])
+    if cached.empty:
+        return _download_gold_data(period)
+    if minimum_date is None or minimum_date in cached.index:
+        return cached
+
+    try:
+        if (minimum_date - cached.index.max()).days >= 14:
+            latest = _download_gold_data(period)
+        else:
+            latest = _download_gold_data("14d")
+        return _merge_gold_revisions(cached, latest).loc[REQUIRED_CACHE_START:]
+    except Exception:
+        logging.getLogger(__name__).exception("Unable to refresh daily GC=F data")
+        return cached
 
 
 def load_market_data(period: str = "10y") -> pd.DataFrame:
@@ -126,6 +142,28 @@ def load_market_data(period: str = "10y") -> pd.DataFrame:
     if not cached.empty:
         return cached.ffill(limit=3).dropna(subset=["gold"])
     return _download_market_data(period)
+
+
+def _merge_gold_revisions(cached: pd.DataFrame, latest: pd.DataFrame) -> pd.DataFrame:
+    """Merge Yahoo revisions without replacing healthy candles with partial rows."""
+    accepted = latest.copy()
+    for timestamp in cached.index.intersection(latest.index):
+        old = cached.loc[timestamp]
+        new = latest.loc[timestamp]
+        old_range = float(old["High"] - old["Low"])
+        new_range = float(new["High"] - new["Low"])
+        old_volume = float(old.get("Volume", 0) or 0)
+        new_volume = float(new.get("Volume", 0) or 0)
+        became_flat = old_range > 0 and new_range <= 1e-9
+        volume_collapsed = (
+            old_volume >= 100
+            and new_volume < 100
+            and new_volume < old_volume * 0.05
+        )
+        if became_flat or volume_collapsed:
+            accepted = accepted.drop(index=timestamp)
+    merged = pd.concat([cached, accepted]).sort_index()
+    return merged[~merged.index.duplicated(keep="last")].dropna(subset=["Close"])
 
 
 def refresh_market_cache(incremental_period: str = "14d", bootstrap_period: str = "10y") -> tuple[pd.DataFrame, pd.DataFrame]:
